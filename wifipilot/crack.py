@@ -24,21 +24,19 @@ import gzip
 import itertools
 import os
 import re
-import shutil
-import string
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence
 
 from .config import Config, default_wordlist, find_wordlists
-from .crypto import compute_pmkid, pmk, verify_handshake, verify_pmkid
+from .crypto import verify_handshake, verify_pmkid
 from .deps import registry
 from .events import EK
-from .models import STATUS_FAILED, STATUS_SUCCESS, AccessPoint, Capture
+from .models import AccessPoint, Capture
 from .pcap import CaptureAnalysis, analyze_file
 from .session import Session
-from .util import C, Process, human_duration, run, safe_float
+from .util import Process, human_duration, run, safe_float
 
 KEY_FOUND_RE = re.compile(r"KEY FOUND!\s*\[\s*(.*?)\s*\]", re.S)
 AIRCRACK_PROGRESS_RE = re.compile(r"(\d+)\s*/\s*(\d+)\s*keys tested\s*\(([^)]+)\)")

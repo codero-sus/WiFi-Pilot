@@ -19,7 +19,6 @@ import argparse
 import contextlib
 import json
 import os
-import signal
 import sys
 import time
 from pathlib import Path
@@ -29,8 +28,8 @@ from . import LEGAL_NOTICE, TOOL_NAME, __version__
 from .config import Config, find_wordlists
 from .deps import list_interfaces, registry
 from .events import EK, Event, EventBus
-from .models import ATTACK_NAMES, AccessPoint, Capture
-from .util import C, banner, human_duration, mac_norm, parse_duration, safe_int
+from .models import ATTACK_NAMES, Capture
+from .util import C, banner, human_duration, mac_norm, parse_duration
 
 # --------------------------------------------------------------------------- #
 # rich helpers (the CLI still works without rich, just plainer)

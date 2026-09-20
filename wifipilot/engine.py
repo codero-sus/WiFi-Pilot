@@ -20,24 +20,22 @@ import contextlib
 import queue
 import threading
 import time
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from .advisor import Advisor
-from .attacks import DEFAULT_ORDER, AttackContext, ATTACK_CLASSES, get_attack
+from .attacks import AttackContext, ATTACK_CLASSES, get_attack
 from .config import Config
 from .crack import Cracker
 from .demo import DemoRadio
-from .deps import list_interfaces, pick_interface, registry
+from .deps import registry
 from .events import EK, EventBus
 from .iface import InterfaceError, InterfaceManager
-from .models import (STATUS_FAILED, STATUS_RUNNING, STATUS_SKIPPED, STATUS_SUCCESS,
-                     AccessPoint, Attempt, Capture, SessionStats)
-from .planner import Plan, heuristic_plan, preferred_attacks, rank_targets, should_replan
-from .scanner import Scanner, band_channels
+from .models import STATUS_FAILED, STATUS_RUNNING, AccessPoint, Attempt, Capture
+from .planner import Plan, heuristic_plan, preferred_attacks, should_replan
+from .scanner import Scanner
 from .session import Session
-from .util import ProcessManager, is_root, mac_norm, now_iso
+from .util import ProcessManager, is_root, mac_norm
 
 
 class _StopFlag:
@@ -172,8 +170,6 @@ class Engine:
             with contextlib.suppress(Exception):
                 self.iface.cleanup()
         self.processes.stop_all()
-        with self.bus and contextlib.suppress(Exception):
-            pass
         self.status.phase = "stopped"
         self.bus.publish(EK.SESSION_END, {
             "id": self.session.id, "uptime": round(self.session.stats.uptime, 1),

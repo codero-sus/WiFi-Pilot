@@ -15,22 +15,19 @@ without a radio.
 from __future__ import annotations
 
 import contextlib
-import csv
-import io
 import os
 import re
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .config import Config
 from .deps import registry
 from .events import EK
-from .models import AccessPoint
 from .session import Session
-from .util import C, Process, mac_norm, run, safe_float, safe_int, slugify
+from .util import Process, mac_norm, safe_int
 
 # --------------------------------------------------------------------------- #
 # channel / band helpers
