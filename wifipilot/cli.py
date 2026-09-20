@@ -486,16 +486,22 @@ def report_summary(engine, console, as_json: bool = False) -> int:
     if as_json:
         print(json.dumps(session.export(), indent=2, default=str))
         return 0
+    stats = session.stats
     console.print()
     console.print(Panel(
-        f"[bold]{'Simulation' if session.demo else 'Engagement'} {session.id}[/bold] finished after "
-        f"{human_duration(session.stats.uptime)}\n"
-        f"APs seen: {session.stats.aps_seen} · clients: {session.stats.clients_seen} · "
-        f"attacks: {session.stats.attacks_run} ({session.stats.attacks_failed} failed) · "
-        f"deauths: {session.stats.deauths} · LLM calls: {session.stats.llm_calls}\n"
-        f"loot: {session.stats.loot} (handshakes {session.stats.handshakes}, "
-        f"PMKIDs {session.stats.pmkids}, WPS {session.stats.wps_cracks}, WEP {session.stats.wep_cracks}) · "
-        f"[bold magenta]passwords recovered: {session.stats.passwords}[/bold magenta]",
+        "\n".join([
+            f"[bold]{'Simulation' if session.demo else 'Engagement'} {session.id}[/bold]"
+            f" finished after {human_duration(stats.uptime)}",
+            f"discovery   · {stats.aps_seen} APs · {stats.clients_seen} clients",
+            f"attacks     · {stats.attacks_run} run · {stats.attacks_failed} failed · "
+            f"{stats.deauths} deauth frames",
+            f"loot        · {stats.loot} items "
+            f"(handshakes {stats.handshakes}, PMKIDs {stats.pmkids}, "
+            f"WPS {stats.wps_cracks}, WEP {stats.wep_cracks})",
+            f"AI          · {stats.llm_calls} model calls · {stats.llm_tokens} tokens · "
+            f"{stats.llm_errors} errors",
+            f"[bold magenta]passwords recovered: {stats.passwords}[/bold magenta]",
+        ]),
         title="summary", border_style="cyan"))
     loot = session.loot()
     if loot:
