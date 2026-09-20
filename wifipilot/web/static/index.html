@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>wifipilot · AI-piloted WiFi auditing</title>
+<link rel="stylesheet" href="/static/style.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">📡</span>
+    <div>
+      <h1>wifipilot</h1>
+      <p class="tagline">AI-piloted WiFi auditing <span class="dim">· wifite alternative · authorised use only</span></p>
+    </div>
+  </div>
+  <div class="status-group">
+    <span id="mode-badge" class="badge badge-demo">simulation</span>
+    <span id="phase-badge" class="badge badge-idle">idle</span>
+    <span id="conn-badge" class="badge badge-conn">connecting…</span>
+    <span class="kpi"><b id="kpi-aps">0</b><small>APs</small></span>
+    <span class="kpi"><b id="kpi-clients">0</b><small>clients</small></span>
+    <span class="kpi"><b id="kpi-loot">0</b><small>loot</small></span>
+    <span class="kpi"><b id="kpi-pswd">0</b><small>PSKs</small></span>
+    <span class="kpi"><b id="kpi-uptime">0s</b><small>uptime</small></span>
+  </div>
+</header>
+
+<section class="controlbar">
+  <button id="btn-campaign" class="btn btn-primary">▶ Start campaign</button>
+  <button id="btn-stop" class="btn btn-danger" disabled>■ Stop</button>
+  <button id="btn-cancel" class="btn">✂ Cancel attack</button>
+  <button id="btn-rescan" class="btn">⟳ Rescan 20s</button>
+  <button id="btn-think" class="btn">🧠 Think now</button>
+  <label class="field">budget
+    <input id="inp-duration" type="text" placeholder="e.g. 30m / 0" value="0" size="6" />
+  </label>
+  <label class="field">scope (BSSIDs)
+    <input id="inp-targets" type="text" placeholder="all discovered (or paste BSSIDs)" size="26" />
+  </label>
+  <label class="switch"><input id="chk-scanfirst" type="checkbox" checked /> scan first</label>
+  <label class="switch"><input id="chk-authorized" type="checkbox" /> I have written authorisation</label>
+  <label class="switch"><input id="chk-demo" type="checkbox" checked /> simulation</label>
+</section>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="targets">Targets <span id="tab-count-targets" class="pill">0</span></button>
+  <button class="tab" data-tab="loot">Loot <span id="tab-count-loot" class="pill">0</span></button>
+  <button class="tab" data-tab="ai">AI advisor</button>
+  <button class="tab" data-tab="log">Log</button>
+  <button class="tab" data-tab="settings">Tools &amp; settings</button>
+</nav>
+
+<main>
+  <!-- ---------------------------------------------------------------- -->
+  <section id="tab-targets" class="tabpane active">
+    <div class="pane-tools">
+      <input id="inp-filter" type="search" placeholder="filter by SSID / BSSID / vendor…" />
+      <label class="switch"><input id="chk-autothink" type="checkbox" checked /> auto-think (local LLM)</label>
+      <label class="switch"><input id="chk-stealth" type="checkbox" /> stealth (passive only)</label>
+      <span class="dim" id="hint-targets"></span>
+    </div>
+    <div class="tablewrap">
+      <table id="tbl-targets">
+        <thead>
+          <tr>
+            <th></th><th>SSID</th><th>BSSID</th><th>CH</th><th>Band</th><th>Signal</th>
+            <th>Security</th><th>WPS</th><th>Clients</th><th>Loot</th><th>Score</th><th>Decided by</th><th>Attack</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div id="detail-panel" class="detail hidden"></div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section id="tab-loot" class="tabpane">
+    <div class="pane-tools">
+      <span class="dim">Everything captured this session. Passwords marked <span class="ok">verified</span> were confirmed by recomputing the PMKID/MIC or by the cracker's own check.</span>
+      <a class="btn" href="/api/report" target="_blank" rel="noopener">📄 Markdown report</a>
+      <a class="btn" href="/api/export" target="_blank" rel="noopener">⤓ JSON export</a>
+    </div>
+    <div id="loot-grid" class="grid"></div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section id="tab-ai" class="tabpane">
+    <div class="grid ai-grid">
+      <div class="card">
+        <h3>Local model status</h3>
+        <div id="ai-status" class="kv"></div>
+        <div class="row">
+          <select id="sel-model"></select>
+          <button id="btn-model" class="btn">use model</button>
+        </div>
+        <div class="row">
+          <input id="inp-pull" type="text" placeholder="e.g. llama3.1:8b" />
+          <button id="btn-pull" class="btn">⤓ ollama pull</button>
+        </div>
+        <p class="dim">Runs entirely on this machine through Ollama (<code>http://127.0.0.1:11434</code>). Nothing is sent to a remote service unless you explicitly allow a remote host.</p>
+      </div>
+      <div class="card">
+        <h3>Last plan <span id="plan-source" class="badge badge-idle">—</span></h3>
+        <div id="plan-reasoning" class="reasoning">No plan yet. Start a campaign or press “Think now”.</div>
+        <ul id="plan-actions" class="actions"></ul>
+        <div id="plan-dropped" class="dropped"></div>
+      </div>
+    </div>
+    <div class="card chat-card">
+      <h3>Ask the advisor about this engagement</h3>
+      <div id="chat-log" class="chat-log"></div>
+      <div class="row">
+        <input id="inp-chat" type="text" placeholder="Which target should I attack next, and why?" />
+        <button id="btn-chat" class="btn btn-primary">send</button>
+      </div>
+      <div class="chips">
+        <button class="chip" data-q="Which target is most promising and why?">most promising target</button>
+        <button class="chip" data-q="Summarise what we have captured so far and what it means for the client's risk.">summarise findings</button>
+        <button class="chip" data-q="What failed so far and what should we change in our approach?">triage failures</button>
+        <button class="chip" data-q="Write a short non-technical note explaining the impact of the recovered credentials.">client-facing impact note</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section id="tab-log" class="tabpane">
+    <div class="progress-wrap">
+      <div class="progress"><div id="progress-bar" class="bar"></div></div>
+      <div id="progress-label" class="dim">idle</div>
+    </div>
+    <pre id="log-stream" class="log"></pre>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section id="tab-settings" class="tabpane">
+    <div class="card">
+      <h3>External tools</h3>
+      <div class="pane-tools">
+        <button id="btn-recheck" class="btn">re-check tools</button>
+        <span class="dim" id="tool-summary"></span>
+      </div>
+      <div class="tablewrap">
+        <table id="tbl-tools">
+          <thead><tr><th>Tool</th><th>Purpose</th><th>Status</th><th>Version</th><th>Install</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="grid ai-grid">
+      <div class="card">
+        <h3>Wireless interfaces</h3>
+        <div id="iface-list" class="kv"></div>
+      </div>
+      <div class="card">
+        <h3>Engagement settings</h3>
+        <div class="kv" id="settings-kv"></div>
+        <h4>Attack types</h4>
+        <div id="attack-toggles" class="chips"></div>
+        <h4>Wordlists</h4>
+        <div id="wordlists" class="chips"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <span class="dim">wifipilot 0.1.0 · MIT · only test networks you own or are contracted to test.
+  Deauthentication and WPS PIN attacks disrupt service and may violate law.
+  <span id="paths"></span></span>
+</footer>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,119 @@
+# The web UI
+
+```bash
+wifipilot web --demo --open      # explore safely, opens http://127.0.0.1:8787
+sudo wifipilot -y web            # live, after confirming authorisation
+wifipilot web --host 127.0.0.1 --port 9000
+```
+
+The UI is a single page served by FastAPI; there is no build step, no npm, no CDN. Everything
+is relative-URL based, so reverse proxies, container previews and SSH tunnels all work:
+
+```bash
+ssh -L 8787:localhost:8787 analyst@target-box     # then open http://localhost:8787
+```
+
+## Screen by screen
+
+### Targets
+
+| Column | Meaning |
+|---|---|
+| SSID / BSSID | ESSID (or `<hidden>`) and the BSSID |
+| CH / Band | channel and band of the beacon |
+| Signal | RSSI in dBm, colour-coded green/yellow/red |
+| Security | WEP / WPA / WPA2 / WPA2+WPA3 / WPA3 / OPN, plus cipher and auth in the drawer |
+| WPS | `no`, `WPS unlocked`, `WPS locked`, `WPS unknown` |
+| Clients | number of stations seen associating (the deauth material) |
+| Loot | `HS` handshake, `PMKID`, `PSK ★` (hover shows the password) |
+| Score | planner score (signal, encryption, WPS state, prior attempts, failures) |
+| Decided by | `AI` when the local model picked this target, else `heuristic`/`operator` |
+| Attack | per-row attack selector (**only enabled, applicable attacks are listed**), `▶ run`, `🔓 crack` |
+
+`＋` opens the detail drawer: cipher/auth, PMF, vendor, deauth count, the AI's reason for
+picking the target, the client list, and the full attack history with the tool's own output.
+
+### Loot
+
+One card per capture: kind, target, tool, EAPOL count, the recovered PSK, a **download** link
+(the API refuses any path outside the loot/session directories) and a one-click crack button.
+Passwords verified by MIC/PMKID recomputation are labelled as such.
+
+### AI advisor
+
+* **Local model status** — reachability, host, selected model, plan counts, call/error
+  counters, average latency, tokens used.
+* **Model picker** — every installed Ollama model; `ollama pull <name>` installs one without
+  leaving the browser (progress streams into the log).
+* **Last plan** — the model's reasoning verbatim, the prioritised actions, and any actions
+  **rejected by the safety validator** (so you can see when the model was overruled).
+* **Chat** — ask about the running engagement; answers are grounded in the live situation
+  report, streamed token by token. One-click prompts cover the common questions
+  ("most promising target", "summarise findings", "triage failures", "client-facing impact note").
+
+### Log
+
+The raw event stream (new APs, attack start/end, deauths, captures, crack progress, advisor
+messages) plus a progress bar for whatever is running right now.
+
+### Tools & settings
+
+Dependency report with version and the exact install command per tool, capability flags,
+wireless interfaces with monitor/injection support, attack toggles, discovered wordlists and
+the effective engagement settings.
+
+## Controls
+
+| Control | Effect |
+|---|---|
+| **Start campaign** | runs the full loop (scan → plan → attack → crack) with the given budget and scope |
+| **Stop** | clean stop: current attack cancelled, interface restored, report written |
+| **Cancel attack** | cancels only the running attack, the campaign continues |
+| **Rescan** | 20 s extra discovery |
+| **Think now** | forces one advisor cycle and shows the plan |
+| **scope** | paste BSSIDs to restrict the campaign |
+| **simulation** | switches between live and simulated radio (rebuilds the engine) |
+| **I have written authorisation** | required for any live attack; without it the API returns 403 |
+
+## REST API
+
+Everything the UI does is an endpoint you can script:
+
+```
+GET  /healthz                 GET  /api/state      GET  /api/tools
+GET  /api/interfaces          GET  /api/wordlists  GET  /api/config
+POST /api/config              POST /api/config/save
+POST /api/mode                POST /api/scan       POST /api/campaign
+POST /api/attack              POST /api/cancel     POST /api/crack
+POST /api/rescan              POST /api/targets
+POST /api/ai/think            POST /api/ai/chat    POST /api/ai/model
+POST /api/ai/pull             POST /api/ai/toggle
+GET  /api/report              GET  /api/export     GET  /api/file
+GET  /api/events              WS   /ws
+```
+
+Example — run a campaign from a script and stream events:
+
+```bash
+curl -s -X POST localhost:8787/api/campaign \
+     -H 'Content-Type: application/json' \
+     -d '{"targets": [], "duration": 1800, "scan_first": true}'
+
+python - <<'PY'
+import json, websocket          # pip install websocket-client
+ws = websocket.create_connection("ws://localhost:8787/ws")
+while True:
+    message = json.loads(ws.recv())
+    if message["kind"] == "event":
+        event = message["event"]
+        print(event["time"], event["kind"], event["data"].get("message", ""))
+PY
+```
+
+## Security notes
+
+* The UI has **no authentication**: it is a local operator console. Bind it to loopback or
+  put it behind a reverse proxy with auth when you need remote access.
+* All state-changing endpoints that transmit are additionally gated by the authorisation flag
+  (403 otherwise) and by the plan validator.
+* `/api/file` only serves files inside this session's loot and state directories.

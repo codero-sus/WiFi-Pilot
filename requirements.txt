@@ -1,0 +1,10 @@
+# wifipilot runtime dependencies
+#   core CLI  -> rich only (everything else is stdlib)
+#   web UI    -> fastapi + uvicorn[standard]
+rich>=13.0
+fastapi>=0.110
+uvicorn[standard]>=0.27
+
+# dev / test
+# pytest>=7.4
+# httpx>=0.27
