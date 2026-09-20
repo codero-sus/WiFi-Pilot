@@ -34,17 +34,17 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Optional
 
 from ..config import Config, find_wordlists
 from ..deps import list_interfaces, registry
 from ..engine import Engine
 from ..events import EK, EventBus
 from ..models import ATTACK_NAMES
-from ..util import human_duration, mac_norm, now_iso, read_json, write_json
+from ..util import mac_norm, now_iso
 
 try:  # pragma: no cover - import guard
-    from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+    from fastapi import Body, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
     from fastapi.staticfiles import StaticFiles
