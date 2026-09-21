@@ -402,7 +402,7 @@ More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ```bash
 pip install -e '.[dev]'
-pytest -q                      # 184 tests, ~3 min (includes a full simulated campaign)
+pytest -q                      # 192 tests, ~3 min (includes a full simulated campaign)
 ```
 
 The suite covers published crypto test vectors (FIPS-197 AES, RFC 4493 CMAC, IEEE 802.11i
