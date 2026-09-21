@@ -38,10 +38,11 @@ are sent. See [docs/AI-PROVIDERS.md](docs/AI-PROVIDERS.md).
 - [Why another wifite?](#why-another-wifite)
 - [Features](#features)
 - [Install](#install)
+- [Use it as a library](#use-it-as-a-library)
 - [Quickstart (no hardware required)](#quickstart-no-hardware-required)
 - [Real engagement](#real-engagement)
 - [The web UI](#the-web-ui)
-- [The AI advisor (Ollama)](#the-ai-advisor-ollama)
+- [The AI advisor (Ollama or OpenRouter)](#the-ai-advisor-ollama-or-openrouter)
 - [Attacks](#attacks)
 - [Cracking](#cracking)
 - [CLI reference](#cli-reference)
@@ -108,6 +109,10 @@ aircrack-ng suite properly) and rebuilds everything around it:
 - deterministic fallback planner whenever the model is missing, out of credit, rate limited
   or incoherent — the tool never stalls on the AI
 
+**Scriptable**
+- `import wifipilot as wp` — `wp.attack(target=all, mode="force")`, `wp.scan()`, `wp.crack()`,
+  event hooks, target selectors, modes, JSON results ([docs/PYTHON-API.md](docs/PYTHON-API.md))
+
 **Reporting**
 - JSON session export, Markdown engagement report, JSONL event journal, loot directory
 - web UI: live target table, loot cards, plan viewer, chat, tool diagnostics
@@ -154,6 +159,43 @@ wifipilot --provider openrouter --model openai/gpt-4o-mini attack -d 45m
 
 OpenRouter is off until you enable it; identifiers are pseudonymised by default; see
 [docs/AI-PROVIDERS.md](docs/AI-PROVIDERS.md) for key handling, costs and the privacy model.
+
+## Use it as a library
+
+Everything the CLI does is a Python call, so wifipilot can be a stage in a bigger
+tool (a scheduler, a report pipeline, another UI):
+
+```python
+import wifipilot as wp
+
+# rehearse the whole pipeline with no radio and no risk
+wp.attack(target=all, mode="force", demo=True, duration="2m")
+
+# a real, authorised engagement; "force" is loud, "stealth" is listen-only
+wp.authorize("change ticket CHG-4711, client ACME Labs")
+result = wp.attack(target="Cafe Guest", mode="default", duration="45m",
+                   on_event=lambda event: print(event.kind, event.data))
+
+for hit in result.passwords:                 # verified PSKs, with their access point
+    print(hit["essid"], "->", hit["password"], f"({hit['kind']})")
+result.save("engagement.json")               # or markdown=True
+```
+
+```python
+wp.scan(duration="30s")                    # -> ScanResult (.aps sorted by score)
+wp.crack("capture.cap", wordlist="rockyou.txt")   # -> CrackResult (.cracked/.password)
+wp.analyze("capture.cap")                  # EAPOL/PMKID inventory of a file
+wp.set_provider("openrouter", model="openai/gpt-4o-mini", ai_budget=0.50)
+wp.status()                                # provider, targets, loot, spend
+```
+
+Live runs raise `wp.AuthorizationError` unless you called `wp.authorize(...)` (or
+passed `authorized=True`); on non-Linux machines calls raise `wp.PlatformError`
+(importing is always safe).  Give scripted runs an explicit `duration`: without
+one a campaign continues until the planner runs out of targets.  Full reference —
+the pipeline, target selectors, mode presets, event hooks and error taxonomy — is in
+[docs/PYTHON-API.md](docs/PYTHON-API.md), with runnable scripts in
+[`examples/`](examples/) (`make api-demo`).
 
 ## Quickstart (no hardware required)
 
@@ -369,6 +411,7 @@ See [wifipilot.example.json](wifipilot.example.json) for the annotated version. 
 
 ```
 wifipilot/
+├── api.py          scriptable API: wp.attack(target=all, mode="force")
 ├── cli.py          argparse + rich dashboard          (presentation)
 ├── engine.py       job queue, campaign loop, policy gates (orchestration)
 ├── events.py       thread-safe pub/sub bus            (the UI contract)
@@ -402,7 +445,7 @@ More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ```bash
 pip install -e '.[dev]'
-pytest -q                      # 192 tests, ~3 min (includes a full simulated campaign)
+pytest -q                      # 221 tests, ~5 min (includes a full simulated campaign)
 ```
 
 The suite covers published crypto test vectors (FIPS-197 AES, RFC 4493 CMAC, IEEE 802.11i

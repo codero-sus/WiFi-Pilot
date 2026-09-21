@@ -287,6 +287,11 @@ class Session:
         append_jsonl(Path(self.state_dir) / "reports" / "timeline.jsonl",
                      {"kind": kind, "ts": now_iso(), **payload})
 
+    def all_captures(self) -> List[Capture]:
+        """Every capture held by any access point, newest first."""
+        return sorted((cap for ap in self.aps.values() for cap in ap.captures),
+                      key=lambda c: c.created, reverse=True)
+
     def loot(self) -> List[Capture]:
         out: List[Capture] = []
         for ap in self.aps.values():

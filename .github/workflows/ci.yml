@@ -41,6 +41,9 @@ jobs:
       - name: AI provider tests (faked transport + local mock OpenRouter gateway)
         run: python -m pytest tests/test_openrouter.py tests/test_openrouter_http.py -q
 
+      - name: Scriptable API tests
+        run: python -m pytest tests/test_api.py -q
+
       - name: Platform guard (Linux-only enforcement)
         run: python -m pytest tests/test_platform.py -q
 
@@ -53,6 +56,17 @@ jobs:
           python -m wifipilot --demo --json scan -t 2 > /dev/null
           python -m wifipilot analyze wifipilot/data/wifi-defaults.txt > /dev/null 2>&1 || true
           python -m wifipilot --json config > /dev/null
+
+      - name: Library smoke test (import + demo pipeline, no radio)
+        run: |
+          python - <<'PY'
+          import wifipilot as wp
+          assert wp.ALL == "all" and "force" in wp.MODES
+          wp.configure(demo=True, provider="none")
+          survey = wp.scan(duration=2)
+          assert len(survey) > 0, "the simulator should produce access points"
+          print("api ok:", len(survey), "APs")
+          PY
 
       - name: Provider smoke test (no network calls)
         run: |

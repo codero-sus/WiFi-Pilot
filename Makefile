@@ -1,6 +1,6 @@
 # wifipilot — developer entry points
 .PHONY: help install install-web dev test test-fast demo web tools lint clean report \
-	ai-status ai-local ai-cloud
+	ai-status ai-local ai-cloud api-demo
 
 PY ?= python3
 PIP ?= $(PY) -m pip
@@ -40,6 +40,10 @@ ai-status:  ## which AI provider is active, is it reachable, how much has it cos
 ai-local:  ## use local Ollama for the advisor (private, free)
 	$(PY) -m wifipilot --provider ollama ai use qwen2.5:7b
 	@echo "export OPENROUTER_API_KEY=... to try the cloud provider instead"
+
+api-demo:  ## drive the pipeline from Python (examples/, no radio needed)
+	$(PY) examples/triage.py --demo -t 5
+	$(PY) examples/handshake_hunt.py --demo --mode quick -d 30 -t 3
 
 ai-cloud:  ## use OpenRouter for the advisor (needs OPENROUTER_API_KEY)
 	$(PY) -m wifipilot --provider openrouter --ai-budget 0.50 ai status
