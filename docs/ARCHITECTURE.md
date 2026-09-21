@@ -178,3 +178,32 @@ drivers drop monitor mode. wifipilot therefore treats every failure as data:
 * repeated failures retire an attack for that target (twice), successful ones retire it
   immediately — so the campaign never loops on a solved or hopeless target;
 * the advisor can be asked to triage a failure and propose the next move.
+
+## 11. Performance
+
+The hot paths are capture parsing and WPA key derivation, so that is where the
+work went — nothing else was allowed to get slower:
+
+* **parsing is offset-based and memory-mapped.** `pcap.py` walks a capture with
+  `mmap` + `struct.unpack_from` and slices a frame only when it is kept (EAPOL
+  messages, the beacons it still needs an SSID from).  The iterator yields
+  `(timestamp, offset, length, next_offset)`.
+* **analysis is resumable.** `_AnalysisState` remembers the byte offset of the
+  last complete record, so polling a capture that is still being written parses
+  only the appended bytes; an unchanged file returns a cached snapshot without
+  touching the disk again.  Every call hands out a fresh `CaptureAnalysis`, so a
+  result someone already holds never changes underneath them.
+* **verification state is prepared once.** `crypto.HandshakeVerifier` and
+  `crypto.PmkidVerifier` hoist the per-capture work (EAPOL extraction, MIC
+  zeroing, MAC parsing, AES-CMAC subkeys) out of the candidate loop, and
+  `Cracker` derives the PMK once per candidate however many handshakes and
+  PMKIDs the capture holds.
+* **the crypto primitives are table-driven.** AES uses folded T-tables (~20x
+  faster than the readable implementation, which is kept and cross-checked in
+  the tests); the decryption schedule is built lazily because MIC checks only
+  encrypt.
+* **benchmarks measure the real path** (`benchmarks/`, `make bench`): real
+  captures, real handshakes, wrong candidates only, and the artifact (frame
+  count, MiB, candidate space) printed next to every number.
+
+Details and before/after numbers: README → *Performance*.

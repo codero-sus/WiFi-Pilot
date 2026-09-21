@@ -12,7 +12,7 @@ from typing import Optional
 from ..deps import registry
 from ..events import EK
 from ..models import STATUS_FAILED, STATUS_SUCCESS, AccessPoint, Attempt, Capture
-from ..util import C, Process, human_duration, run
+from ..util import C, Process, human_duration
 from .base import Attack, AttackContext, AttackOutcome
 
 

@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from wifipilot.advisor import Advisor, IdentifierRedactor, build_redactor
-from wifipilot.config import Config, OpenRouterConfig
+from wifipilot.config import Config, OllamaConfig, OpenRouterConfig
 from wifipilot.llm import (LLMAuthError, LLMCreditError, LLMError, LLMPolicyError,
                            LLMRateLimitError, ModelInfo, OllamaClient, OpenRouterClient,
                            build_client, provider_status, select_provider)
@@ -660,13 +660,7 @@ def test_models_helper_returns_dicts(session, monkeypatch):
 def test_provider_switch_events_are_published(session, monkeypatch):
     from wifipilot.events import EK
 
-    events = []
-
-    def collect(event):
-        if event.kind in (EK.ADVISOR_STATUS, EK.ADVISOR_ERROR):
-            events.append(event)
-
-    session.bus.subscribe([EK.ADVISOR_STATUS, EK.ADVISOR_ERROR])
+    subscribed = session.bus.subscribe([EK.ADVISOR_STATUS, EK.ADVISOR_ERROR])
     monkeypatch.setattr("wifipilot.llm.urllib.request.urlopen", FakeHTTP(
         routes={"/key": FakeResponse(json.dumps({"data": {"label": "ok"}})),
                 "/models": FakeResponse(json.dumps({"data": []}))}))
@@ -675,7 +669,9 @@ def test_provider_switch_events_are_published(session, monkeypatch):
     session.config.openrouter.api_key = "sk-or-x"
     advisor.configure("openrouter", announce=True)
     assert advisor.status()["provider"] == "openrouter"
-    del collect, events
+    kinds = [event.kind for event in subscribed.drain()]
+    assert EK.ADVISOR_STATUS in kinds              # the switch was announced
+    subscribed.close()
 
 
 # --------------------------------------------------------------------------- #

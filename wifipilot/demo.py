@@ -9,14 +9,12 @@ the radio is not.
 
 from __future__ import annotations
 
-import math
 import random
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from .scanner import ApRecord, ClientRecord, channel_to_freq
-from .util import mac_random
 
 # --- a believable, deliberately varied set of targets --------------------- #
 
@@ -63,13 +61,25 @@ class DemoAP:
     first_seen: float = field(default_factory=time.time)
 
 
+def _demo_mac(rng: random.Random, locally_administered: bool = False) -> str:
+    """A MAC drawn from the seeded RNG.
+
+    The simulator has to be reproducible: a scan whose result cannot be used as
+    a target for the next call makes scripted runs (and the tests) useless.
+    """
+    raw = bytearray(rng.getrandbits(8) for _ in range(6))
+    raw[0] = (raw[0] | 0x02) if locally_administered else (raw[0] & ~0x02)
+    raw[0] &= ~0x01                                  # unicast
+    return ":".join(f"{byte:02x}" for byte in raw)
+
+
 def build_neighbourhood(seed: Optional[int] = None) -> List[DemoAP]:
     rng = random.Random(seed if seed is not None else 20240920)
     aps: List[DemoAP] = []
 
     def add(essid, channel, encryption, signal, vendor, **kw) -> None:
         ap = DemoAP(
-            bssid=mac_random(locally_administered=False),
+            bssid=_demo_mac(rng),
             essid=essid, channel=channel, signal=signal, vendor=vendor,
             encryption=encryption,
             privacy={"WPA2": "WPA2", "WPA3": "WPA3", "WPA2/WPA3": "WPA2 WPA3",
@@ -176,7 +186,7 @@ class DemoRadio:
             if need_new or reconnect:
                 if len(ap.clients) < max(want, 6):
                     client = ClientRecord(
-                        mac=mac_random(locally_administered=True),
+                        mac=_demo_mac(self.rng, locally_administered=True),
                         bssid=ap.bssid,
                         signal=int(ap.signal + self.rng.randint(2, 12)),
                         packets=self.rng.randint(20, 900),
@@ -190,7 +200,7 @@ class DemoRadio:
         if elapsed > 20 and len(self.aps) < 14 and self.rng.random() < 0.25:
             name = self.rng.choice([s for s in SSID_POOL if s not in {a.essid for a in self.aps}])
             new_ap = DemoAP(
-                bssid=mac_random(), essid=name, channel=self.rng.choice([1, 6, 11, 36, 149]),
+                bssid=_demo_mac(self.rng), essid=name, channel=self.rng.choice([1, 6, 11, 36, 149]),
                 encryption="WPA2", privacy="WPA2", cipher="CCMP", auth="PSK",
                 signal=self.rng.randint(-85, -60), vendor=self.rng.choice(VENDORS),
                 client_count=self.rng.randint(0, 3), psk="newneighbour",
@@ -212,7 +222,8 @@ class DemoRadio:
             reconnected = len(ap.clients) if ap.clients else 0
             if reconnected == 0 and self.rng.random() < 0.5:
                 reconnected = 1                  # client walks back into range
-                ap.clients.append(ClientRecord(mac=mac_random(), bssid=ap.bssid, signal=ap.signal))
+                ap.clients.append(ClientRecord(mac=_demo_mac(self.rng, True),
+                                               bssid=ap.bssid, signal=ap.signal))
         event = {"bssid": bssid, "sent": sent, "reconnected": reconnected, "ts": time.time()}
         self.deauth_events.append(event)
         return event
@@ -281,7 +292,7 @@ class DemoRadio:
     def add_ap(self, essid: str, channel: int = 6, encryption: str = "WPA2",
                signal: int = -50, wps: bool = False, psk: str = "password123") -> DemoAP:
         ap = DemoAP(
-            bssid=mac_random(), essid=essid, channel=channel, encryption=encryption,
+            bssid=_demo_mac(self.rng), essid=essid, channel=channel, encryption=encryption,
             privacy={"WPA2": "WPA2", "WPA3": "WPA3", "WEP": "WEP", "OPEN": "OPN"}.get(encryption, "WPA2"),
             cipher="CCMP", auth="PSK", signal=signal, vendor="unknown",
             wps=wps, wps_locked="unlocked" if wps else "", client_count=2, psk=psk,

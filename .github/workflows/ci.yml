@@ -68,6 +68,17 @@ jobs:
           print("api ok:", len(survey), "APs")
           PY
 
+      - name: Benchmarks run (and their output parses)
+        run: |
+          python benchmarks/bench.py pcap session --json /tmp/bench.json
+          python - <<'PY'
+          import json
+          data = json.load(open("/tmp/bench.json"))
+          names = [row["benchmark"] for row in data["results"]]
+          assert any(name.startswith("pcap") for name in names), names
+          print("benchmarks ok:", len(names), "measurements")
+          PY
+
       - name: Provider smoke test (no network calls)
         run: |
           python -m wifipilot ai providers --json > /dev/null

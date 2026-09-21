@@ -333,7 +333,7 @@ class Advisor:
         self.last_error = ""
         self._key_info = {}
         self._key_info_at = 0.0
-        available = self.check(force=True, announce=announce)
+        self.check(force=True, announce=announce)
         return self
 
     def _make_client(self) -> LLMClient:

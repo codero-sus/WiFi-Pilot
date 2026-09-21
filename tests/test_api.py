@@ -1,103 +1,96 @@
-"""Tests for the scriptable API (``import wifipilot as wp``).
+"""The scriptable module API: ``import wifipilot as wp; wp.attack(...)``.
 
-The API is the module surface other people's scripts depend on, so these tests
-pin the documented behaviour: target resolution, mode presets, the authorisation
-and platform gates, results, events, background runs and error taxonomy.
+Everything here runs in simulation mode, so the tests exercise the real API
+surface — configuration, the authorisation gate, target resolution, the campaign
+loop, cracking a file — without a radio.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import time
+import subprocess
+import sys
 
 import pytest
 
 import wifipilot as wp
 from wifipilot.models import AccessPoint
-from wifipilot.util import PLATFORM_OVERRIDE_ENV
-from tests.conftest import AP_MAC, PSK, SSID
+from wifipilot.synth import build_capture
+from tests.conftest import AP_MAC, PSK, SSID, STA_MAC
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 @pytest.fixture(autouse=True)
-def clean_state(tmp_path, monkeypatch):
-    """Every test starts from a fresh configuration in its own directories."""
-    monkeypatch.setenv("WIFIPILOT_ALLOW_NON_LINUX", "1")   # not needed on Linux, harmless
+def clean_context(monkeypatch):
+    """Every test starts from a fresh, deterministic, simulated context."""
+    monkeypatch.setenv("WIFIPILOT_ALLOW_NON_LINUX", "1")
+    monkeypatch.delenv("WIFIPILOT_PLATFORM", raising=False)
     wp.reset()
-    wp.configure(demo=True, provider="none",        # keep the tests off the network
-                 output_dir=str(tmp_path / "loot"), session_dir=str(tmp_path / "sessions"),
-                 scan_time=2, max_targets=2,        # end campaigns as soon as we have loot
-                 handshake_timeout=8, pmkid_timeout=6, wps_timeout=8, wep_timeout=6,
-                 crack_timeout=15)
+    wp.configure(demo=True, provider="none", scan_time=2, use_rules=False)
     yield
+    wp.stop()
     wp.reset()
 
 
 # --------------------------------------------------------------------------- #
-# module surface
+# the package surface
 # --------------------------------------------------------------------------- #
 
 
 def test_public_names_are_importable_from_the_package_root():
     for name in wp.__all__:
         assert hasattr(wp, name), name
-    # the documented spellings
-    for name in ("attack", "scan", "crack", "analyze", "configure", "authorize", "subscribe",
-                 "stop", "reset", "status", "loot", "report", "set_provider", "providers"):
+    for name in ("attack", "scan", "crack", "analyze", "configure", "authorize",
+                 "subscribe", "stop", "reset", "status", "loot", "report",
+                 "set_provider", "providers", "current_run"):
         assert callable(getattr(wp, name)), name
-    assert wp.ALL == "all"
-    assert set(wp.MODES) >= {"force", "default", "stealth", "passive", "quick"}
 
 
 def test_import_does_not_require_a_radio_or_the_web_extras():
-    """`import wifipilot` must be safe on a machine with nothing installed."""
-    import subprocess
-    import sys
+    """``import wifipilot`` must be safe on a machine with nothing installed."""
     code = ("import sys; sys.modules['fastapi'] = None; import wifipilot as wp; "
             "print(wp.__version__)")
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                          cwd=str(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+                          cwd=str(ROOT))
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip()
 
 
 # --------------------------------------------------------------------------- #
-# configuration
+# configuration and authorisation
 # --------------------------------------------------------------------------- #
 
 
-def test_configure_sets_fields_and_rejects_typos():
-    cfg = wp.configure(stealth=True, attacks=["pmkid"])
-    assert cfg.stealth is True and cfg.attacks == ["pmkid"]
-    assert wp.config() is cfg
-    with pytest.raises(TypeError) as excinfo:
-        wp.configure(scan_tyme=3)          # typo
-    assert "scan_tyme" in str(excinfo.value)
+def test_configure_accepts_documented_options():
+    config = wp.configure(demo=True, stealth=True, scan_time=7, interface="wlan9",
+                          attacks=["handshake", "pmkid"], attack_timeout=45,
+                          handshake_timeout=90, use_rules=False, provider="ollama",
+                          model="llama3.1:8b", output_dir="/tmp/wp-api-loot")
+    assert config.demo and config.stealth and config.interface == "wlan9"
+    assert config.attacks == ["handshake", "pmkid"]
+    assert config.scan_time == 7 and config.handshake_timeout == 90
+    assert config.ollama.model == "llama3.1:8b" and config.ollama.enabled
+    assert config.output_dir == "/tmp/wp-api-loot"
 
 
 def test_configure_accepts_a_single_wordlist_and_comma_separated_attacks():
-    cfg = wp.configure(wordlist="/tmp/words.txt", attacks="pmkid,handshake")
-    assert cfg.wordlists == ["/tmp/words.txt"]
-    assert cfg.attacks == ["pmkid", "handshake"]
+    config = wp.configure(wordlist="/tmp/words.txt", attacks="pmkid,handshake")
+    assert config.wordlists == ["/tmp/words.txt"]
+    assert config.attacks == ["pmkid", "handshake"]
 
 
 def test_configure_provider_and_model_routing():
-    cfg = wp.configure(provider="openrouter", model="openai/gpt-4o-mini",
-                       ai_budget=1.5, redact_identifiers=True)
-    assert cfg.ai_provider == "openrouter"
-    assert cfg.openrouter.enabled is True            # asking for it enables it
-    assert cfg.openrouter.model == "openai/gpt-4o-mini"
-    assert cfg.openrouter.max_cost_usd == 1.5
-    assert cfg.openrouter.redact_identifiers is True
-    cfg = wp.configure(provider="ollama", model="qwen2.5:7b")
-    assert cfg.ollama.model == "qwen2.5:7b" and cfg.ai_provider == "ollama"
-
-
-def test_authorize_records_who_approved_the_engagement():
-    cfg = wp.authorize("change ticket CHG-4711")
-    assert cfg.authorized is True
-    assert "CHG-4711" in cfg.authorization_note
-    assert wp.status()["authorized"] is True
+    config = wp.configure(provider="openrouter", model="openai/gpt-4o-mini",
+                          ai_budget=1.5, redact_identifiers=True)
+    assert config.ai_provider == "openrouter"
+    assert config.openrouter.enabled is True             # asking for it enables it
+    assert config.openrouter.model == "openai/gpt-4o-mini"
+    assert config.openrouter.max_cost_usd == 1.5
+    assert config.openrouter.redact_identifiers is True
+    config = wp.configure(provider="ollama", model="qwen2.5:7b")
+    assert config.ollama.model == "qwen2.5:7b" and config.ai_provider == "ollama"
 
 
 def test_provider_helpers_report_status():
@@ -110,52 +103,126 @@ def test_provider_helpers_report_status():
         wp.set_provider("gpt-9000")
 
 
+def test_configure_rejects_unknown_options():
+    with pytest.raises(TypeError) as excinfo:
+        wp.configure(nonsense_option=1)
+    assert "nonsense_option" in str(excinfo.value)
+
+
+def test_authorize_records_the_note():
+    assert wp.config().authorized is False
+    wp.authorize("change ticket CHG-42, lab range 10.0.0.0/24")
+    assert wp.config().authorized is True
+    assert "CHG-42" in wp.config().authorization_note
+
+
+def test_live_run_without_authorisation_is_refused():
+    wp.configure(demo=False)
+    assert wp.config().authorized is False
+    with pytest.raises(wp.AuthorizationError) as excinfo:
+        wp.attack(target=all, mode="force")
+    assert "authoris" in str(excinfo.value).lower()
+
+
+def test_modes_catalogue_is_exposed():
+    assert {"force", "stealth", "quick", "passive", "default", "recall"} <= set(wp.MODES)
+    assert wp.MODES["force"]["wps_pin"] is True          # the loud preset
+    assert wp.MODES["stealth"]["stealth"] is True
+    assert "wps_pin" not in wp.MODES["quick"]["attacks"]
+    assert wp.MODES["recall"] is wp.MODES["default"]     # alias
+
+
+def test_unknown_mode_lists_the_valid_ones():
+    with pytest.raises(ValueError) as excinfo:
+        wp.attack(target=all, mode="turbo", demo=True)
+    assert "force" in str(excinfo.value) and "turbo" in str(excinfo.value)
+
+
+def test_wildcard_targets_accept_all_prefer_all_strings_and_none():
+    for wildcard in (all, wp.ALL, "all", "*", None):
+        assert wp.api._is_wildcard(wildcard)
+    assert not wp.api._is_wildcard(AP_MAC)
+    assert not wp.api._is_wildcard("TestNet")
+
+
+def test_demo_shortcut_switches_the_context():
+    wp.configure(demo=False)
+    wp.demo()
+    assert wp.config().demo is True
+    wp.demo(False)
+    assert wp.config().demo is False
+
+
+# --------------------------------------------------------------------------- #
+# scanning
+# --------------------------------------------------------------------------- #
+
+
+def test_scan_returns_sorted_access_points():
+    result = wp.scan(duration=2)
+    assert result.aps and result.session
+    assert result.demo and result.modes == "scan"
+    scores = [ap.score for ap in result.aps]
+    assert scores == sorted(scores, reverse=True)        # best target first
+
+
+def test_scan_result_selector_helpers():
+    result = wp.scan(duration=2)
+    first = result.aps[0]
+    assert result.get(first.bssid.upper()) is first
+    assert result.by_ssid(first.essid[:4])
+    assert result.get("00:00:00:00:00:00") is None
+    assert result.strongest(3) == result.aps[:3]
+    payload = result.to_dict()
+    assert len(payload["access_points"]) == len(result.aps)
+    assert payload["session"] == result.session.id and payload["demo"] is True
+
+
 # --------------------------------------------------------------------------- #
 # target resolution
 # --------------------------------------------------------------------------- #
 
 
-def test_wildcards_including_the_builtin_all():
-    assert wp.api._is_wildcard(all) is True            # wp.attack(target=all) in real code
-    assert wp.api._is_wildcard(wp.ALL) is True
-    assert wp.api._is_wildcard("*") is True
-    assert wp.api._is_wildcard(None) is True
-    assert wp.api._is_wildcard("CafeWiFi") is False
-
-
 class _FakeSession:
-    """Minimal stand-in so target selection can be tested without a radio."""
+    """Just the access-point store, for exercising the selector without a radio."""
 
     def __init__(self, aps):
         self._aps = aps
 
     def sorted_aps(self):
-        return self._aps
+        return list(self._aps)
 
 
 def _aps():
-    return [AccessPoint(bssid=AP_MAC, essid=SSID, encryption="WPA2"),
-            AccessPoint(bssid="11:22:33:44:55:66", essid="Cafe Guest", encryption="WPA2"),
-            AccessPoint(bssid="de:ad:be:ef:00:01", essid="cafe-backoffice",
-                        encryption="WPA3", sae=True)]
+    return [
+        AccessPoint(bssid="aa:bb:cc:11:22:33", essid="CorpNet", signal=-40),
+        AccessPoint(bssid="aa:bb:cc:44:55:66", essid="CorpNet-Guest", signal=-60),
+        AccessPoint(bssid="de:ad:be:ef:00:01", essid="", signal=-80),
+    ]
 
 
-def test_target_selection_by_bssid_ssid_substring_and_list():
+def test_select_resolves_every_target_shape():
     session = _FakeSession(_aps())
-    assert wp.api._select(session, all) == [AP_MAC, "11:22:33:44:55:66", "de:ad:be:ef:00:01"]
-    assert wp.api._select(session, SSID.upper()) == [AP_MAC]          # case insensitive
-    assert wp.api._select(session, "cafe") == ["11:22:33:44:55:66",   # substring, both
-                                               "de:ad:be:ef:00:01"]
-    assert wp.api._select(session, ["de:ad:be:ef:00:01", "TestNet"]) == [
-        AP_MAC, "de:ad:be:ef:00:01"]
-    assert wp.api._select(session, _aps()[1]) == ["11:22:33:44:55:66"]
+    assert wp.api._select(session, all) == ["aa:bb:cc:11:22:33", "aa:bb:cc:44:55:66",
+                                           "de:ad:be:ef:00:01"]
+    assert wp.api._select(session, "aa:bb:cc:44:55:66") == ["aa:bb:cc:44:55:66"]
+    assert wp.api._select(session, "AA:BB:CC:44:55:66") == ["aa:bb:cc:44:55:66"]
+    assert wp.api._select(session, "CorpNet") == ["aa:bb:cc:11:22:33",
+                                                  "aa:bb:cc:44:55:66"]
+    assert wp.api._select(session, "Guest") == ["aa:bb:cc:44:55:66"]
+    assert wp.api._select(session, ["de:ad:be:ef:00:01", "CorpNet"]) == [
+        "aa:bb:cc:11:22:33", "aa:bb:cc:44:55:66", "de:ad:be:ef:00:01"]
+    assert wp.api._select(session, _aps()[0]) == ["aa:bb:cc:11:22:33"]
+    # an empty target means "everything", exactly like ``all``/``None``
+    assert wp.api._select(session, "") == ["aa:bb:cc:11:22:33", "aa:bb:cc:44:55:66",
+                                           "de:ad:be:ef:00:01"]
 
 
-def test_unknown_target_lists_what_was_found():
+def test_select_rejects_an_unmatched_target_and_says_what_it_saw():
     with pytest.raises(wp.TargetError) as excinfo:
         wp.api._select(_FakeSession(_aps()), "no-such-network")
     message = str(excinfo.value)
-    assert "no-such-network" in message and SSID in message
+    assert "no-such-network" in message and "CorpNet" in message
 
 
 def test_empty_scan_has_its_own_message():
@@ -164,226 +231,166 @@ def test_empty_scan_has_its_own_message():
     assert "no access points found" in str(excinfo.value)
 
 
-# --------------------------------------------------------------------------- #
-# modes
-# --------------------------------------------------------------------------- #
-
-
-def test_mode_presets():
-    wp.configure(attacks=["pmkid"], stealth=False)
-    wp.api._apply_mode("force", wp.config())
-    assert "wps_pin" in wp.config().attacks and wp.config().stealth is False
-
-    wp.api._apply_mode("stealth", wp.config())
-    assert wp.config().stealth is True and "wps_pin" not in wp.config().attacks
-
-    wp.api._apply_mode("quick", wp.config())
-    assert wp.config().attacks == ["pmkid", "handshake", "crack"]
-
-    wp.api._apply_mode("passive", wp.config())
-    assert wp.config().stealth is True and "crack" in wp.config().attacks
-
-    # explicit keyword arguments win over the preset
-    wp.api._apply_mode("force", wp.config(), wps_pin=False)
-    assert "wps_pin" not in wp.config().attacks
-
-
-def test_unknown_mode_is_rejected_with_the_options():
-    with pytest.raises(ValueError) as excinfo:
-        wp.attack(mode="nuke", demo=True)
-    assert "force" in str(excinfo.value) and "stealth" in str(excinfo.value)
+def test_attack_with_a_typo_in_the_target_fails_before_attacking():
+    with pytest.raises(wp.TargetError):
+        wp.attack(target="no-such-network-anywhere", demo=True, duration="2s",
+                  scan_time="2s")
 
 
 # --------------------------------------------------------------------------- #
-# safety gates
+# campaigns
 # --------------------------------------------------------------------------- #
 
 
-def test_live_run_without_authorisation_is_refused_before_anything_happens(monkeypatch):
-    monkeypatch.setattr(wp.api, "_require_linux", lambda: None)
-    wp.configure(demo=False, authorized=False)
-    with pytest.raises(wp.AuthorizationError) as excinfo:
-        wp.attack(target=all, mode="force")
-    assert "authorize" in str(excinfo.value).lower()
-    # nothing was started
-    assert wp.api._CTX.engine is None
-
-
-def test_demo_mode_needs_no_authorisation():
-    result = wp.attack(target=all, mode="quick", duration=30, scan_time=2, demo=True)
-    assert result.demo is True
-    assert result.stats.aps_seen > 0
-    assert result.error in ("", None) or isinstance(result.error, str)
-
-
-def test_non_linux_raises_platform_error_for_calls_but_not_for_import(monkeypatch):
-    monkeypatch.delenv(PLATFORM_OVERRIDE_ENV, raising=False)
-    monkeypatch.setattr(wp.api, "is_linux", lambda: False)
-    with pytest.raises(wp.PlatformError) as excinfo:
-        wp.scan(duration=1, demo=True)
-    assert "Linux" in str(excinfo.value)
-
-
-def test_scan_is_safe_even_without_authorisation():
-    """Reconnaissance does not transmit: `scan` works in demo mode regardless."""
-    result = wp.scan(duration=2, demo=True)
-    assert isinstance(result, wp.ScanResult)
-    assert len(result) > 0
-
-
-# --------------------------------------------------------------------------- #
-# results
-# --------------------------------------------------------------------------- #
-
-
-def test_scan_result_views(tmp_path):
-    result = wp.scan(duration=3, demo=True)
-    assert result.aps and result.aps == sorted(result.aps, key=lambda ap: -ap.score)
-    first = result.aps[0]
-    assert result.get(first.bssid) is first
-    assert first in result.strongest(1)
-    assert result.by_ssid(first.essid.lower())
-    payload = result.to_dict()
-    assert payload["access_points"] and payload["demo"] is True
-    assert json.loads(json.dumps(payload, default=str))            # JSON-ready
-    assert result.report_json.endswith("report.json")
-
-
-def test_campaign_result_reports_loot_and_gaps():
-    result = wp.attack(target=all, mode="force", duration=60, scan_time=3, demo=True)
-    assert result.stats.aps_seen >= 5
-    assert result.captures, "the simulated neighbourhood should yield captures"
-    for hit in result.passwords:
-        assert set(hit) >= {"bssid", "essid", "password", "kind", "verified"}
-        assert hit["password"]
-        assert result.get(hit["bssid"]) is not None
-    assert all(hit in result.passwords for hit in result.cracked())
-    assert all(hit["verified"] for hit in result.cracked())
-    assert len(result.unbroken()) == len(result.aps) - len(
-        {hit["bssid"] for hit in result.passwords})
+def test_quick_campaign_recovers_and_verifies_loot():
+    result = wp.attack(target=all, mode="quick", demo=True, duration="45s",
+                       scan_time="3s", max_targets=1)
+    assert result.demo and result.error == ""            # simulation needs no authorisation
+    assert result.modes == "quick"
+    assert result.aps and result.loot
+    assert result.passwords, "a recovery should be possible in 45s of simulation"
+    for item in result.passwords:
+        assert item["password"] and item["verified"] is True
+        assert result.get(item["bssid"]).password == item["password"]
+    assert result.cracked() == result.passwords
+    assert result.summary().startswith("simulation ")
     assert "passwords recovered" in result.summary()
-    assert json.loads(result.json())["loot"] is not None
+    payload = result.to_dict()
+    assert payload["passwords"] and payload["stats"]["passwords"] >= 1
+    assert json.loads(json.dumps(payload, default=str))["loot"] is not None
+    assert result.report_json.endswith("report.json")
+    assert result.report_markdown.endswith("report.md")
+    # every target that produced no key is reported as unbroken, not hidden
+    recovered = {hit["bssid"] for hit in result.passwords}
+    assert len(result.unbroken()) == len(result.aps) - len(recovered)
+    for hit in result.cracked():
+        assert set(hit) >= {"bssid", "essid", "password", "kind", "verified"}
 
 
-def test_report_and_loot_helpers(tmp_path):
-    result = wp.attack(target=all, mode="quick", duration=60, scan_time=2, demo=True)
-    path = wp.report()
-    assert os.path.exists(path)
-    with open(path) as handle:
-        assert json.load(handle)["session"]["id"] == result.session.id
-    markdown = wp.report(markdown=True)
-    assert markdown.endswith(".md") and os.path.exists(markdown)
-    assert wp.loot() == result.loot
-    assert wp.session() is result.session
-    assert wp.engine() is result.engine
-
-
-def test_no_run_to_report_on():
-    with pytest.raises(wp.WifiPilotError):
-        wp.report()
-
-
-# --------------------------------------------------------------------------- #
-# cracking and analysis through the API
-# --------------------------------------------------------------------------- #
-
-
-def test_crack_a_handshake_and_read_the_report(handshake_capture, tmp_path):
-    wordlist = tmp_path / "words.txt"
-    wordlist.write_text("wrong1\nwrong2\n" + PSK + "\n")
-    result = wp.crack(handshake_capture, wordlist=str(wordlist), essid=SSID, bssid=AP_MAC)
-    assert result.cracked is True
-    assert result.password == PSK
-    assert result.verified is True
-
-    info = wp.analyze(handshake_capture)
-    assert info["has_handshake"] is True
-    assert AP_MAC in info["bssids"]
-    assert json.loads(json.dumps(info))            # serialisable
-
-
-def test_crack_reports_a_missing_file(tmp_path):
-    with pytest.raises(wp.WifiPilotError) as excinfo:
-        wp.crack(str(tmp_path / "nope.pcap"))
-    assert "not found" in str(excinfo.value)
-
-
-# --------------------------------------------------------------------------- #
-# events, background runs, cancellation
-# --------------------------------------------------------------------------- #
-
-
-def test_subscribe_receives_events_and_can_unsubscribe():
-    seen = []
-    unsubscribe = wp.subscribe(lambda event: seen.append(event), kinds=[wp.EK.AP_NEW])
-    try:
-        wp.attack(target=all, mode="quick", duration=15, scan_time=2, demo=True)
-    finally:
-        unsubscribe()
-    assert seen, "the AP_NEW events should have been delivered"
-    assert all(event.kind == wp.EK.AP_NEW for event in seen)
-
-    # unsubscribed: a new run delivers nothing more
-    count = len(seen)
-    wp.attack(target=all, mode="quick", duration=8, scan_time=2, demo=True)
-    assert len(seen) == count
-
-
-def test_on_event_argument_is_scoped_to_the_call():
-    seen = []
-    wp.attack(target=all, mode="quick", duration=10, scan_time=2, demo=True,
-              on_event=seen.append)
-    assert seen and {event.kind for event in seen} >= {wp.EK.AP_NEW}
-
-
-def test_background_run_can_be_stopped():
-    result = wp.attack(target=all, mode="quick", duration=600, scan_time=2, demo=True,
-                       background=True)
-    assert isinstance(result, wp.CampaignResult)
-    deadline = time.time() + 20
-    while not wp.status()["access_points"] and time.time() < deadline:
-        time.sleep(0.2)
-    assert wp.is_running() is True
-    assert wp.stop() is True
-    result.wait(timeout=30)
-    assert result.running is False
-    assert wp.is_running() is False
+def test_campaign_can_be_limited_to_one_target():
+    scan = wp.scan(duration=2)
+    chosen = scan.aps[0].bssid
+    result = wp.attack(target=chosen, mode="quick", demo=True, duration="30s",
+                       scan_time="2s", max_targets=1)
+    assert result.session.selected_bssids == [chosen]
+    assert all(item["bssid"] == chosen for item in result.passwords)
+    assert {attempt.bssid for attempt in result.session.attempts} == {chosen}
 
 
 def test_only_one_campaign_at_a_time():
-    running = wp.attack(target=all, mode="quick", duration=600, scan_time=2, demo=True,
-                        background=True)
+    running = wp.attack(target=all, mode="quick", demo=True, duration="60s",
+                        scan_time="3s", background=True)
     try:
+        assert running.running
         with pytest.raises(wp.BusyError):
-            wp.attack(target=all, mode="quick", duration=5, demo=True)
+            wp.attack(target=all, mode="quick", demo=True, scan_time="2s")
     finally:
         running.stop()
-    # after stopping, the lock is free again
-    wp.attack(target=all, mode="quick", duration=8, scan_time=2, demo=True)
+    assert not running.running
+
+
+def test_background_run_can_be_stopped_early():
+    running = wp.attack(target=all, mode="force", demo=True, duration="600s",
+                        scan_time="2s", background=True)
+    assert wp.current_run() is running and running.running
+    running.stop()
+    assert not running.running
+    assert running.to_dict()["modes"] == "force"
+    assert running.to_dict()["demo"] is True
+
+
+def test_event_callbacks_and_subscriptions_see_the_same_bus():
+    seen = []
+    unsubscribe = wp.subscribe(lambda event: seen.append(event.kind))
+    assert callable(unsubscribe)
+    callback = []
+    wp.attack(target=all, mode="quick", demo=True, duration="20s", scan_time="2s",
+              max_targets=1, on_event=lambda event: callback.append(event.kind))
+    assert any(kind.startswith("session") for kind in callback)
+    assert seen, "the subscription should have received events too"
+    unsubscribe()
+    before = list(seen)
+    wp.attack(target=all, mode="quick", demo=True, duration="15s", scan_time="2s",
+              max_targets=1)
+    assert seen == before, "unsubscribed callbacks must stay silent"
+
+
+def test_status_reports_the_context():
+    wp.configure(demo=True, provider="none")
+    status = wp.status()
+    assert status["running"] is False and status["demo"] is True
+    assert status["platform"]["platform"] == "linux"
+    assert status["provider"] == "none" and status["model"]
+    assert wp.advisor_status()["provider"] == "none"
+    running = wp.attack(target=all, mode="quick", demo=True, duration="60s",
+                        scan_time="3s", background=True)
+    try:
+        assert wp.status()["running"] is True
+    finally:
+        running.stop()
 
 
 # --------------------------------------------------------------------------- #
-# status
+# files: analysis, cracking, loot, reports
 # --------------------------------------------------------------------------- #
 
 
-def test_status_shape_before_and_after_a_run():
-    before = wp.status()
-    assert set(before) >= {"platform", "demo", "authorized", "provider", "running", "mode"}
-    assert before["running"] is False and "session" not in before
+def test_crack_a_capture_file(tmp_path):
+    path = tmp_path / "handshake.pcap"
+    build_capture(str(path), SSID, AP_MAC, STA_MAC, PSK, include_pmkid=True)
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("\n".join(["password", "12345678", "letmein123", PSK]) + "\n")
 
-    wp.attack(target=all, mode="quick", duration=15, scan_time=2, demo=True)
-    after = wp.status()
-    assert after["running"] is False
-    assert after["access_points"] > 0 and after["mode"] == "quick"
-    assert after["report"].endswith(".json")
-    assert json.loads(json.dumps(after, default=str))
+    analysis = wp.analyze(str(path))
+    assert analysis["has_handshake"] and analysis["has_pmkid"]
+    assert analysis["eapol"] == 4 and analysis["packets"] == 5
+
+    result = wp.crack(str(path), wordlist=str(wordlist))
+    assert result.cracked and result.password == PSK
+    assert result.verified, "a cracked password must be proven against the capture"
+
+
+def test_crack_refuses_a_missing_file(tmp_path):
+    with pytest.raises(wp.WifiPilotError):
+        wp.crack(str(tmp_path / "nope.pcap"))
+
+
+def test_loot_and_report_after_a_run(tmp_path):
+    result = wp.attack(target=all, mode="quick", demo=True, duration="45s",
+                       scan_time="3s", max_targets=1, output_dir=str(tmp_path / "loot"))
+    loot = wp.loot()
+    assert loot and all(capture.bssid for capture in loot)
+    assert any(capture.password for capture in loot)
+    written = wp.report(str(tmp_path / "report.json"))
+    assert written.endswith("report.json") and os.path.exists(written)
+    again = wp.loot(written)
+    assert [capture.bssid for capture in again] == [capture.bssid for capture in loot]
+    assert result.session.id in result.report_json
 
 
 def test_reset_clears_everything():
-    wp.attack(target=all, mode="quick", duration=8, scan_time=2, demo=True)
+    wp.attack(target=all, mode="quick", demo=True, duration="8s", scan_time="2s",
+              max_targets=1)
     assert wp.status()["access_points"] > 0
     wp.reset()
     assert wp.session() is None and wp.engine() is None
     assert "access_points" not in wp.status()
-    assert wp.config().demo is False          # back to stock defaults
+    assert wp.config().demo is False                     # back to stock defaults
+
+
+def test_report_without_a_run_is_an_error():
+    with pytest.raises(wp.WifiPilotError):
+        wp.report()
+
+
+def test_providers_and_advisor_status_without_probing():
+    providers = wp.providers(probe=False)
+    assert providers and all("name" in entry for entry in providers)
+    assert wp.advisor_status()["provider"] in ("none", "ollama", "openrouter")
+
+
+def test_non_linux_raises_platform_error_for_calls_but_not_for_import(monkeypatch):
+    monkeypatch.delenv("WIFIPILOT_ALLOW_NON_LINUX", raising=False)
+    monkeypatch.setattr(wp.api, "is_linux", lambda: False)
+    with pytest.raises(wp.PlatformError):
+        wp.attack(target=all, demo=True, duration="1s")

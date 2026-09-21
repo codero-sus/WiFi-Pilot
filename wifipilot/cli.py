@@ -642,7 +642,6 @@ def command_web(args, config: Config, console) -> int:
 
 def command_crack(args, config: Config, console) -> int:
     from .crack import Cracker
-    from .events import EventBus
     from .pcap import analyze_file
     from .session import Session
 
@@ -814,7 +813,6 @@ def command_tools(args, config: Config, console) -> int:
 
 def command_ai(args, config: Config, console) -> int:
     from .advisor import Advisor
-    from .events import EventBus
     from .session import Session
     from .util import read_json
 
@@ -1099,7 +1097,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                           + (" with identifiers pseudonymised"
                              if config.openrouter.redact_identifiers
                              else " [bold]verbatim[/bold]")
-                          + f". Keep it local with --provider ollama.[/yellow]")
+                          + ". Keep it local with --provider ollama.[/yellow]")
         elif provider == "none" and not args.no_ai:
             console.print(f"[dim]{config.provider_note()} ({provider_reason})[/dim]")
 

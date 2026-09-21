@@ -18,9 +18,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import struct
-from dataclasses import dataclass, field
-from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 
 # --------------------------------------------------------------------------- #
 # AES (FIPS-197)
@@ -55,15 +54,91 @@ def _mul(a: int, b: int) -> int:
     return result
 
 
+#: filled in by _build_tables() below (see that function for the layout)
+_TE0: Tuple[int, ...] = ()
+_TE1: Tuple[int, ...] = ()
+_TE2: Tuple[int, ...] = ()
+_TE3: Tuple[int, ...] = ()
+_TD0: Tuple[int, ...] = ()
+_TD1: Tuple[int, ...] = ()
+_TD2: Tuple[int, ...] = ()
+_TD3: Tuple[int, ...] = ()
+
+
+def _build_tables() -> None:
+    """Build the T-tables used by the fast AES round function.
+
+    Classic Rijndael trick: fold SubBytes + ShiftRows + MixColumns into four
+    256-entry lookup tables per direction.  In pure Python this is the difference
+    between ~1.5 ms and ~0.03 ms per block, i.e. the difference between a
+    handshake candidate costing 6 ms and 3 ms to test.
+    """
+    global _TE0, _TE1, _TE2, _TE3, _TD0, _TD1, _TD2, _TD3
+    te0, te1, te2, te3 = [0] * 256, [0] * 256, [0] * 256, [0] * 256
+    td0, td1, td2, td3 = [0] * 256, [0] * 256, [0] * 256, [0] * 256
+    for index in range(256):
+        s_box = _SBOX[index]
+        mul2 = _xtime(s_box)
+        mul3 = mul2 ^ s_box
+        te0[index] = (mul2 << 24) | (s_box << 16) | (s_box << 8) | mul3
+        te1[index] = (mul3 << 24) | (mul2 << 16) | (s_box << 8) | s_box
+        te2[index] = (s_box << 24) | (mul3 << 16) | (mul2 << 8) | s_box
+        te3[index] = (s_box << 24) | (s_box << 16) | (mul3 << 8) | mul2
+
+        inv = _INV_SBOX[index]
+        m9 = _mul(inv, 9)
+        m11 = _mul(inv, 11)
+        m13 = _mul(inv, 13)
+        m14 = _mul(inv, 14)
+        td0[index] = (m14 << 24) | (m9 << 16) | (m13 << 8) | m11
+        td1[index] = (m11 << 24) | (m14 << 16) | (m9 << 8) | m13
+        td2[index] = (m13 << 24) | (m11 << 16) | (m14 << 8) | m9
+        td3[index] = (m9 << 24) | (m13 << 16) | (m11 << 8) | m14
+    _TE0, _TE1, _TE2, _TE3 = tuple(te0), tuple(te1), tuple(te2), tuple(te3)
+    _TD0, _TD1, _TD2, _TD3 = tuple(td0), tuple(td1), tuple(td2), tuple(td3)
+
+
+
+_build_tables()
+
+
 class AES:
-    """AES-128/192/256 block cipher (encrypt + decrypt)."""
+    """AES-128/192/256 block cipher (encrypt + decrypt).
+
+    The public API is deliberately tiny (``encrypt_block``/``decrypt_block``) and
+    the result is bit-identical to FIPS-197; ``encrypt_block_reference`` keeps the
+    straightforward implementation around so the fast path can be cross-checked.
+    """
 
     def __init__(self, key: bytes):
         if len(key) not in (16, 24, 32):
             raise ValueError("AES key must be 16, 24 or 32 bytes")
         self.rounds = {16: 10, 24: 12, 32: 14}[len(key)]
+        self._decrypt_words = None
         self.round_keys = self._expand(key)
+        # 32-bit words: one per column, four columns per round
+        self.words = [tuple(int.from_bytes(row[4 * column:4 * column + 4], "big")
+                            for column in range(4))
+                      for row in self.round_keys]
+        # the decryption schedule (equivalent inverse cipher) costs 16 field
+        # multiplications per round key, so build it on first use: MIC checks
+        # only ever encrypt
+        self._decrypt_words: Optional[List[Tuple[int, int, int, int]]] = None
 
+    @property
+    def decrypt_words(self) -> List[Tuple[int, int, int, int]]:
+        if self._decrypt_words is None:
+            # reversed schedule, InvMixColumns on the intermediate round keys
+            # only (the first and last stay as they are)
+            self._decrypt_words = (
+                [self.words[self.rounds]]
+                + [self._inverse_words(self.words[self.rounds - rnd])
+                   for rnd in range(1, self.rounds)]
+                + [self.words[0]]
+            )
+        return self._decrypt_words
+
+    # -- key schedule ------------------------------------------------------- #
     def _expand(self, key: bytes) -> List[List[int]]:
         nk = len(key) // 4
         words = [list(key[4 * i: 4 * i + 4]) for i in range(nk)]
@@ -79,6 +154,105 @@ class AES:
             words.append([words[i - nk][j] ^ temp[j] for j in range(4)])
         return [sum(words[4 * r: 4 * r + 4], []) for r in range(self.rounds + 1)]
 
+    @staticmethod
+    def _inverse_words(columns: Tuple[int, int, int, int]) -> Tuple[int, int, int, int]:
+        """A round key with InvMixColumns applied (for the inverse cipher)."""
+        out = []
+        for word in columns:
+            a0, a1, a2, a3 = (word >> 24) & 0xFF, (word >> 16) & 0xFF, (word >> 8) & 0xFF, word & 0xFF
+            out.append(((_mul(a0, 14) ^ _mul(a1, 11) ^ _mul(a2, 13) ^ _mul(a3, 9)) << 24)
+                       | ((_mul(a0, 9) ^ _mul(a1, 14) ^ _mul(a2, 11) ^ _mul(a3, 13)) << 16)
+                       | ((_mul(a0, 13) ^ _mul(a1, 9) ^ _mul(a2, 14) ^ _mul(a3, 11)) << 8)
+                       | (_mul(a0, 11) ^ _mul(a1, 13) ^ _mul(a2, 9) ^ _mul(a3, 14)))
+        return tuple(out)
+
+    # -- block cipher (T-table) --------------------------------------------- #
+    def encrypt_block(self, block: bytes) -> bytes:
+        te0, te1, te2, te3 = _TE0, _TE1, _TE2, _TE3
+        s_box = _SBOX
+        keys = self.words
+        s0 = int.from_bytes(block[0:4], "big") ^ keys[0][0]
+        s1 = int.from_bytes(block[4:8], "big") ^ keys[0][1]
+        s2 = int.from_bytes(block[8:12], "big") ^ keys[0][2]
+        s3 = int.from_bytes(block[12:16], "big") ^ keys[0][3]
+        for rnd in range(1, self.rounds):
+            k = keys[rnd]
+            t0 = te0[s0 >> 24] ^ te1[(s1 >> 16) & 0xFF] ^ te2[(s2 >> 8) & 0xFF] ^ te3[s3 & 0xFF] ^ k[0]
+            t1 = te0[s1 >> 24] ^ te1[(s2 >> 16) & 0xFF] ^ te2[(s3 >> 8) & 0xFF] ^ te3[s0 & 0xFF] ^ k[1]
+            t2 = te0[s2 >> 24] ^ te1[(s3 >> 16) & 0xFF] ^ te2[(s0 >> 8) & 0xFF] ^ te3[s1 & 0xFF] ^ k[2]
+            t3 = te0[s3 >> 24] ^ te1[(s0 >> 16) & 0xFF] ^ te2[(s1 >> 8) & 0xFF] ^ te3[s2 & 0xFF] ^ k[3]
+            s0, s1, s2, s3 = t0, t1, t2, t3
+        k = keys[self.rounds]
+        state = (
+            (s_box[s0 >> 24] << 24) | (s_box[(s1 >> 16) & 0xFF] << 16)
+            | (s_box[(s2 >> 8) & 0xFF] << 8) | s_box[s3 & 0xFF],
+            (s_box[s1 >> 24] << 24) | (s_box[(s2 >> 16) & 0xFF] << 16)
+            | (s_box[(s3 >> 8) & 0xFF] << 8) | s_box[s0 & 0xFF],
+            (s_box[s2 >> 24] << 24) | (s_box[(s3 >> 16) & 0xFF] << 16)
+            | (s_box[(s0 >> 8) & 0xFF] << 8) | s_box[s1 & 0xFF],
+            (s_box[s3 >> 24] << 24) | (s_box[(s0 >> 16) & 0xFF] << 16)
+            | (s_box[(s1 >> 8) & 0xFF] << 8) | s_box[s2 & 0xFF],
+        )
+        return b"".join(((word ^ k[index]).to_bytes(4, "big")
+                         for index, word in enumerate(state)))
+
+    def decrypt_block(self, block: bytes) -> bytes:
+        td0, td1, td2, td3 = _TD0, _TD1, _TD2, _TD3
+        inverse = _INV_SBOX
+        keys = self.decrypt_words
+        s0 = int.from_bytes(block[0:4], "big") ^ keys[0][0]
+        s1 = int.from_bytes(block[4:8], "big") ^ keys[0][1]
+        s2 = int.from_bytes(block[8:12], "big") ^ keys[0][2]
+        s3 = int.from_bytes(block[12:16], "big") ^ keys[0][3]
+        for rnd in range(1, self.rounds):
+            k = keys[rnd]
+            t0 = td0[s0 >> 24] ^ td1[(s3 >> 16) & 0xFF] ^ td2[(s2 >> 8) & 0xFF] ^ td3[s1 & 0xFF] ^ k[0]
+            t1 = td0[s1 >> 24] ^ td1[(s0 >> 16) & 0xFF] ^ td2[(s3 >> 8) & 0xFF] ^ td3[s2 & 0xFF] ^ k[1]
+            t2 = td0[s2 >> 24] ^ td1[(s1 >> 16) & 0xFF] ^ td2[(s0 >> 8) & 0xFF] ^ td3[s3 & 0xFF] ^ k[2]
+            t3 = td0[s3 >> 24] ^ td1[(s2 >> 16) & 0xFF] ^ td2[(s1 >> 8) & 0xFF] ^ td3[s0 & 0xFF] ^ k[3]
+            s0, s1, s2, s3 = t0, t1, t2, t3
+        k = keys[self.rounds]
+        state = (
+            (inverse[s0 >> 24] << 24) | (inverse[(s3 >> 16) & 0xFF] << 16)
+            | (inverse[(s2 >> 8) & 0xFF] << 8) | inverse[s1 & 0xFF],
+            (inverse[s1 >> 24] << 24) | (inverse[(s0 >> 16) & 0xFF] << 16)
+            | (inverse[(s3 >> 8) & 0xFF] << 8) | inverse[s2 & 0xFF],
+            (inverse[s2 >> 24] << 24) | (inverse[(s1 >> 16) & 0xFF] << 16)
+            | (inverse[(s0 >> 8) & 0xFF] << 8) | inverse[s3 & 0xFF],
+            (inverse[s3 >> 24] << 24) | (inverse[(s2 >> 16) & 0xFF] << 16)
+            | (inverse[(s1 >> 8) & 0xFF] << 8) | inverse[s0 & 0xFF],
+        )
+        return b"".join(((word ^ k[index]).to_bytes(4, "big")
+                         for index, word in enumerate(state)))
+
+    # -- readable reference (verified against FIPS-197 in the tests) -------- #
+    def encrypt_block_reference(self, block: bytes) -> bytes:
+        state = list(block)
+        self._add_round_key(state, 0)
+        for round_index in range(1, self.rounds):
+            state = [_SBOX[b] for b in state]
+            self._shift_rows(state)
+            self._mix_columns(state)
+            self._add_round_key(state, round_index)
+        state = [_SBOX[b] for b in state]
+        self._shift_rows(state)
+        self._add_round_key(state, self.rounds)
+        return bytes(state)
+
+    def decrypt_block_reference(self, block: bytes) -> bytes:
+        state = list(block)
+        self._add_round_key(state, self.rounds)
+        for round_index in range(self.rounds - 1, 0, -1):
+            self._inv_shift_rows(state)
+            state = [_INV_SBOX[b] for b in state]
+            self._add_round_key(state, round_index)
+            self._inv_mix_columns(state)
+        self._inv_shift_rows(state)
+        state = [_INV_SBOX[b] for b in state]
+        self._add_round_key(state, 0)
+        return bytes(state)
+
+    # -- reference helpers -------------------------------------------------- #
     def _add_round_key(self, state: List[int], round_index: int) -> None:
         key = self.round_keys[round_index]
         for i in range(16):
@@ -118,32 +292,6 @@ class AES:
             state[4 * col + 2] = _mul(a[0], 13) ^ _mul(a[1], 9) ^ _mul(a[2], 14) ^ _mul(a[3], 11)
             state[4 * col + 3] = _mul(a[0], 11) ^ _mul(a[1], 13) ^ _mul(a[2], 9) ^ _mul(a[3], 14)
 
-    def encrypt_block(self, block: bytes) -> bytes:
-        state = list(block)
-        self._add_round_key(state, 0)
-        for round_index in range(1, self.rounds):
-            state = [_SBOX[b] for b in state]
-            self._shift_rows(state)
-            self._mix_columns(state)
-            self._add_round_key(state, round_index)
-        state = [_SBOX[b] for b in state]
-        self._shift_rows(state)
-        self._add_round_key(state, self.rounds)
-        return bytes(state)
-
-    def decrypt_block(self, block: bytes) -> bytes:
-        state = list(block)
-        self._add_round_key(state, self.rounds)
-        for round_index in range(self.rounds - 1, 0, -1):
-            self._inv_shift_rows(state)
-            state = [_INV_SBOX[b] for b in state]
-            self._add_round_key(state, round_index)
-            self._inv_mix_columns(state)
-        self._inv_shift_rows(state)
-        state = [_INV_SBOX[b] for b in state]
-        self._add_round_key(state, 0)
-        return bytes(state)
-
 
 # --------------------------------------------------------------------------- #
 # AES-CMAC (RFC 4493)
@@ -161,7 +309,45 @@ def _left_shift(block: bytes) -> bytes:
     return value.to_bytes(16, "big")
 
 
+class _Cmac:
+    """AES-CMAC for one key, reusable across messages.
+
+    The subkeys depend only on the key, so a cracking loop that tests many
+    candidates against the same frame builds this once per candidate instead of
+    once per message.
+    """
+
+    __slots__ = ("engine", "k1", "k2")
+
+    def __init__(self, key: bytes):
+        engine = AES(key)
+        l_value = engine.encrypt_block(bytes(16))
+        self.engine = engine
+        self.k1 = _left_shift(l_value)
+        self.k2 = _left_shift(self.k1)
+
+    def digest(self, message: bytes) -> bytes:
+        k1, k2, engine = self.k1, self.k2, self.engine
+        if message and len(message) % 16 == 0:
+            last = bytes(a ^ b for a, b in zip(message[-16:], k1))
+            data = message[:-16]
+        else:
+            padded = message + b"\x80"
+            padded += bytes(16 - (len(padded) % 16)) if len(padded) % 16 else b""
+            last = bytes(a ^ b for a, b in zip(padded[-16:], k2))
+            data = padded[:-16]
+        state = bytes(16)
+        for offset in range(0, len(data), 16):
+            state = engine.encrypt_block(bytes(a ^ b for a, b in zip(state, data[offset:offset + 16])))
+        return engine.encrypt_block(bytes(a ^ b for a, b in zip(state, last)))
+
+
 def aes_cmac(key: bytes, message: bytes) -> bytes:
+    return _Cmac(key).digest(message)
+
+
+def _aes_cmac_readable(key: bytes, message: bytes) -> bytes:
+    """The same function without the hoisting, kept for tests and reading."""
     engine = AES(key)
     zero = bytes(16)
     l_value = engine.encrypt_block(zero)
@@ -256,43 +442,153 @@ def _eapol_frame_from_bytes(frame: bytes) -> bytes:
     return frame[index + 8:] if index >= 0 else b""   # skip LLC/SNAP + ethertype
 
 
+def _nonce_bytes(value) -> bytes:
+    """Nonces arrive as raw bytes or as the hex strings a capture exposes."""
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value)
+    if isinstance(value, str):
+        try:
+            return bytes.fromhex(value)
+        except ValueError:
+            return b""
+    return b""
+
+
 def _zero_mic(eapol: bytes, mic_offset: int = 81) -> bytes:
     if len(eapol) < mic_offset + 16:
         return eapol
     return eapol[:mic_offset] + bytes(16) + eapol[mic_offset + 16:]
 
 
+class PmkidVerifier:
+    """One PMKID, ready to be tested against any number of candidates.
+
+    Parsing the MAC addresses and validating the hash happens once here instead
+    of once per password: at ~2.3 ms of PBKDF2 per candidate, every avoidable
+    microsecond of bookkeeping is a lost candidate.
+    """
+
+    __slots__ = ("pmkid", "ssid", "ap_mac", "station_mac", "ap", "station")
+
+    def __init__(self, pmkid_hex: str, ssid: str, ap_mac: str, station_mac: str):
+        self.pmkid = (pmkid_hex or "").strip().lower()
+        self.ssid = ssid or ""
+        self.ap_mac = ap_mac or ""
+        self.station_mac = station_mac or ""
+        try:
+            self.ap = bytes(int(part, 16) for part in self.ap_mac.split(":"))
+            self.station = bytes(int(part, 16) for part in self.station_mac.split(":"))
+        except ValueError:
+            self.ap = self.station = b""
+
+    @property
+    def usable(self) -> bool:
+        return bool(self.pmkid and self.ssid and len(self.ap) == 6
+                    and len(self.station) == 6)
+
+    def check(self, password: str) -> bool:
+        """Does ``password`` hash to this PMKID?"""
+        if not self.usable:
+            return False
+        try:
+            key = pmk(password, self.ssid)
+        except (ValueError, UnicodeEncodeError):
+            return False
+        return self.check_pmk(key)
+
+    def check_pmk(self, pmk_bytes: bytes) -> bool:
+        if not self.usable:
+            return False
+        return compute_pmkid(pmk_bytes, self.ap, self.station) == self.pmkid
+
+
+class HandshakeVerifier:
+    """A handshake prepared for MIC verification.
+
+    ``verify_handshake()`` is fine for a single check, but a cracker calls it
+    once per candidate: extracting the EAPOL frame and zeroing the MIC offset
+    are the same every time, so this object does them once.  What is left per
+    candidate is exactly the work WPA defines — PBKDF2, the PTK expansion and
+    the CMAC.
+    """
+
+    __slots__ = ("ssid", "ap", "station", "anonce", "snonce", "key_descriptor",
+                 "targets")
+
+    def __init__(self, frames: Dict[int, bytes], ssid: str, ap_mac: str,
+                 station_mac: str, anonce: bytes, snonce: bytes,
+                 key_descriptor: int = 2):
+        self.ssid = ssid or ""
+        self.anonce = _nonce_bytes(anonce)
+        self.snonce = _nonce_bytes(snonce)
+        self.key_descriptor = key_descriptor
+        try:
+            self.ap = bytes.fromhex((ap_mac or "").replace(":", ""))
+            self.station = bytes.fromhex((station_mac or "").replace(":", ""))
+        except ValueError:
+            self.ap = self.station = b""
+        targets = []
+        for number in (2, 4):
+            frame = frames.get(number)
+            if not frame:
+                continue
+            eapol = _eapol_frame_from_bytes(frame)
+            if len(eapol) < 97:
+                continue
+            targets.append((eapol[81:97], _zero_mic(eapol)))
+        self.targets = tuple(targets)
+
+    @classmethod
+    def from_analysis(cls, handshake, ssid: str,
+                      bssid: str = "") -> "HandshakeVerifier":
+        """Build one from a :class:`wifipilot.pcap.Handshake`."""
+        frames = {number: message.raw for number, message in handshake.messages.items()}
+        return cls(frames, ssid, bssid or handshake.bssid, handshake.station,
+                   handshake.anonce, handshake.snonce)
+
+    @property
+    def usable(self) -> bool:
+        return bool(self.targets and self.ssid and len(self.ap) == 6
+                    and len(self.station) == 6 and len(self.anonce) == 32
+                    and len(self.snonce) == 32)
+
+    def check(self, password: str) -> bool:
+        """Does ``password`` produce the MIC that is on air?"""
+        if not self.usable:
+            return False
+        try:
+            key = pmk(password, self.ssid)
+        except (ValueError, UnicodeEncodeError):
+            return False
+        return self.check_pmk(key)
+
+    def check_pmk(self, pmk_bytes: bytes) -> bool:
+        if not self.usable:
+            return False
+        ptk_bytes = ptk(pmk_bytes, self.ap, self.station, self.anonce, self.snonce)
+        kck = ptk_bytes[:16]
+        if self.key_descriptor == 2:                 # RSN/AES: one CMAC instance
+            engine = _Cmac(kck)
+            for mic, eapol in self.targets:
+                if hmac.compare_digest(mic, engine.digest(eapol)):
+                    return True
+            return False
+        for mic, eapol in self.targets:              # WPA/TKIP: HMAC-MD5
+            if hmac.compare_digest(mic, hmac.new(kck, eapol, hashlib.md5).digest()[:16]):
+                return True
+        return False
+
+
 def verify_pmkid(pmkid_hex: str, ssid: str, ap_mac: str, station_mac: str,
                  password: str) -> bool:
     """Does ``password`` produce this PMKID?"""
-    try:
-        key = pmk(password, ssid)
-    except (ValueError, UnicodeEncodeError):
-        return False
-    ap = bytes(int(x, 16) for x in ap_mac.split(":"))
-    station = bytes(int(x, 16) for x in station_mac.split(":"))
-    return compute_pmkid(key, ap, station) == pmkid_hex.lower()
+    return PmkidVerifier(pmkid_hex, ssid, ap_mac, station_mac).check(password)
 
 
 def verify_handshake(frames: Dict[int, bytes], ssid: str, ap_mac: str,
                      station_mac: str, anonce: bytes, snonce: bytes,
                      password: str, key_descriptor: int = 2) -> bool:
     """Recompute the MIC of message 2/4 and compare it with what is on air."""
-    try:
-        pmk_bytes = pmk(password, ssid)
-    except (ValueError, UnicodeEncodeError):
-        return False
-    ptk_bytes = ptk(pmk_bytes, bytes.fromhex(ap_mac.replace(":", "")),
-                    bytes.fromhex(station_mac.replace(":", "")), anonce, snonce)
-    for number in (2, 4):
-        frame = frames.get(number)
-        if not frame:
-            continue
-        eapol = _eapol_frame_from_bytes(frame)
-        if len(eapol) < 97:
-            continue
-        mic = eapol[81:97]
-        expected = mic_from_ptk(ptk_bytes, _zero_mic(eapol), key_descriptor)
-        if hmac.compare_digest(mic, expected):
-            return True
-    return False
+    verifier = HandshakeVerifier(frames, ssid, ap_mac, station_mac, anonce, snonce,
+                                 key_descriptor)
+    return verifier.check(password)

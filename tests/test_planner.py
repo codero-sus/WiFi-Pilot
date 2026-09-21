@@ -72,7 +72,7 @@ def test_two_failures_retire_an_attack(session):
 
 # ------------------------------------------------------------- validation
 def test_validate_plan_accepts_a_sane_llm_answer(session):
-    ap = _ap(session, encryption="WPA2", signal=-55)
+    _ap(session, encryption="WPA2", signal=-55)
     raw = {
         "reasoning": "client-less AP, PMKID first",
         "actions": [{"attack": "pmkid", "bssid": AP_MAC.upper(), "priority": 1,
@@ -88,7 +88,7 @@ def test_validate_plan_accepts_a_sane_llm_answer(session):
 
 
 def test_validate_plan_rejects_hallucinations(session):
-    ap = _ap(session, encryption="WPA2", signal=-55)
+    _ap(session, encryption="WPA2", signal=-55)
     raw = {
         "reasoning": "let's try everything",
         "actions": [
@@ -123,7 +123,7 @@ def test_validate_plan_enforces_hard_safety_rules(session):
 
 
 def test_validate_plan_respects_disabled_attacks_and_stealth(session):
-    ap = _ap(session, encryption="WPA2", signal=-50, wps=True, wps_locked="unlocked")
+    _ap(session, encryption="WPA2", signal=-50, wps=True, wps_locked="unlocked")
     session.config.attacks = ["handshake"]
     raw = {"actions": [{"attack": "wps_pixie", "bssid": AP_MAC}]}
     plan = validate_plan(raw, session, source="llm")

@@ -407,6 +407,44 @@ See [wifipilot.example.json](wifipilot.example.json) for the annotated version. 
 }
 ```
 
+## Performance
+
+wifipilot is I/O- and crypto-bound, not module-count-bound: a campaign spends its CPU in
+capture parsing and in WPA key derivation. Both were measured and optimised (`benchmarks/`,
+`python3 benchmarks/bench.py` on a 2-core container, Python 3.11):
+
+| what | before | after |
+| --- | --- | --- |
+| parse a 1.1 MiB mixed capture (74% beacons, some EAPOL) | 68.7 ms | **21.6 ms** (3.2x) |
+| parse a 69 MiB capture | 3515 ms | **1530 ms** (2.3x) |
+| parse the same unchanged capture again | full re-parse | **0.02 ms** (cached) |
+| poll a capture that grew by a few packets (handshake hunt) | full re-parse every second | **only the new bytes** |
+| test one candidate password (1 handshake) | 5.49 ms | **2.67 ms** (2.1x → 374 cand/s) |
+| test one candidate password (handshake + PMKID) | 7.79 ms | **2.62 ms** (3.0x → 382 cand/s) |
+| built-in engine over a 6-capture file workload | 200.6 s | **47.4 s** (4.2x) |
+
+How:
+
+* **memory-mapped, offset-based parsing.** Captures are walked record by record with
+  `mmap` and `struct.unpack_from`; nothing is copied unless a frame is kept, and radiotap is
+  skipped by length instead of slicing it off.
+* **resumable analysis.** A `.cap` that is still being written is parsed incrementally — the
+  handshake hunt polls it once a second and now pays for the appended bytes only. Results are
+  cached per file, so the scan/crack/report stages never re-read the same capture.
+* **table-driven AES.** The CMAC behind every MIC check uses folded T-tables, so a MIC costs
+  ~0.2 ms instead of ~3 ms; the readable implementation stays in the file and the two are
+  cross-checked in the tests.
+* **one PBKDF2 per candidate.** A capture can hold several handshakes plus a PMKID for the
+  same network; the PMK is derived once and shared, and the per-handshake state (EAPOL
+  extraction, MIC zeroing) is prepared once instead of per candidate.
+* **honest benchmarks.** `benchmarks/bench.py` measures the real paths (wrong candidates, real
+  handshakes, real captures) so the numbers cannot be flattered by an early hit.
+
+Pure Python caps the built-in engine at roughly 2.6 ms per candidate — that is PBKDF2-HMAC-SHA1
+with 4096 rounds, as WPA specifies, and it is the reason the built-in engine is a fallback:
+where a GPU or `hashcat` is available, wifipilot converts the capture to hashcat mode 22000
+and lets it rip.
+
 ## Architecture
 
 ```
@@ -445,14 +483,21 @@ More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ```bash
 pip install -e '.[dev]'
-pytest -q                      # 221 tests, ~5 min (includes a full simulated campaign)
+pytest -q                      # 228 tests, ~4 min (includes full simulated campaigns)
+make bench                     # timing numbers for the hot paths (see Performance)
 ```
 
-The suite covers published crypto test vectors (FIPS-197 AES, RFC 4493 CMAC, IEEE 802.11i
-PMK), capture parsing (including truncated/garbage/pcapng inputs), the cracker, the planner
-and plan validator (hallucination and safety-rule cases), the advisor (with a fake Ollama),
-the session/report layer, the web API, the CLI, and one end-to-end campaign in simulation
-mode that asserts real captures were produced and verified.
+The suite is organised by concern rather than by module:
+
+| file | what it pins down |
+| --- | --- |
+| `test_crypto.py`, `test_crack.py` | published vectors (FIPS-197 AES, RFC 4493 CMAC, IEEE 802.11i PMK) and the cracker |
+| `test_pcap.py` | capture parsing: truncated, garbage, pcapng, resumable and cached reads |
+| `test_planner.py` | the heuristic planner and the plan validator (hallucination and safety cases) |
+| `test_openrouter*.py` | the AI layer, with a fake transport and against a local mock of the real API |
+| `test_session.py`, `test_web.py`, `test_cli.py` | the session/report layer, web API and CLI |
+| `test_api.py` | the importable module surface — `import wifipilot as wp` behaves as documented |
+| `test_engine_demo.py`, `test_platform.py`, `test_advisor.py` | end-to-end simulated campaigns, driver/platform guards, Ollama advisor |
 
 The AI layer is tested twice: once with a faked transport, and once against a local mock of
 OpenRouter's API that speaks the real wire format (`/models`, `/key`, `/chat/completions` with

@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Tuple
 
 from ..deps import registry
 from ..models import STATUS_FAILED, STATUS_SUCCESS, AccessPoint, Attempt, Capture
-from ..util import Process, human_duration, run
+from ..util import Process, human_duration
 from .base import Attack, AttackContext, AttackOutcome
 
 PIN_FOUND_RE = re.compile(r"(?:WPS pin|WPS PIN|PIN)\s*[:=]\s*'?\"?(\d{4,8})", re.I)
