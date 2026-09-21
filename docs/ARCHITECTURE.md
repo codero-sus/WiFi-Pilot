@@ -145,7 +145,20 @@ planner/LLM ──► validate_plan ──► Engine.run_attack ──► Attack
   Everything above it (advisor, planner validation, CLI, web UI, cost accounting) works
   unchanged.
 
-## 8. Linux-only by construction
+## 8. Three front ends, one engine
+
+`cli.py`, `web/app.py` and `api.py` are peers: each one builds a
+:class:`~wifipilot.config.Config`, creates a :class:`~wifipilot.engine.Engine`,
+and consumes the same event bus.  Nothing in the engine knows which front end is
+driving it, which is why the API gets the dashboard's behaviour for free — the
+same planner, the same validation, the same authorisation gate, the same reports.
+
+The API adds only what a library needs and a UI does not: one campaign per process
+(a second call raises `BusyError` instead of fighting over the radio), setup errors
+raised to the caller instead of rendered to a panel, and result objects
+(`Run`/`ScanResult`/`CampaignResult`) that are JSON-serialisable.
+
+## 9. Linux-only by construction
 
 The engine drives nl80211 monitor mode through `iw`/`airmon-ng`, reads `/sys/class/net` to
 confirm interfaces and MAC addresses, unblocks radios with `rfkill`, and parses Linux-specific
@@ -155,7 +168,7 @@ tool output. None of that has a portable equivalent, so the tool does not preten
 hints are Linux package names only, and `tests/test_platform.py` fails if a non-Linux code
 path is reintroduced.
 
-## 9. Failure philosophy
+## 10. Failure philosophy
 
 Wireless tooling fails constantly: adapters lie about injection, clients sleep, WPS locks,
 drivers drop monitor mode. wifipilot therefore treats every failure as data:

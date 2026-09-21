@@ -158,6 +158,7 @@ class Config:
     interface: str = ""
     monitor_interface: str = ""
     authorized: bool = False           # operator attestation; active attacks need it
+    authorization_note: str = ""       # who/what authorised it (ticket, client, date)
     demo: bool = False                 # simulation mode, no radio required
     stealth: bool = False              # passive-first, minimal transmission
     aggressive: bool = True            # deauth clients to force handshakes
