@@ -57,6 +57,7 @@ class EK:
     ADVISOR_CHAT = "advisor.chat"
     ADVISOR_STATUS = "advisor.status"
     ADVISOR_ERROR = "advisor.error"
+    ADVISOR_COST = "advisor.cost"
 
     FINDING = "finding"
     TOOL_STATUS = "tool.status"
@@ -66,7 +67,7 @@ class EK:
     JOURNALED = {
         SESSION_START, SESSION_END, SESSION_INFO, AP_NEW, ATTACK_START, ATTACK_END,
         CAPTURE_NEW, CRACK_START, CRACK_FOUND, CRACK_END, ADVISOR_PLAN,
-        ADVISOR_CHAT, FINDING, WARNING, ERROR, INTERFACE,
+        ADVISOR_CHAT, ADVISOR_COST, FINDING, WARNING, ERROR, INTERFACE,
     }
 
 

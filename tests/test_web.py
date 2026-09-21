@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -147,3 +148,93 @@ def test_websocket_streams_state_and_events(client):
             assert message["kind"] in ("state", "event")
             if message["kind"] == "event" and message["event"]["kind"] == "advisor.plan":
                 break
+
+
+# --------------------------------------------------------------------------- #
+# AI provider endpoints
+# --------------------------------------------------------------------------- #
+
+
+def test_provider_endpoints_and_secret_handling(client):
+    # switching to the cloud provider requires consent
+    refused = client.post("/api/ai/provider", json={"provider": "openrouter", "consent": False})
+    assert refused.status_code == 400
+    assert "consent" in refused.json()["detail"].lower()
+
+    # a syntactically invalid key is rejected before it is stored
+    bad = client.post("/api/ai/key", json={"key": "nope", "save": False})
+    assert bad.status_code == 400
+    assert "sk-or-" in bad.json()["detail"]
+
+    # an unknown provider is rejected
+    assert client.post("/api/ai/provider", json={"provider": "gpt5"}).status_code == 400
+
+    # a valid-looking key is stored and reported, but never echoed back
+    key = "sk-or-v1-0000000000000000000000000000000000000000"    # noqa: S105 - test data
+    stored = client.post("/api/ai/key", json={"key": key, "save": False})
+    assert stored.status_code == 200
+    assert stored.json()["key_configured"] is True
+    assert key not in json.dumps(stored.json())
+
+    state = client.get("/api/state").json()
+    assert state["config"]["openrouter"]["api_key"] == ""
+    assert state["config"]["openrouter"]["has_api_key"] is True
+    assert "config file" in state["config"]["openrouter"]["key_source"]
+    assert key not in json.dumps(state)
+    assert state["advisor"]["key"]["configured"] is True
+    assert key not in json.dumps(state["advisor"])
+
+    config = client.get("/api/config").json()
+    assert config["config"]["openrouter"]["api_key"] == ""
+    assert {row["name"] for row in config["providers"]} == {"ollama", "openrouter"}
+
+
+def test_provider_switch_cycle_keeps_the_ui_working(client):
+    """Regression: openrouter → auto used to 500 the whole dashboard."""
+    client.post("/api/ai/key", json={"key": "sk-or-v1-abcdefghijklmnopqrstuvwxyz",    # noqa: S106
+                                     "save": False})
+    for provider in ("openrouter", "auto", "none", "ollama", "auto"):
+        response = client.post("/api/ai/provider", json={"provider": provider})
+        assert response.status_code == 200, (provider, response.text)
+        assert response.json()["provider"] in ("ollama", "openrouter", "none")
+        state = client.get("/api/state")
+        assert state.status_code == 200
+        assert "advisor" in state.json()
+    # the key survived every switch
+    assert client.get("/api/state").json()["config"]["openrouter"]["has_api_key"] is True
+
+
+def test_redacted_config_post_cannot_wipe_the_key(client):
+    key = "sk-or-v1-abcdefghijklmnopqrstuvwxyz"      # noqa: S105 - test data
+    client.post("/api/ai/key", json={"key": key, "save": False})
+    # the UI round-trips what GET /api/config returned (api_key: "")
+    echoed = {"openrouter": {"api_key": "", "redact_identifiers": False,
+                             "max_cost_usd": 2.5, "model": "openai/gpt-4o-mini"}}
+    response = client.post("/api/config", json=echoed)
+    assert response.status_code == 200
+    state = client.get("/api/state").json()
+    assert state["config"]["openrouter"]["has_api_key"] is True       # not wiped
+    assert state["config"]["openrouter"]["redact_identifiers"] is False
+    assert state["config"]["openrouter"]["max_cost_usd"] == 2.5
+    assert state["advisor"]["policy"]["redact_identifiers"] is False
+
+
+def test_models_endpoint_lists_the_active_provider(client):
+    data = client.get("/api/ai/models").json()
+    assert data["provider"] in ("ollama", "none", "openrouter")
+    assert isinstance(data["models"], list)
+    assert "redact" in data and "configured" in data
+    # an explicit provider can be queried without switching to it
+    openrouter = client.get("/api/ai/models?provider=openrouter&limit=5").json()
+    assert openrouter["provider"] == "openrouter"
+    assert isinstance(openrouter["models"], list)
+    assert "error" in openrouter          # unreachable catalogue is reported, not raised
+
+
+def test_state_and_health_report_the_platform(client):
+    state = client.get("/api/state").json()
+    assert state["platform"]["os"] in ("linux", sys.platform)
+    assert "supported" in state["platform"]
+    health = client.get("/healthz").json()
+    assert health["platform"] in ("linux", sys.platform)
+    assert "provider" in health

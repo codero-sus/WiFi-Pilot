@@ -57,7 +57,8 @@
   "web_port": 8787,
   "web_open_browser": false,
 
-  "_ai": "Local LLM through Ollama. Only loopback hosts are accepted unless allow_remote_host is set to true — that would send engagement data to another machine.",
+  "_ai": "Two providers. ai_provider: auto (prefer local Ollama) | ollama | openrouter | none. Ollama only accepts loopback hosts unless allow_remote_host is set — anything else sends engagement data off the machine. OpenRouter is a cloud service: it stays disabled until you enable it AND provide a key, identifiers are pseudonymised by default and max_cost_usd caps the spend.",
+  "ai_provider": "auto",
   "ollama": {
     "enabled": true,
     "host": "http://127.0.0.1:11434",
@@ -77,5 +78,33 @@
     "allow_remote_host": false,
     "json_mode": true,
     "stream": true
+  },
+  "openrouter": {
+    "enabled": false,
+    "api_key": "",
+    "api_key_env": "OPENROUTER_API_KEY",
+    "key_file": "",
+    "base_url": "https://openrouter.ai/api/v1",
+    "model": "auto",
+    "fallback_models": [
+      "openai/gpt-4o-mini", "google/gemini-2.5-flash", "anthropic/claude-3.5-haiku",
+      "meta-llama/llama-3.3-70b-instruct", "qwen/qwen-2.5-72b-instruct",
+      "deepseek/deepseek-chat", "openrouter/auto"
+    ],
+    "temperature": 0.15,
+    "max_tokens": 900,
+    "timeout": 120.0,
+    "think_interval": 45.0,
+    "min_interval": 12.0,
+    "enable_autothink": true,
+    "enable_chat": true,
+    "json_mode": true,
+    "stream": true,
+    "redact_identifiers": true,
+    "provider_routing": {},
+    "site_url": "",
+    "app_title": "wifipilot",
+    "allow_insecure_base_url": false,
+    "max_cost_usd": 0.0
   }
 }

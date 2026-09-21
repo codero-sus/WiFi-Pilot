@@ -28,8 +28,10 @@ from . import LEGAL_NOTICE, TOOL_NAME, __version__
 from .config import Config, find_wordlists
 from .deps import list_interfaces, registry
 from .events import EK, Event, EventBus
+from .llm import provider_status
 from .models import ATTACK_NAMES, Capture
-from .util import C, banner, human_duration, mac_norm, parse_duration
+from .util import (C, banner, human_duration, mac_norm, parse_duration,
+                   platform_info, require_linux)
 
 # --------------------------------------------------------------------------- #
 # rich helpers (the CLI still works without rich, just plainer)
@@ -87,10 +89,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true", help="machine readable output")
 
     # -- ai ----------------------------------------------------------------
-    ai = parser.add_argument_group("local AI (Ollama)")
+    ai = parser.add_argument_group("AI advisor (local Ollama or OpenRouter)")
     ai.add_argument("--no-ai", action="store_true", help="disable the AI advisor entirely")
-    ai.add_argument("--model", default="", help="Ollama model (default: best installed)")
+    ai.add_argument("--provider", default="",
+                    choices=["", "auto", "ollama", "openrouter", "none"],
+                    help="model provider: auto (prefer local Ollama), ollama, openrouter, none")
+    ai.add_argument("--model", default="", help="model name for the active provider")
     ai.add_argument("--ollama-host", default="", help="Ollama base URL")
+    ai.add_argument("--openrouter-key", default="",
+                    help="OpenRouter API key (prefer the OPENROUTER_API_KEY environment "
+                         "variable: a key on the command line lands in your shell history)")
+    ai.add_argument("--openrouter-base-url", default="",
+                    help="OpenRouter API base URL (default https://openrouter.ai/api/v1)")
+    ai.add_argument("--ai-redact", dest="ai_redact", action="store_true", default=None,
+                    help="pseudonymise SSIDs/BSSIDs/MACs/PSKs before sending them to a "
+                         "cloud provider (default on for OpenRouter)")
+    ai.add_argument("--no-ai-redact", dest="ai_redact", action="store_false",
+                    help="send real identifiers to the cloud provider (not recommended)")
+    ai.add_argument("--ai-budget", default="",
+                    help="stop cloud planning after this much spend, e.g. 0.50 (USD)")
     ai.add_argument("--think-interval", default="", help="seconds between advisor re-plans")
 
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
@@ -127,14 +144,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_tools = sub.add_parser("tools", help="show tool availability and capabilities")
     p_tools.add_argument("--force", action="store_true", help="re-probe instead of using cache")
 
-    p_ai = sub.add_parser("ai", help="local LLM utilities")
+    p_ai = sub.add_parser("ai", help="AI advisor utilities (Ollama, OpenRouter)")
     ai_sub = p_ai.add_subparsers(dest="ai_command", metavar="ACTION")
     p_ai.add_argument("--report", default="",
                       help="load access points from a previous JSON export for context")
-    ai_sub.add_parser("status", help="is Ollama reachable? which model is selected?")
-    ai_sub.add_parser("models", help="list installed Ollama models")
+    p_ai.add_argument("--provider", default="", choices=["", "auto", "ollama", "openrouter", "none"],
+                      help="provider to inspect (overrides the global --provider)")
+    ai_sub.add_parser("status", help="which provider/model is active, and is it reachable?")
+    p_ai_models = ai_sub.add_parser("models", help="list models the active provider offers")
+    p_ai_models.add_argument("--search", default="", help="filter by name")
+    p_ai_models.add_argument("--free", action="store_true", help="only free models")
+    p_ai_models.add_argument("--limit", type=int, default=0, help="show at most N models")
+    p_ai_models.add_argument("--refresh", action="store_true", help="ignore the cache")
+    p_ai_providers = ai_sub.add_parser("providers", help="show every provider and what it needs")
+    p_ai_providers.add_argument("--probe", action="store_true",
+                                help="test reachability (network/daemon calls)")
     p_pull = ai_sub.add_parser("pull", help="download a model through Ollama")
     p_pull.add_argument("model", help="model name, e.g. llama3.1:8b")
+    p_use = ai_sub.add_parser("use", help="select the active provider and/or model")
+    p_use.add_argument("model", nargs="?", default="", help="model name (e.g. openai/gpt-4o-mini)")
+    p_use.add_argument("--provider", default="", choices=["", "auto", "ollama", "openrouter", "none"],
+                       help="switch provider as well")
+    p_use.add_argument("--save", action="store_true", help="persist the choice to wifipilot.json")
     p_ask = ai_sub.add_parser("ask", help="ask the advisor about an engagement")
     p_ask.add_argument("question", nargs="+", help="your question")
     p_ask.add_argument("--model", default="", help="override the model for this question")
@@ -183,14 +214,43 @@ def apply_cli_config(args: argparse.Namespace) -> Config:
     if config.attacks and "wps_pin" in config.attacks and not args.wps_pin:
         # only when the operator asked for it explicitly (or via the config file)
         pass
+    # -- AI provider ------------------------------------------------------- #
+    provider = (getattr(args, "provider", "") or "").strip().lower()
+    if provider:
+        config.ai_provider = provider
+        if provider == "openrouter":
+            # selecting it on the command line *is* the consent decision
+            config.openrouter.enabled = True
+        elif provider == "ollama":
+            config.ollama.enabled = True
     if args.no_ai:
+        config.ai_provider = "none"
         config.ollama.enabled = False
+        config.openrouter.enabled = False
+    if getattr(args, "openrouter_key", ""):
+        config.openrouter.api_key = args.openrouter_key
+        config.openrouter.enabled = True
+    if getattr(args, "openrouter_base_url", ""):
+        config.openrouter.base_url = args.openrouter_base_url
+    if getattr(args, "ai_redact", None) is not None:
+        config.openrouter.redact_identifiers = bool(args.ai_redact)
+    if getattr(args, "ai_budget", ""):
+        try:
+            config.openrouter.max_cost_usd = float(args.ai_budget)
+        except ValueError:
+            raise SystemExit(f"--ai-budget must be a number of USD, got {args.ai_budget!r}")
     if args.model:
-        config.ollama.model = args.model
+        resolved = config.active_provider(probe=False)[0]
+        if resolved == "openrouter":
+            config.openrouter.model = args.model
+        else:
+            config.ollama.model = args.model
     if args.ollama_host:
         config.ollama.host = args.ollama_host
     if args.think_interval:
-        config.ollama.think_interval = parse_duration(args.think_interval, 45.0)
+        interval = parse_duration(args.think_interval, 45.0)
+        config.ollama.think_interval = interval
+        config.openrouter.think_interval = interval
     return config
 
 
@@ -534,13 +594,27 @@ def command_web(args, config: Config, console) -> int:
                       "attacks until you tick the authorisation box.[/yellow]")
     host = args.host or config.web_host
     port = args.port or config.web_port
+    provider, _ = config.active_provider(probe=False)
+    ai_line = f"provider: {provider}"
+    if provider == "openrouter":
+        ai_line += (f" · model {config.openrouter.model}"
+                    + (" · identifiers pseudonymised"
+                       if config.openrouter.redact_identifiers else
+                       " · [red]identifier redaction OFF[/red]"))
+    elif provider == "ollama":
+        ai_line += f" · model {config.ollama.model} · local ({config.ollama.host})"
     console.print(Panel(
         f"[bold]wifipilot web UI[/bold]\n"
         f"http://127.0.0.1:{port}/  (bound to {host})\n"
+        f"platform: Linux ({platform_info()['distro']})\n"
         f"mode: {'simulation' if demo else 'live'}\n"
-        f"AI: {'enabled' if config.ollama.enabled else 'disabled'} "
-        f"(Ollama at {config.ollama.host})",
+        f"{ai_line}",
         border_style="cyan"))
+    if provider == "openrouter":
+        console.print("[yellow]Cloud provider: SSIDs, BSSIDs, MACs and recovered PSKs of this "
+                      "engagement are sent to openrouter.ai"
+                      + (" (pseudonymised)" if config.openrouter.redact_identifiers else "")
+                      + ". Keep it local with --provider ollama.[/yellow]")
     with contextlib.suppress(KeyboardInterrupt):
         run_server(config, host=host, port=port, demo=demo, authorized=config.authorized,
                    open_browser=args.open)
@@ -680,6 +754,7 @@ def command_tools(args, config: Config, console) -> int:
             "capabilities": caps,
             "interfaces": [i.to_dict() for i in interfaces],
             "missing_required": registry.missing_required(),
+            "platform": platform_info(),
         }, indent=2))
         return 0
     if HAVE_RICH:
@@ -695,6 +770,11 @@ def command_tools(args, config: Config, console) -> int:
         for info in infos:
             print(f"{info.name:<16} {'ok' if info.available else 'MISSING':<8} "
                   f"{info.version or ''} {info.purpose}")
+    info = platform_info()
+    console.print(f"\n[bold]platform[/bold]\n  {info['os']} "
+                  f"{info['distro']} · kernel {info['kernel']} · "
+                  f"{'supported' if info['supported'] else '[red]unsupported (Linux only)[/red]'}"
+                  + (f" · {info['package_manager']}" if info["package_manager"] else ""))
     console.print("\n[bold]capabilities[/bold]")
     for key, value in caps.items():
         console.print(f"  {key:<12} {'[green]yes[/green]' if value else '[red]no[/red]'}")
@@ -736,46 +816,146 @@ def command_ai(args, config: Config, console) -> int:
         console.print(f"[dim]loaded context from {args.report} "
                       f"({len(session.aps)} APs)[/dim]")
 
-    advisor = Advisor(session, config.ollama, bus, demo=config.demo)
+    provider_override = (getattr(args, "provider", "") or "").strip().lower()
+    if provider_override:
+        if provider_override == "openrouter":
+            config.openrouter.enabled = True
+        config.ai_provider = provider_override
+    advisor = Advisor(session, None, bus, demo=config.demo)
+    advisor.configure(config.ai_provider)
     action = args.ai_command or "status"
+
     if action == "status":
         available = advisor.check(force=True, announce=False)
         payload = advisor.status()
         if args.json:
             print(json.dumps(payload, indent=2))
             return 0
-        console.print(Panel(
-            f"host: [cyan]{payload['host']}[/cyan]\n"
-            f"reachable: {'[green]yes[/green]' if available else '[red]no[/red]'}\n"
-            f"selected model: [magenta]{payload['model'] or '—'}[/magenta]\n"
-            f"installed models: {', '.join(m['name'] for m in payload['models']) or 'none'}\n"
-            f"auto-think: {'on' if config.ollama.enable_autothink else 'off'} · "
-            f"plan interval: {config.ollama.think_interval}s · temperature: {config.ollama.temperature}\n"
+        model_list = [m["name"] for m in payload["models"]]
+        lines = [
+            f"provider: [magenta]{payload['provider_label']}[/magenta] "
+            f"({'cloud — data leaves this machine' if payload['cloud'] else 'local — data stays here'})",
+            f"host: [cyan]{payload['host']}[/cyan]",
+            f"reachable: {'[green]yes[/green]' if available else '[red]no[/red]'}",
+            f"selected model: [magenta]{payload['model'] or '—'}[/magenta]",
+            f"available models: {', '.join(model_list[:6]) or 'none'}"
+            + (f" (+{len(model_list) - 6} more)" if len(model_list) > 6 else ""),
+            f"auto-think: {'on' if payload['auto_think'] else 'off'} · "
+            f"plan interval: {payload['policy'].get('think_interval', 0)}s · "
+            f"temperature: {payload['policy'].get('temperature', 0)}",
             f"calls: {payload['calls']} · errors: {payload['errors']} · "
-            f"avg latency: {payload['avg_latency']}s\n"
-            f"last error: [red]{payload['last_error'] or '—'}[/red]",
-            title="AI advisor", border_style="magenta"))
+            f"avg latency: {payload['avg_latency']}s",
+            f"tokens: {payload['tokens']} · spend: ${payload['cost_usd']:.4f}"
+            + (f" (budget ${payload['policy'].get('max_cost_usd', 0):.2f})"
+               if payload["policy"].get("max_cost_usd") else ""),
+        ]
+        if payload["cloud"]:
+            key = payload.get("key") or {}
+            lines.insert(3, f"api key: "
+                            f"{'[green]' + key.get('hint', 'set') + '[/green]' if key.get('configured') else '[red]not configured[/red]'}")
+            lines.insert(4, f"identifiers: "
+                            f"{'pseudonymised' if payload['policy'].get('redact_identifiers') else '[red]sent verbatim[/red]'}")
+            if payload.get("allowance"):
+                lines.insert(5, f"allowance: {payload['allowance']}")
+        lines.append(f"last error: [red]{payload['last_error'] or '—'}[/red]")
+        console.print(Panel("\n".join(lines), title="AI advisor", border_style="magenta"))
         if not available:
-            console.print("[yellow]Start Ollama and pull a model:[/yellow]\n"
-                          "  ollama serve\n"
-                          "  ollama pull llama3.1:8b\n"
-                          "  wifipilot ai models")
+            console.print(f"[yellow]{advisor._offline_message()}[/yellow]")
         return 0
-    if action == "models":
-        advisor.client._models_at = 0  # noqa: SLF001
-        models = advisor.client.list_models(force=True)
+
+    if action == "providers":
+        rows = provider_status(config.ollama, config.openrouter, probe=bool(args.probe))
+        active = advisor.provider
         if args.json:
-            print(json.dumps([{"name": m.name, "size_gb": m.size_gb,
-                               "params": m.parameters} for m in models], indent=2))
+            print(json.dumps({"active": active, "providers": rows}, indent=2))
+            return 0
+        if HAVE_RICH:
+            table = Table(title="model providers", box=None)
+            for column in ("", "PROVIDER", "STATE", "CONFIGURED", "MODEL", "REQUIREMENTS"):
+                table.add_column(column)
+            for row in rows:
+                requirements = ("needs a local daemon: ollama serve" if row["name"] == "ollama"
+                                else "needs enabled=true + OPENROUTER_API_KEY")
+                state = ("[green]active[/green]" if row["name"] == active
+                         else "[dim]idle[/dim]")
+                reachable = row.get("reachable")
+                if reachable is True:
+                    state += " [green](online)[/green]"
+                elif reachable is False:
+                    state += " [red](unreachable)[/red]"
+                configured = "yes" if row["configured"] else "[red]no[/red]"
+                if row["name"] == "openrouter":
+                    configured += f" {row.get('key_hint', '')}"
+                table.add_row("→" if row["name"] == active else "", row["label"], state,
+                              configured, str(row["model"]), requirements)
+            console.print(table)
+        else:
+            for row in rows:
+                print(f"{row['name']:<12} enabled={row['enabled']} configured={row['configured']} "
+                      f"model={row['model']}")
+        console.print(f"[dim]active: [magenta]{active}[/magenta] — switch with "
+                      f"`wifipilot ai use <model> --provider <name>` or the --provider flag[/dim]")
+        return 0
+
+    if action == "models":
+        models = advisor.models(force=True, query=getattr(args, "search", ""),
+                                limit=getattr(args, "limit", 0),
+                                free_only=bool(getattr(args, "free", False)))
+        if args.json:
+            print(json.dumps(models, indent=2))
             return 0
         if not models:
-            console.print("[yellow]no models found — is Ollama running?[/yellow]")
+            console.print(f"[yellow]no models found from {advisor.client.label}"
+                          f"{': ' + advisor.client.models_error if getattr(advisor.client, 'models_error', '') else ''}[/yellow]")
             return 1
-        for model in models:
-            console.print(f"  [magenta]{model.name:<28}[/magenta] {model.size_gb} GB "
-                          f"{model.parameters or ''}")
+        if HAVE_RICH:
+            table = Table(title=f"{advisor.provider} models ({len(models)})", box=None)
+            for column in ("MODEL", "CONTEXT", "PRICE", "SIZE"):
+                table.add_column(column)
+            for model in models:
+                table.add_row(model["name"], f"{model['context']:,}" if model["context"] else "-",
+                              model["price"], f"{model['size_gb']} GB" if model["size_gb"] else "-")
+            console.print(table)
+        else:
+            for model in models:
+                print(f"{model['name']:<48} {model['price']}")
+        if advisor.provider == "openrouter":
+            console.print(f"[dim]prices are USD per 1M tokens (in/out), from "
+                          f"{advisor.client.host}/models · set one with "
+                          f"`wifipilot ai use <model>`[/dim]")
         return 0
+
+    if action == "use":
+        target_model = getattr(args, "model", "") or ""
+        target_provider = (getattr(args, "provider", "") or "").strip().lower()
+        if not target_model and not target_provider:
+            console.print("[yellow]nothing to do: give a model name and/or --provider[/yellow]")
+            return 2
+        if target_provider == "openrouter":
+            config.openrouter.enabled = True
+        advisor.configure(target_provider or advisor.provider, announce=False)
+        ok = advisor.use_model(target_model, target_provider)
+        if target_provider:
+            config.ai_provider = target_provider
+        if getattr(args, "save", False):
+            path = config.save()
+            console.print(f"[green]saved to {path}[/green] (mode 600)")
+        if args.json:
+            print(json.dumps(advisor.status(), indent=2))
+            return 0 if ok else 1
+        console.print(f"provider: [magenta]{advisor.provider}[/magenta] · "
+                      f"model: [magenta]{advisor.model or target_model or 'auto'}[/magenta] · "
+                      f"reachable: {'[green]yes[/green]' if advisor.available else '[red]no[/red]'}")
+        if not advisor.available:
+            console.print(f"[yellow]{advisor._offline_message()}[/yellow]")
+        return 0 if ok else 1
+
     if action == "pull":
+        if advisor.provider != "ollama":
+            console.print("[red]only Ollama models can be pulled locally[/red] — "
+                          f"{advisor.provider} models are hosted. List them with "
+                          f"`wifipilot ai models --provider {advisor.provider}`.")
+            return 2
         console.print(f"[cyan]pulling {args.model} through Ollama…[/cyan]")
         last = ""
 
@@ -866,6 +1046,13 @@ def command_demo(args, config: Config, console) -> int:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    # wifipilot drives Linux-only subsystems (nl80211/aircrack-ng/sysfs/rfkill):
+    # refuse to run anywhere else instead of failing halfway through an engagement.
+    try:
+        require_linux()
+    except SystemExit as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     try:
         config = apply_cli_config(args)
     except SystemExit as exc:
@@ -885,6 +1072,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     command = args.command or "attack"
     if command in ("scan", "attack", "demo") and not args.json:
         console.print(banner())
+        provider, provider_reason = config.active_provider(probe=False)
+        if provider == "openrouter":
+            console.print(f"[yellow]AI: OpenRouter (cloud) — model "
+                          f"{config.openrouter.model}; engagement data is sent to "
+                          f"openrouter.ai"
+                          + (" with identifiers pseudonymised"
+                             if config.openrouter.redact_identifiers
+                             else " [bold]verbatim[/bold]")
+                          + f". Keep it local with --provider ollama.[/yellow]")
+        elif provider == "none" and not args.no_ai:
+            console.print(f"[dim]{config.provider_note()} ({provider_reason})[/dim]")
 
     handlers = {
         "scan": command_scan,

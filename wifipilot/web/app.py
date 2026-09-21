@@ -19,7 +19,10 @@ Endpoints
 ``POST /api/crack``            run the cracker against a capture
 ``POST /api/ai/think``         force an advisor planning cycle
 ``POST /api/ai/chat``          ask the local LLM about the engagement
-``POST /api/ai/model``         select the Ollama model
+``POST /api/ai/model``         select the model for the active provider
+``POST /api/ai/provider``      switch provider (ollama | openrouter | auto | none)
+``POST /api/ai/key``           set/clear the OpenRouter API key (never echoed back)
+``GET  /api/ai/models``        model catalogue of the active provider
 ``POST /api/ai/pull``          pull a model through Ollama
 ``GET  /api/report``           markdown engagement report
 ``GET  /api/export``           JSON export of the whole session
@@ -40,8 +43,9 @@ from ..config import Config, find_wordlists
 from ..deps import list_interfaces, registry
 from ..engine import Engine
 from ..events import EK, EventBus
+from ..llm import build_client, provider_status
 from ..models import ATTACK_NAMES
-from ..util import mac_norm, now_iso
+from ..util import mac_norm, now_iso, platform_info, require_linux
 
 try:  # pragma: no cover - import guard
     from fastapi import Body, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -133,6 +137,8 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
     def snapshot() -> Dict[str, Any]:
         engine = engine_or_404()
         data = engine.snapshot()
+        data["platform"] = platform_info()
+        data["config"] = config.to_dict(redact_secrets=True)
         data["tools"] = registry.summary()
         data["wordlists"] = find_wordlists(config)
         data["wordlist"] = find_wordlists(config)[0]["path"] if find_wordlists(config) else ""
@@ -154,9 +160,13 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
     @app.get("/healthz")
     async def healthz() -> Dict[str, Any]:
         engine = state.get_engine()
+        advisor = getattr(engine, "advisor", None)
         return {
             "ok": True, "demo": state.demo, "phase": engine.status.phase if engine else "idle",
             "time": now_iso(), "version": "0.1.0",
+            "platform": platform_info()["os"],
+            "provider": getattr(advisor, "provider", ""),
+            "model": getattr(advisor, "model", ""),
         }
 
     # ------------------------------------------------------------------ #
@@ -185,7 +195,10 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
 
     @app.get("/api/config")
     async def api_config():
-        return {"config": config.to_dict(), "attacks": list(ATTACK_NAMES)}
+        # redact_secrets: the browser must never receive the OpenRouter key
+        return {"config": config.to_dict(redact_secrets=True),
+                "attacks": list(ATTACK_NAMES),
+                "providers": provider_status(config.ollama, config.openrouter)}
 
     @app.get("/api/report", response_class=PlainTextResponse)
     async def api_report():
@@ -225,19 +238,27 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
     async def api_config_update(payload: Dict[str, Any] = Body(...)):
         engine = engine_or_404()
         try:
+            payload = dict(payload)
+            # a redacted GET /api/config returns api_key="" — never let that wipe the key
+            nested = payload.get("openrouter")
+            if isinstance(nested, dict) and not nested.get("api_key"):
+                payload["openrouter"] = {k: v for k, v in nested.items() if k != "api_key"}
             config.update(**payload)
-            engine.advisor.config = config.ollama
-            engine.advisor.client.config = config.ollama
+            if "ai_provider" in payload:
+                engine.advisor.configure(config.ai_provider, announce=False)
+            else:
+                engine.advisor.config = config.llm_config(engine.advisor.provider)
             # keep the live session in step with the new settings
             engine.session.stealth = config.stealth
-            engine.session.auto_think = config.ollama.enable_autothink
+            engine.session.auto_think = config.autothink_enabled()
             if not state.demo:
                 with contextlib.suppress(Exception):
                     engine.session.known_wordlists = find_wordlists(config)
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=f"invalid config: {exc}") from exc
-        engine.bus.publish(EK.SESSION_INFO, {"config": config.to_dict(), "action": "config-updated"})
-        return {"ok": True, "config": config.to_dict()}
+        redacted = config.to_dict(redact_secrets=True)
+        engine.bus.publish(EK.SESSION_INFO, {"config": redacted, "action": "config-updated"})
+        return {"ok": True, "config": redacted}
 
     @app.post("/api/config/save")
     async def api_config_save(payload: Dict[str, Any] = Body(default={})):
@@ -364,16 +385,104 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
         threading.Thread(target=worker, name="advisor-chat", daemon=True).start()
         return {"ok": True, "streaming": True}
 
+    @app.get("/api/ai/models")
+    async def ai_models(provider: str = Query(""), q: str = Query(""), free: bool = False,
+                        limit: int = Query(60), refresh: bool = False):
+        """The model catalogue of the active (or requested) provider."""
+        engine = engine_or_404()
+        advisor = engine.advisor
+        wanted = (provider or "").strip().lower()
+        if wanted in ("ollama", "openrouter") and wanted != advisor.provider:
+            client = build_client(wanted, config.ollama, config.openrouter, engine.bus)
+            models = client.list_models(force=refresh, query=q, limit=max(0, limit),
+                                        free_only=free)
+            provider_config = config.openrouter if wanted == "openrouter" else config.ollama
+            return {"provider": wanted, "models": [m.to_dict() for m in models],
+                    "error": getattr(client, "models_error", ""),
+                    "configured": bool(getattr(provider_config, "enabled", True)),
+                    "redact": bool(getattr(provider_config, "redact_identifiers", False))}
+        return {"provider": advisor.provider,
+                "models": advisor.models(force=refresh, query=q, limit=max(0, limit),
+                                         free_only=free),
+                "error": getattr(advisor.client, "models_error", ""),
+                "configured": bool(getattr(advisor.config, "enabled", True)),
+                "redact": bool(advisor.redact)}
+
     @app.post("/api/ai/model")
     async def api_model(payload: Dict[str, Any] = Body(...)):
         engine = engine_or_404()
-        name = payload.get("model", "")
-        config.ollama.model = name or "auto"
-        engine.advisor.config = config.ollama
-        engine.advisor.client.config = config.ollama
-        engine.advisor.client._models_at = 0  # noqa: SLF001
-        engine.advisor.check(force=True)
-        return {"ok": True, "model": engine.advisor.model, "advisor": engine.advisor.status()}
+        advisor = engine.advisor
+        name = str(payload.get("model", ""))
+        provider = str(payload.get("provider", "") or "").strip().lower()
+        if provider in ("auto", "ollama", "openrouter", "none") and provider != advisor.provider:
+            if provider == "openrouter":
+                config.openrouter.enabled = True   # switching to it is the consent step
+            config.ai_provider = provider
+            advisor.configure(provider, announce=False)
+        advisor.use_model(name)
+        config.ai_provider = advisor.provider
+        engine.session.auto_think = config.autothink_enabled()
+        engine.bus.publish(EK.SESSION_INFO, {"config": config.to_dict(redact_secrets=True),
+                                             "action": "model-changed"})
+        return {"ok": True, "model": advisor.model, "provider": advisor.provider,
+                "advisor": advisor.status()}
+
+    @app.post("/api/ai/provider")
+    async def ai_provider(payload: Dict[str, Any] = Body(...)):
+        """Switch providers.  Moving to the cloud requires an explicit consent flag."""
+        engine = engine_or_404()
+        provider = str(payload.get("provider", "") or "").strip().lower()
+        if provider not in ("auto", "ollama", "openrouter", "none"):
+            raise HTTPException(status_code=400,
+                                detail=f"unknown provider {provider!r} "
+                                       f"(expected auto|ollama|openrouter|none)")
+        if provider == "openrouter" and payload.get("consent", True) is False:
+            raise HTTPException(
+                status_code=400,
+                detail="switching to OpenRouter sends engagement data (SSIDs, BSSIDs, MACs "
+                       "and recovered PSKs unless redaction is on) to a cloud service — "
+                       "confirm consent first",
+            )
+        advisor = engine.advisor
+        config.ai_provider = provider
+        if provider == "openrouter":
+            config.openrouter.enabled = True
+        advisor.configure(provider, announce=True)
+        engine.session.auto_think = config.autothink_enabled()
+        engine.bus.publish(EK.SESSION_INFO, {"config": config.to_dict(redact_secrets=True),
+                                             "action": "provider-changed",
+                                             "provider": advisor.provider})
+        return {"ok": True, "provider": advisor.provider, "advisor": advisor.status()}
+
+    @app.post("/api/ai/key")
+    async def ai_key(payload: Dict[str, Any] = Body(default={})):
+        """Store the OpenRouter key in the config file (mode 600).  Never echoed back."""
+        engine = engine_or_404()
+        key = str(payload.get("key", "") or "").strip()
+        if key:
+            if not key.startswith("sk-or-"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="that does not look like an OpenRouter key (they start with "
+                           "'sk-or-') — create one at https://openrouter.ai/keys",
+                )
+            config.openrouter.api_key = key
+            config.openrouter.enabled = bool(payload.get("enable", True))
+            if payload.get("model"):
+                config.openrouter.model = str(payload["model"])
+            if config.ai_provider in ("", "auto"):
+                config.ai_provider = "openrouter"
+        else:
+            config.openrouter.api_key = ""
+        if payload.get("save", True):
+            config.save()
+        engine.advisor.configure(config.ai_provider, announce=False)
+        engine.session.auto_think = config.autothink_enabled()
+        status = engine.advisor.status()
+        engine.bus.publish(EK.SESSION_INFO, {"config": config.to_dict(redact_secrets=True),
+                                             "action": "openrouter-key"})
+        return {"ok": True, "key_configured": bool(config.openrouter.api_key_value()),
+                "key": status.get("key", {}), "advisor": status}
 
     @app.post("/api/ai/pull")
     async def api_pull(payload: Dict[str, Any] = Body(...)):
@@ -451,6 +560,7 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
 def run_server(config: Optional[Config] = None, host: str = "", port: int = 0,
                demo: bool = False, authorized: bool = False, open_browser: bool = False) -> None:
     """Start uvicorn (blocking).  Used by ``wifipilot web``."""
+    require_linux("wifipilot web")
     try:
         import uvicorn
     except ImportError as exc:  # pragma: no cover

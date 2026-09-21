@@ -19,6 +19,7 @@
   <div class="status-group">
     <span id="mode-badge" class="badge badge-demo">simulation</span>
     <span id="phase-badge" class="badge badge-idle">idle</span>
+      <span id="ai-badge" class="badge badge-idle" title="active AI provider">ai: —</span>
     <span id="conn-badge" class="badge badge-conn">connecting…</span>
     <span class="kpi"><b id="kpi-aps">0</b><small>APs</small></span>
     <span class="kpi"><b id="kpi-clients">0</b><small>clients</small></span>
@@ -90,17 +91,54 @@
   <section id="tab-ai" class="tabpane">
     <div class="grid ai-grid">
       <div class="card">
-        <h3>Local model status</h3>
+        <h3>Model provider</h3>
+        <div class="row">
+          <select id="sel-provider">
+            <option value="auto">auto — prefer local Ollama</option>
+            <option value="ollama">Ollama — local, private</option>
+            <option value="openrouter">OpenRouter — cloud, paid</option>
+            <option value="none">disabled — planner heuristics only</option>
+          </select>
+          <button id="btn-provider" class="btn">switch</button>
+        </div>
         <div id="ai-status" class="kv"></div>
         <div class="row">
           <select id="sel-model"></select>
           <button id="btn-model" class="btn">use model</button>
+          <button id="btn-models-refresh" class="btn" title="reload the catalogue">⟳</button>
         </div>
         <div class="row">
+          <input id="inp-model-search" type="text" placeholder="filter models (e.g. qwen, gpt, free)" />
+          <label class="chk"><input type="checkbox" id="chk-free" /> free only</label>
+        </div>
+        <div class="row" id="row-pull">
           <input id="inp-pull" type="text" placeholder="e.g. llama3.1:8b" />
           <button id="btn-pull" class="btn">⤓ ollama pull</button>
         </div>
-        <p class="dim">Runs entirely on this machine through Ollama (<code>http://127.0.0.1:11434</code>). Nothing is sent to a remote service unless you explicitly allow a remote host.</p>
+        <p class="dim" id="ai-privacy"></p>
+      </div>
+
+      <div class="card" id="card-openrouter">
+        <h3>OpenRouter (cloud)</h3>
+        <div class="row">
+          <input id="inp-or-key" type="password" placeholder="sk-or-… (or export OPENROUTER_API_KEY)" />
+          <button id="btn-or-key" class="btn">save key</button>
+        </div>
+        <div class="banner banner-cloud">
+          <label class="chk"><input type="checkbox" id="chk-or-consent" /> I understand that
+          engagement data (SSIDs, BSSIDs, MACs and recovered PSKs) is sent to openrouter.ai,
+          a third-party cloud service.</label>
+        </div>
+        <div class="kv" id="or-status"></div>
+        <label class="chk"><input type="checkbox" id="chk-or-redact" /> pseudonymise
+        SSIDs/BSSIDs/MACs/PSKs before sending (recommended)</label>
+        <div class="row">
+          <input id="inp-or-budget" type="number" step="0.01" min="0" placeholder="spend cap in USD (0 = none)" />
+          <button id="btn-or-budget" class="btn">set budget</button>
+        </div>
+        <p class="dim">Create a key at <code>openrouter.ai/keys</code>. The key is stored in
+        <code>wifipilot.json</code> (mode 600) and is never sent back to this page. Prefer the
+        <code>OPENROUTER_API_KEY</code> environment variable or a key file in production.</p>
       </div>
       <div class="card">
         <h3>Last plan <span id="plan-source" class="badge badge-idle">—</span></h3>
@@ -153,6 +191,8 @@
       <div class="card">
         <h3>Wireless interfaces</h3>
         <div id="iface-list" class="kv"></div>
+        <h4>Platform</h4>
+        <div id="platform-kv" class="kv"></div>
       </div>
       <div class="card">
         <h3>Engagement settings</h3>

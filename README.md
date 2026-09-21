@@ -1,11 +1,20 @@
 # wifipilot 📡
 
-**An AI-piloted WiFi auditing tool — a modern alternative to `wifite`, in Python, with a local-LLM advisor and a web UI.**
+**An AI-piloted WiFi auditing tool — a modern alternative to `wifite`, in Python, for Linux, with a local- or cloud-LLM advisor and a web UI.**
 
 `wifipilot` automates the boring, error-prone parts of an authorised wireless assessment:
 it finds the targets, decides which attack is worth the time, runs it, cracks what it
-captures, and explains every decision in plain language. The "AI" is a local model served
-by [Ollama](https://ollama.com) — nothing about your engagement leaves the machine.
+captures, and explains every decision in plain language.
+
+**Linux only.** Every attack path drives nl80211 monitor mode, `rfkill`, `/sys/class/net`
+and the aircrack-ng suite; there is no supported macOS or Windows build, and
+`wifipilot` refuses to run on anything but Linux.
+
+**Two model providers.** By default the advisor is a local model served by
+[Ollama](https://ollama.com) and nothing about the engagement leaves the machine. If you
+would rather use a bigger model, [OpenRouter](https://openrouter.ai) is supported — opt-in
+only, with an API key, a spend cap, and engagement identifiers pseudonymised before they
+are sent. See [docs/AI-PROVIDERS.md](docs/AI-PROVIDERS.md).
 
 ```
   ██╗    ██╗██╗███████╗██╗██████╗ ██╗██╗      ██████╗ ████████╗
@@ -86,12 +95,18 @@ aircrack-ng suite properly) and rebuilds everything around it:
   PMKID recomputation. It cracks targeted candidate spaces with no GPU and no external tools,
   and it *proves* every password it reports.
 
-**Intelligence (all optional, all local)**
+**Intelligence (optional, two providers)**
 - **auto-think**: the advisor re-reads a compact situation report every N seconds and picks
   the next actions with reasoning
 - **failure triage**: natural-language diagnosis of why an attack failed and what to do next
 - **chat**: ask about the running engagement ("what is the biggest risk we found?")
-- deterministic fallback planner when Ollama is unavailable — the tool never stalls on the AI
+- **local by default** (Ollama): free, offline, nothing leaves the machine
+- **cloud on request** (OpenRouter): opt-in with an API key, spend cap, provider routing and
+  identifier redaction — SSIDs, BSSIDs, client MACs and recovered PSKs become
+  `ssid-1`/`bssid-1`/`mac-1`/`psk-1` before they are sent, and are mapped back before the
+  plan runs
+- deterministic fallback planner whenever the model is missing, out of credit, rate limited
+  or incoherent — the tool never stalls on the AI
 
 **Reporting**
 - JSON session export, Markdown engagement report, JSONL event journal, loot directory
@@ -99,11 +114,14 @@ aircrack-ng suite properly) and rebuilds everything around it:
 
 ## Install
 
+Requires Linux (Kali, Parrot, Debian, Ubuntu, Arch, Fedora …) and Python 3.9+.
+
 ```bash
 git clone https://github.com/codero-sus/Pentest-toolkit
 cd Pentest-toolkit
 pip install -e .            # core CLI (needs only `rich`)
 pip install -e '.[web]'     # + FastAPI/uvicorn for the web UI
+./scripts/install-tools.sh  # optional: install aircrack-ng, reaver, hcxtools, hashcat…
 ```
 
 External tools (install what you need — `wifipilot tools` tells you exactly what is missing):
@@ -118,13 +136,24 @@ sudo pacman -S aircrack-ng reaver bully pixiewps hcxtools hashcat iw rfkill
 Minimum for a live run: `aircrack-ng` (provides `airmon-ng`, `airodump-ng`, `aireplay-ng`).
 Everything else unlocks extra attacks. **No tools and no radio? Use `--demo`.**
 
-Optional AI advisor:
+Optional AI advisor — local (default):
 
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
 ollama pull llama3.1:8b        # or qwen2.5:7b / mistral:7b — anything 3–14B works
 wifipilot ai status
 ```
+
+Or cloud, if you would rather not run a model locally:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-v1-...      # create a key at openrouter.ai/keys
+wifipilot --provider openrouter --ai-budget 0.50 ai providers --probe
+wifipilot --provider openrouter --model openai/gpt-4o-mini attack -d 45m
+```
+
+OpenRouter is off until you enable it; identifiers are pseudonymised by default; see
+[docs/AI-PROVIDERS.md](docs/AI-PROVIDERS.md) for key handling, costs and the privacy model.
 
 ## Quickstart (no hardware required)
 
@@ -196,16 +225,26 @@ proxy or an SSH tunnel (`ssh -L 8787:localhost:8787 box`).
 > The UI binds `0.0.0.0` by default so containers and tunnels work out of the box. On an
 > untrusted network, bind loopback instead: `wifipilot web --host 127.0.0.1`.
 
-## The AI advisor (Ollama)
+## The AI advisor (Ollama or OpenRouter)
 
-```
-wifipilot ai status                    # is Ollama up? which model is selected?
-wifipilot ai models                    # what is installed?
-wifipilot ai pull qwen2.5:7b           # download a model through Ollama
+Two providers, one advisor. Switching is a flag, a config key, or a click in the web UI:
+
+```bash
+wifipilot ai providers                      # what is configured / what is missing
+wifipilot ai status                         # active provider, model, quota, spend
+wifipilot ai models [--search qwen] [--free]
+wifipilot ai use openai/gpt-4o-mini --provider openrouter --save
 wifipilot ai ask "which target first?" --report sessions/…/reports/report.json
 ```
 
-How it works:
+| | Ollama | OpenRouter |
+|---|---|---|
+| runs on | this machine | a third-party cloud service |
+| data sent | nothing | the situation report, with identifiers pseudonymised |
+| cost | free | per token, hard-capped by `--ai-budget` |
+| default | **yes** | opt-in (`--provider openrouter` + key) |
+
+How it works, whichever provider is active:
 
 * wifipilot builds a **compact situation report** (targets with state, recent attempts and
   failures, enabled attacks, time budgets, capabilities) — a few hundred tokens, not a log.
@@ -216,12 +255,23 @@ How it works:
   attacks, unknown BSSIDs, disabled attacks, WPA3 handshake attempts, WPS attacks on
   non-WPS APs, cracking without captures, and anything stealth mode forbids. Rejections are
   shown in the UI and logged, so you can see when the model was overruled.
-* when Ollama is down, slow, or returns nonsense, the **deterministic planner** takes over
-  seamlessly. The campaign never blocks on the model.
+* when the provider is down, out of credit, over budget, rate limited, or returns nonsense,
+  the **deterministic planner** takes over seamlessly. The campaign never blocks on a model.
 
-Privacy: only loopback Ollama hosts are accepted unless you explicitly set
-`ollama.allow_remote_host = true`. Engagement data (SSIDs, BSSIDs, MACs) is sent to the model
-you run — keep it local.
+### Privacy and cost on the cloud provider
+
+* OpenRouter only runs when explicitly enabled **and** a key is present; the key comes from
+  `OPENROUTER_API_KEY`, a key file, or the config (written mode 600, never returned by the
+  API, never printed — only its source and length are).
+* SSIDs, BSSIDs, client MACs and recovered PSKs are replaced with stable pseudonyms
+  (`ssid-1`, `bssid-1`, `mac-1`, `psk-1`) before the report is sent, and mapped back before
+  the plan is validated. Disable with `--no-ai-redact` if you need the model to see real names.
+* `--ai-budget 0.50` stops planning at $0.50 of spend for the session; usage and cost per
+  call are tracked and reported. Provider routing (e.g. `"sort": "throughput"`) passes through.
+* HTTPS only, unless the base URL is loopback (a local proxy).
+
+Details, including the full failure matrix and model recommendations:
+[docs/AI-PROVIDERS.md](docs/AI-PROVIDERS.md).
 
 ## Attacks
 
@@ -260,13 +310,17 @@ wifipilot web    [--host 0.0.0.0] [--port 8787] [--open]
 wifipilot crack  FILE [FILE…] [-b BSSID] [-e ESSID] [--engine auto|aircrack|hashcat]
 wifipilot analyze FILE [FILE…]
 wifipilot tools  [--force]
-wifipilot ai     status|models|pull MODEL|ask "…" [--report export.json]
+wifipilot ai     status|models|providers|use MODEL|pull MODEL|ask "…"
+                 [--provider auto|ollama|openrouter|none] [--report export.json]
 wifipilot config [--write FILE] [--init]
 
 global:  -c/--config  -i/--interface  -m/--monitor  --demo  -y/--i-am-authorized
          --stealth  --attacks a,b,c  --wps-pin  -w/--wordlist  -o/--output
          --session-dir  --timeout 5m  -v/--verbose  --json  --no-color
-         --no-ai  --model NAME  --ollama-host URL  --think-interval 30s
+ai:      --provider auto|ollama|openrouter|none  --model NAME  --ollama-host URL
+         --openrouter-key KEY  --openrouter-base-url URL
+         --ai-redact / --no-ai-redact  --ai-budget USD  --no-ai
+         --think-interval 30s
 ```
 
 `--json` is supported on every command and keeps stdout machine-readable (human progress
@@ -290,12 +344,23 @@ See [wifipilot.example.json](wifipilot.example.json) for the annotated version. 
   "wordlists": ["/usr/share/wordlists/rockyou.txt"],
   "output_dir": "loot",
   "session_dir": "sessions",
-  "ollama": {
+  "ai_provider": "auto",         // auto | ollama | openrouter | none
+  "ollama": {                    // local, private, free (the default)
     "enabled": true,
     "host": "http://127.0.0.1:11434",
-    "model": "auto",            // or "qwen2.5:7b"
+    "model": "auto",             // or "qwen2.5:7b"
     "think_interval": 45.0,
     "allow_remote_host": false
+  },
+  "openrouter": {                // cloud, opt-in, paid
+    "enabled": false,
+    "api_key_env": "OPENROUTER_API_KEY",
+    "key_file": "",              // or ~/.config/wifipilot/openrouter.key (0600)
+    "base_url": "https://openrouter.ai/api/v1",
+    "model": "auto",             // or "openai/gpt-4o-mini"
+    "redact_identifiers": true,  // pseudonymise SSID/BSSID/MAC/PSK before sending
+    "max_cost_usd": 0.0,         // 0 = no cap
+    "provider_routing": {}       // e.g. {"sort": "throughput"}
   }
 }
 ```
@@ -314,7 +379,8 @@ wifipilot/
 ├── crypto.py       AES, CMAC, PBKDF2, PRF, PMKID, MIC (pure stdlib)
 ├── pcap.py         pcap/pcapng + 802.11 + EAPOL parser (pure stdlib)
 ├── synth.py        cryptographically valid capture builder (demo/tests)
-├── advisor.py      Ollama client + planning/chat/triage (stdlib urllib)
+├── llm.py          provider transports: local Ollama + OpenRouter (stdlib urllib)
+├── advisor.py      planning/triage/chat, identifier redaction, cost accounting
 ├── planner.py      scoring, heuristic planner, plan validator
 ├── iface.py        monitor mode, channel hopping, cleanup
 ├── demo.py         simulated radio (makes everything testable)
@@ -327,7 +393,8 @@ Design rules that keep it honest:
 * **the event bus is the only UI contract** — CLI and web render the same events, so they
   cannot disagree;
 * **nothing is believed without verification** — captures are parsed and MIC-checked;
-* **the LLM is an advisor, not an authority** — every plan is validated against a whitelist.
+* **the LLM is an advisor, not an authority** — every plan is validated against a whitelist,
+  and cloud providers additionally get pseudonymised identifiers and a hard spend cap.
 
 More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -335,7 +402,7 @@ More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ```bash
 pip install -e '.[dev]'
-pytest -q                      # 108 tests, ~2.5 min (includes a full simulated campaign)
+pytest -q                      # 184 tests, ~3 min (includes a full simulated campaign)
 ```
 
 The suite covers published crypto test vectors (FIPS-197 AES, RFC 4493 CMAC, IEEE 802.11i
@@ -343,6 +410,11 @@ PMK), capture parsing (including truncated/garbage/pcapng inputs), the cracker, 
 and plan validator (hallucination and safety-rule cases), the advisor (with a fake Ollama),
 the session/report layer, the web API, the CLI, and one end-to-end campaign in simulation
 mode that asserts real captures were produced and verified.
+
+The AI layer is tested twice: once with a faked transport, and once against a local mock of
+OpenRouter's API that speaks the real wire format (`/models`, `/key`, `/chat/completions` with
+SSE streaming), so request construction, auth headers, streaming, error classification, cost
+accounting and identifier redaction are all exercised without touching the internet.
 
 ## FAQ / troubleshooting
 
@@ -362,6 +434,23 @@ traffic. `wifipilot --demo scan` proves the pipeline works when the radio does n
 
 **Ollama: "cannot reach …"** — `ollama serve`, then `ollama pull llama3.1:8b`.
 The tool keeps working with the deterministic planner meanwhile.
+
+**"it runs on Linux only" / I'm on macOS** — correct, and deliberate: `wifipilot` needs
+nl80211 monitor mode, `rfkill` and the aircrack-ng suite. Run it in a Linux VM/container
+with the adapter passed through, or on Kali/Parrot/Debian/Ubuntu/Arch.
+
+**OpenRouter: "no API key"** — `export OPENROUTER_API_KEY=sk-or-v1-…` (or store it in a
+0600 key file), then `wifipilot ai providers --probe`. `--provider openrouter` alone is not
+enough: the provider stays off until it is enabled *and* a key is present.
+
+**OpenRouter: "authentication failed" / "payment required"** — `wifipilot ai status` shows
+which key is in use and where it came from (never the key itself); 402 means the account is
+out of credits. The engagement continues on the deterministic planner either way.
+
+**"is it safe to send client data to a cloud model?"** — read
+[docs/AI-PROVIDERS.md](docs/AI-PROVIDERS.md). Short version: identifiers are pseudonymised by
+default, captures and wordlists are never sent, spend is capped, and the local provider needs
+no trust at all.
 
 **WPS attacks fail immediately** — WPS is likely locked or rate-limited. wifipilot flags it
 and stops rather than burning hours; `wps_pin` is off by default for exactly this reason.

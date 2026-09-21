@@ -1,5 +1,6 @@
 # wifipilot — developer entry points
-.PHONY: help install install-web dev test test-fast demo web tools lint clean report
+.PHONY: help install install-web dev test test-fast demo web tools lint clean report \
+	ai-status ai-local ai-cloud
 
 PY ?= python3
 PIP ?= $(PY) -m pip
@@ -29,8 +30,19 @@ demo:  ## run the whole pipeline against the simulated radio
 web:  ## start the web UI in simulation mode
 	$(PY) -m wifipilot --demo web --open
 
-tools:  ## show dependency / capability status
+tools:  ## show dependency / capability status (and the platform check)
 	$(PY) -m wifipilot tools
+
+ai-status:  ## which AI provider is active, is it reachable, how much has it cost
+	$(PY) -m wifipilot ai providers --probe
+	$(PY) -m wifipilot ai status
+
+ai-local:  ## use local Ollama for the advisor (private, free)
+	$(PY) -m wifipilot --provider ollama ai use qwen2.5:7b
+	@echo "export OPENROUTER_API_KEY=... to try the cloud provider instead"
+
+ai-cloud:  ## use OpenRouter for the advisor (needs OPENROUTER_API_KEY)
+	$(PY) -m wifipilot --provider openrouter --ai-budget 0.50 ai status
 
 lint:  ## byte-compile everything and check imports
 	$(PY) -m compileall -q wifipilot tests

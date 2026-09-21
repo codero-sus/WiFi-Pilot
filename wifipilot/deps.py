@@ -84,8 +84,10 @@ TOOLS: Dict[str, ToolSpec] = {
 #: minimum a truly functional run needs
 REQUIRED_FOR_LIVE = ("aircrack-ng", "airmon-ng", "airodump-ng")
 
+#: wifipilot is a Linux tool: every attack path drives Linux wireless tooling.
+#: Hints list the package name per Linux distribution family.
 INSTALL_HINTS = {
-    "aircrack-ng": "apt install aircrack-ng   |   pacman -S aircrack-ng   |   brew install aircrack-ng",
+    "aircrack-ng": "apt install aircrack-ng   |   pacman -S aircrack-ng   |   dnf install aircrack-ng",
     "reaver": "apt install reaver           |   pacman -S reaver",
     "wash": "apt install reaver           |   pacman -S reaver",
     "bully": "apt install bully            |   pacman -S bully",
@@ -93,14 +95,36 @@ INSTALL_HINTS = {
     "hcxtools": "apt install hcxtools         |   pacman -S hcxtools",
     "hashcat": "apt install hashcat          |   pacman -S hashcat",
     "john": "apt install john             |   pacman -S john",
+    "cowpatty": "apt install cowpatty",
     "iw": "apt install iw               |   pacman -S iw",
+    "iwconfig": "apt install wireless-tools",
     "rfkill": "apt install rfkill           |   pacman -S rfkill",
     "nmcli": "apt install network-manager  |   pacman -S networkmanager",
     "ethtool": "apt install ethtool",
-    "cowpatty": "apt install cowpatty",
-    "tcpdump": "apt install tcpdump",
-    "tshark": "apt install tshark",
+    "tcpdump": "apt install tcpdump          |   pacman -S tcpdump",
+    "tshark": "apt install tshark           |   pacman -S wireshark-cli",
 }
+
+#: convenience one-liner shown when required tools are missing
+DISTRO_INSTALL_COMMAND = {
+    "apt": "sudo apt update && sudo apt install -y aircrack-ng reaver bully pixiewps hcxtools hashcat iw rfkill",
+    "pacman": "sudo pacman -S --needed aircrack-ng reaver bully pixiewps hcxtools hashcat iw rfkill",
+    "dnf": "sudo dnf install -y aircrack-ng reaver bully pixiewps hcxtools hashcat iw rfkill",
+    "zypper": "sudo zypper install aircrack-ng reaver bully pixiewps hcxtools hashcat iw rfkill",
+    "apk": "sudo apk add aircrack-ng reaver bully pixiewps hcxtools hashcat iw rfkill",
+}
+
+
+def install_command() -> str:
+    """The right one-liner for this distribution, or a generic hint."""
+    from .util import package_manager
+    manager = package_manager()
+    for key, command in DISTRO_INSTALL_COMMAND.items():
+        if manager.startswith(key):
+            return command
+    return (DISTRO_INSTALL_COMMAND["apt"] + "   # adjust for your distribution"
+            if not manager else DISTRO_INSTALL_COMMAND["apt"])
+
 
 VERSION_RE = re.compile(r"(\d+\.\d+(?:\.\d+)?[A-Za-z0-9._-]*)")
 
@@ -203,12 +227,15 @@ class ToolRegistry:
         }
 
     def summary(self) -> Dict[str, object]:
+        from .util import platform_info
         caps = self.capabilities()
         return {
             "tools": {info.name: info.to_dict() for info in self.all()},
             "capabilities": caps,
             "missing_required": self.missing_required(),
             "interfaces": list_interfaces(),
+            "platform": platform_info(),
+            "install_command": install_command(),
         }
 
 

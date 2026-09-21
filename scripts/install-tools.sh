@@ -63,9 +63,6 @@ elif command -v pacman >/dev/null 2>&1; then
 elif command -v dnf >/dev/null 2>&1; then
   echo "→ sudo dnf install -y ${need_pkgs[*]}"
   sudo dnf install -y "${need_pkgs[@]}"
-elif command -v brew >/dev/null 2>&1; then
-  echo "→ brew install aircrack-ng hashcat hcxtools (macOS has no monitor-mode support for most adapters)"
-  brew install aircrack-ng hashcat hcxtools
 else
   echo "Unknown package manager. Install manually: ${need_pkgs[*]}" >&2
   exit 1
@@ -73,3 +70,5 @@ fi
 
 echo
 echo "Done. Verify with: wifipilot tools"
+echo "Note: wifipilot is Linux-only — it drives nl80211 monitor mode, rfkill and"
+echo "      the aircrack-ng suite, none of which exist elsewhere in a usable form."

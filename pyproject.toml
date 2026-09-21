@@ -5,17 +5,22 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "wifipilot"
 version = "0.1.0"
-description = "Wifite alternative: AI-piloted WiFi auditing with a local-LLM (Ollama) advisor and a web UI"
+description = "Linux wifite alternative: AI-piloted WiFi auditing with a local (Ollama) or cloud (OpenRouter) LLM advisor and a web UI"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "codero-sus" }]
-keywords = ["wifi", "pentest", "wifite", "aircrack-ng", "wps", "pmkid", "ollama", "llm", "security"]
+keywords = ["wifi", "pentest", "wifite", "aircrack-ng", "wps", "pmkid", "ollama",
+            "openrouter", "llm", "security", "linux"]
+# wifipilot is Linux-only: it drives nl80211, rfkill, /sys/class/net and the
+# aircrack-ng suite.  There is no supported non-Linux target.
 classifiers = [
     "Environment :: Console",
     "Intended Audience :: Information Technology",
+    "Operating System :: POSIX :: Linux",
     "Topic :: Security",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
 ]
 dependencies = [
     "rich>=13.0",

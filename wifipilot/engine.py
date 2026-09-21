@@ -35,7 +35,7 @@ from .models import STATUS_FAILED, STATUS_RUNNING, AccessPoint, Attempt, Capture
 from .planner import Plan, heuristic_plan, preferred_attacks, should_replan
 from .scanner import Scanner
 from .session import Session
-from .util import ProcessManager, is_root, mac_norm
+from .util import ProcessManager, is_root, mac_norm, platform_info
 
 
 class _StopFlag:
@@ -80,7 +80,8 @@ class Engine:
         self.iface: Optional[InterfaceManager] = None
         self.radio: Optional[DemoRadio] = None
         self.scanner: Optional[Scanner] = None
-        self.advisor = Advisor(self.session, config.ollama, self.bus, demo=self.demo)
+        self.advisor = Advisor(self.session, None, self.bus, demo=self.demo)
+        self.advisor.configure(provider="", announce=False)
         self.cracker = Cracker(self.session, config, self.bus, demo=self.demo)
         self.processes = ProcessManager()
         self.status = EngineStatus(started=time.time())
@@ -255,9 +256,9 @@ class Engine:
         self.status.detail = "asking the advisor for a plan"
         self.bus.publish(EK.ADVISOR_THINKING, {
             "stage": "plan", "targets": len(self.session.aps),
-            "available": self.advisor.available or self.advisor.config.enabled,
+            "available": self.advisor.available or bool(getattr(self.advisor.config, "enabled", False)),
         })
-        plan = self.advisor.plan() if (self.config.ollama.enabled and self.advisor.check()) \
+        plan = self.advisor.plan() if (self.config.ai_enabled() and self.advisor.check()) \
             else self._heuristic_plan()
         self._last_plan = plan
         self._failures_since_plan = 0
@@ -275,7 +276,7 @@ class Engine:
 
     def _heuristic_plan(self) -> Plan:
         plan = heuristic_plan(self.session)
-        if not self.config.ollama.enabled:
+        if not self.config.ai_enabled():
             plan.reasoning = "deterministic planner (AI advisor disabled): " + plan.reasoning
         self.bus.publish(EK.ADVISOR_PLAN, plan.to_dict())
         return plan
@@ -360,7 +361,7 @@ class Engine:
         return self.session.attempts[-1] if self.session.attempts else None
 
     def _triage(self, attempt: Attempt) -> str:
-        if not self.config.ollama.enabled or self.config.ollama.think_interval <= 0:
+        if not self.config.ai_enabled() or self.config.think_interval_seconds() <= 0:
             return ""
         ap = self.session.ap(attempt.bssid)
         summary = ap.to_dict() if ap else {}
@@ -411,8 +412,9 @@ class Engine:
             "config": {
                 "attacks": self.config.attacks,
                 "stealth": self.config.stealth,
-                "ai": self.config.ollama.enabled,
-                "model": self.config.ollama.model,
+                "ai": self.config.ai_enabled(),
+                "provider": self.advisor.provider,
+                "model": self.advisor.model or getattr(self.config.llm_config(), "model", ""),
                 "duration": duration,
                 "targets": self._targets_filter,
             },
@@ -426,7 +428,7 @@ class Engine:
                 self.scan_for(self.config.scan_time)
             else:
                 self.start_scan()
-            if self.config.ollama.enabled:
+            if self.config.ai_enabled():
                 self.advisor.check(force=True)
             self._campaign_loop()
         except Exception as exc:
@@ -513,17 +515,20 @@ class Engine:
             self._sleep_interruptible(2.0)
 
     def _maybe_replan(self) -> Optional[Plan]:
-        interval = max(self.config.ollama.min_interval, self.config.ollama.think_interval)
-        if not self.config.ollama.enable_autothink:
+        provider_config = self.config.llm_config()
+        interval = self.config.think_interval_seconds()
+        min_interval = float(getattr(provider_config, "min_interval", 12.0) or 12.0)
+        interval = max(min_interval, interval)
+        if not self.config.autothink_enabled():
             interval = max(20.0, interval)
         new_aps = max(0, len(self.session.aps) - self._new_aps_at_plan)
         due, why = should_replan(self.session, self._last_plan,
                                  new_aps=new_aps, failures=self._failures_since_plan,
-                                 interval=interval if self.config.ollama.enabled else max(20.0, interval))
+                                 interval=interval if self.config.ai_enabled() else max(20.0, interval))
         if not due:
             return self._last_plan
         self.bus.log(f"re-planning ({why})", level="debug")
-        plan = self.think(force=True) if self.config.ollama.enabled else self._heuristic_plan()
+        plan = self.think(force=True) if self.config.ai_enabled() else self._heuristic_plan()
         return plan
 
     def _crack_all_pending(self) -> None:
@@ -620,7 +625,9 @@ class Engine:
         data["advisor"] = self.advisor.status()
         data["scanner"] = self.scanner.stats() if self.scanner else {}
         data["attacks"] = self._attack_catalog()
-        data["config"] = self.config.to_dict()
+        # redact_secrets: /api/state is served to the browser
+        data["config"] = self.config.to_dict(redact_secrets=True)
+        data["platform"] = platform_info()
         data["capabilities"] = registry.capabilities()
         return data
 

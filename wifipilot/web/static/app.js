@@ -38,6 +38,11 @@ function connect() {
     if (payload.kind === 'state') {
       SNAPSHOT = payload.data;
       scheduleRender();
+      if (!MODEL_CACHE.length && payload.data.advisor
+          && (payload.data.advisor.provider === 'ollama' ? (payload.data.advisor.models || []).length
+              : true)) {
+        loadModels('');
+      }
     } else if (payload.kind === 'event') {
       EVENT_QUEUE.push(payload.event);
       handleEvent(payload.event);
@@ -86,6 +91,9 @@ function handleEvent(event) {
     appendChatToken(d.piece || '');
     return;
   }
+  if (kind === 'advisor.cost') {
+    render();
+  }
   if (kind === 'advisor.plan') {
     renderPlan(d);
     return;
@@ -133,6 +141,7 @@ function render() {
   renderAdvisor(SNAPSHOT);
   renderProgress(SNAPSHOT);
   renderSettings(SNAPSHOT);
+  renderPlatform(SNAPSHOT);
 }
 
 function renderHeader(state) {
@@ -163,6 +172,15 @@ function renderHeader(state) {
   $('#tab-count-loot').textContent = (state.loot || []).length;
   $('#hint-targets').textContent = engine.current_job ? `engine: ${engine.current_job}` : (engine.detail || '');
   $('#paths').textContent = session.state_dir ? ` · session: ${session.state_dir}` : '';
+
+  const ai = state.advisor || {};
+  const aiBadge = $('#ai-badge');
+  const providerNames = { ollama: 'ollama', openrouter: 'openrouter (cloud)', none: 'off' };
+  aiBadge.textContent = `ai: ${providerNames[ai.provider] || ai.provider || '—'}`
+    + (ai.model ? ` · ${ai.model}` : '');
+  aiBadge.className = 'badge ' + (ai.available
+    ? (ai.cloud ? 'badge-live' : 'badge-llm')
+    : 'badge-idle');
 }
 
 function sigClass(signal) {
@@ -245,23 +263,119 @@ function renderLoot(state) {
 
 function renderAdvisor(state) {
   const ai = state.advisor || {};
+  const policy = ai.policy || {};
+  const config = state.config || {};
+  const labels = { ollama: 'Ollama (local)', openrouter: 'OpenRouter (cloud)', none: 'disabled' };
+  const providerLabel = labels[ai.provider] || ai.provider || '—';
+  const reach = ai.available
+    ? '<span class="ok">online</span>'
+    : `<span class="dim">offline${ai.last_error ? ' — ' + escapeHtml(ai.last_error) : ''}</span>`;
   const rows = [
-    ['Ollama', ai.available ? `<span class="ok">online</span> (${escapeHtml(ai.host || '')})` : `<span class="dim">offline${ai.last_error ? ' — ' + escapeHtml(ai.last_error) : ''}</span>`],
+    ['provider', `<b>${escapeHtml(providerLabel)}</b> ${ai.cloud ? '<span class="tag tag-wep">cloud</span>' : '<span class="tag tag-ok">local</span>'}`],
+    ['endpoint', `${reach} <span class="dim">${escapeHtml(ai.host || '')}</span>`],
     ['model', escapeHtml(ai.model || '—')],
     ['auto-think', (state.session || {}).auto_think ? 'enabled' : 'disabled'],
     ['plans', `${ai.plan_count || 0} by model · ${ai.fallback_count || 0} by heuristics`],
     ['calls / errors', `${ai.calls || 0} / ${ai.errors || 0}`],
     ['avg latency', ai.avg_latency ? `${ai.avg_latency}s` : '—'],
-    ['tokens used', (state.stats || {}).llm_tokens || 0],
+    ['tokens / spend', `${ai.tokens || 0}${ai.cost_usd ? ` · $${Number(ai.cost_usd).toFixed(4)}` : ''}`],
   ];
+  if (ai.allowance) rows.push(['allowance', escapeHtml(ai.allowance)]);
+  if (ai.cloud) {
+    const key = ai.key || {};
+    rows.push(['api key', key.configured
+      ? `<span class="ok">set</span> <span class="dim">${escapeHtml(key.hint || '')}</span>`
+      : '<span class="warn">not configured</span>']);
+    rows.push(['identifiers', policy.redact_identifiers
+      ? 'pseudonymised before sending' : '<span class="warn">sent verbatim</span>']);
+  }
   $('#ai-status').innerHTML = rows.map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('');
 
-  const select = $('#sel-model');
-  const current = ai.model || '';
-  const models = (ai.models || []).map((m) => `<option value="${escapeHtml(m.name)}" ${m.name === current ? 'selected' : ''}>${escapeHtml(m.name)} (${m.size_gb} GB)</option>`);
-  select.innerHTML = models.join('') || '<option value="">no models installed</option>';
+  const providerSelect = $('#sel-provider');
+  if (providerSelect && config.ai_provider && providerSelect.value !== config.ai_provider) {
+    providerSelect.value = config.ai_provider;
+  }
+  $('#row-pull').style.display = (ai.provider || 'ollama') === 'ollama' ? '' : 'none';
+  $('#card-openrouter').classList.toggle('card-active', ai.provider === 'openrouter');
 
+  const or = config.openrouter || {};
+  $('#or-status').innerHTML = [
+    ['key', (ai.key || {}).configured || or.has_api_key
+      ? `<span class="ok">configured</span> <span class="dim">${escapeHtml((ai.key || {}).hint || '')}</span>`
+      : '<span class="dim">not configured</span>'],
+    ['source', escapeHtml(or.key_source || '—')],
+    ['redaction', or.redact_identifiers !== false ? 'on' : '<span class="warn">off</span>'],
+    ['budget', policy.max_cost_usd ? `$${Number(policy.max_cost_usd).toFixed(2)}` : 'unlimited'],
+    ['spend (this session)', `$${Number(ai.cost_usd || 0).toFixed(4)}`],
+  ].map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('');
+  const redactBox = $('#chk-or-redact');
+  if (redactBox && document.activeElement !== redactBox) redactBox.checked = or.redact_identifiers !== false;
+  const budgetBox = $('#inp-or-budget');
+  if (budgetBox && document.activeElement !== budgetBox && policy.max_cost_usd) {
+    budgetBox.value = Number(policy.max_cost_usd).toFixed(2);
+  }
+
+  $('#ai-privacy').innerHTML = ai.cloud
+    ? 'Cloud provider: <b>engagement data leaves this machine</b>'
+      + (policy.redact_identifiers ? ' (identifiers pseudonymised).' : ' (identifiers sent verbatim).')
+      + ' Switch back to Ollama to keep everything local.'
+    : 'Everything runs on this machine through Ollama. Nothing is sent to a remote service '
+      + 'unless you switch to OpenRouter, which is off by default.';
+
+  renderModelOptions(ai);
   if (ai.last_plan) renderPlan(ai.last_plan);
+}
+
+let MODEL_CACHE = [];
+
+function renderModelOptions(ai) {
+  const select = $('#sel-model');
+  const current = (ai || {}).model || '';
+  const search = ($('#inp-model-search').value || '').toLowerCase();
+  const freeOnly = $('#chk-free').checked;
+  let models = MODEL_CACHE.length ? MODEL_CACHE : ((ai || {}).models || []);
+  if (search) models = models.filter((m) => (m.name || '').toLowerCase().includes(search));
+  if (freeOnly) models = models.filter((m) => m.free);
+  const options = models.slice(0, 400).map((m) => {
+    const price = m.price ? ` — ${m.price}` : '';
+    const ctx = m.context ? ` · ${Math.round(m.context / 1000)}k ctx` : '';
+    const size = m.size_gb ? ` (${m.size_gb} GB${m.params ? ` · ${m.params}` : ''})` : '';
+    return `<option value="${escapeHtml(m.name)}" ${m.name === current ? 'selected' : ''}>`
+      + `${escapeHtml(m.name)}${escapeHtml(size + price + ctx)}</option>`;
+  });
+  select.innerHTML = options.join('') || '<option value="">no models available</option>';
+}
+
+function loadModels(provider) {
+  const query = $('#inp-model-search').value || '';
+  const free = $('#chk-free').checked ? '&free=true' : '';
+  const extra = provider ? `&provider=${encodeURIComponent(provider)}` : '';
+  return fetch(`/api/ai/models?limit=400&q=${encodeURIComponent(query)}${free}${extra}`)
+    .then((r) => r.json())
+    .then((data) => {
+      MODEL_CACHE = data.models || [];
+      renderModelOptions(SNAPSHOT ? SNAPSHOT.advisor : {});
+      toast(`${MODEL_CACHE.length} ${data.provider} models${data.error ? ` — ${data.error}` : ''}`);
+    })
+    .catch(() => {});
+}
+
+function renderPlatform(state) {
+  const platform = state.platform || {};
+  const tools = state.tools || {};
+  const kv = $('#platform-kv');
+  if (!kv) return;
+  kv.innerHTML = [
+    ['os', `${escapeHtml(platform.os || '?')} ${escapeHtml(platform.distro || '')}`],
+    ['kernel', escapeHtml(platform.kernel || '—')],
+    ['supported', platform.supported
+      ? '<span class="ok">yes — wifipilot is Linux-only</span>'
+      : '<span class="warn">unsupported platform</span>'],
+    ['package manager', escapeHtml(platform.package_manager || '—')],
+  ].map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('');
+  if (tools.install_command) {
+    $('#tool-summary').innerHTML = `missing tools? <code>${escapeHtml(tools.install_command)}</code>`;
+  }
 }
 
 function renderPlan(plan) {
@@ -384,6 +498,26 @@ function wire() {
   $('#btn-think').onclick = () => api('/api/ai/think', {}).then((r) => r && r.plan && renderPlan(r.plan));
   $('#btn-recheck').onclick = () => fetch('/api/tools?force=true').then((r) => r.json()).then(() => api('/api/state', null, 'GET'));
   $('#btn-model').onclick = () => api('/api/ai/model', { model: $('#sel-model').value });
+  $('#btn-provider').onclick = () => {
+    const provider = $('#sel-provider').value;
+    if (provider === 'openrouter' && !$('#chk-or-consent').checked) {
+      toast('tick the consent box before switching to the cloud provider', true);
+      return;
+    }
+    api('/api/ai/provider', { provider, consent: $('#chk-or-consent').checked })
+      .then(() => loadModels(provider === 'auto' ? '' : provider));
+  };
+  $('#btn-or-key').onclick = () => api('/api/ai/key', { key: $('#inp-or-key').value })
+    .then(() => { $('#inp-or-key').value = ''; loadModels('openrouter'); });
+  $('#chk-or-redact').onchange = (e) =>
+    api('/api/config', { openrouter: { redact_identifiers: e.target.checked } });
+  $('#btn-or-budget').onclick = () => api('/api/config', {
+    openrouter: { max_cost_usd: Number($('#inp-or-budget').value) || 0 },
+  });
+  $('#btn-models-refresh').onclick = () => loadModels('');
+  $('#inp-model-search').oninput = () => renderModelOptions(SNAPSHOT ? SNAPSHOT.advisor : {});
+  $('#inp-model-search').onkeydown = (e) => { if (e.key === 'Enter') loadModels(''); };
+  $('#chk-free').onchange = () => loadModels('');
   $('#btn-pull').onclick = () => api('/api/ai/pull', { model: $('#inp-pull').value });
   $('#btn-chat').onclick = sendChat;
   $('#inp-chat').onkeydown = (e) => { if (e.key === 'Enter') sendChat(); };

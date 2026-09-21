@@ -369,6 +369,7 @@ class SessionStats:
     llm_calls: int = 0
     llm_tokens: int = 0
     llm_errors: int = 0
+    llm_cost: float = 0.0              # USD spent on a paid provider (OpenRouter)
 
     @property
     def uptime(self) -> float:
