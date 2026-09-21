@@ -213,7 +213,7 @@ class LLMClient:
                     " — check outbound HTTPS access"
                     + (f" (urllib is using proxy {hint})" if hint
                        else " (behind a corporate proxy set HTTPS_PROXY)")
-                    + f", or use the local provider instead: wifipilot --provider ollama"
+                    + ", or use the local provider instead: wifipilot --provider ollama"
                 )
             self.last_error = message
             raise LLMError(message) from exc

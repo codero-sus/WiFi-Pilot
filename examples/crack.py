@@ -13,7 +13,8 @@ import argparse
 import sys
 from pathlib import Path
 
-import wifipilot as wp
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # runnable from a checkout
+import wifipilot as wp                                          # noqa: E402
 
 
 def main() -> int:

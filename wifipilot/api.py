@@ -196,16 +196,21 @@ class Run:
     # -- reports ------------------------------------------------------------ #
     @property
     def report_json(self) -> str:
+        """Path of the JSON report for this run (written by :meth:`save`)."""
         return self.session.path("reports", "report.json")
 
     @property
     def report_markdown(self) -> str:
+        """Path of the markdown report for this run (written by ``save(markdown=True)``)."""
         return self.session.path("reports", "report.md")
 
     def to_dict(self) -> Dict[str, Any]:
         data = self.session.export()
         data["passwords"] = self.passwords
         data["demo"] = self.demo
+        data["authorized"] = self.authorized
+        data["modes"] = self.modes
+        data["error"] = self.error
         data["platform"] = _platform()
         return data
 
@@ -803,9 +808,10 @@ def loot(path: str = "") -> List[Capture]:
     if path:
         with open(path) as handle:
             data = json.load(handle)
+        entries = data.get("loot") or data.get("captures") or []
         return [Capture(**{k: v for k, v in entry.items()
                            if k in Capture.__dataclass_fields__})
-                for entry in data.get("captures", [])]
+                for entry in entries]
     return list(_CTX.run.loot) if _CTX.run is not None else []
 
 

@@ -1,6 +1,6 @@
 # wifipilot — developer entry points
 .PHONY: help install install-web dev test test-fast demo web tools lint clean report \
-	ai-status ai-local ai-cloud api-demo
+	ai-status ai-local ai-cloud api-demo bench bench-pcap
 
 PY ?= python3
 PIP ?= $(PY) -m pip
@@ -18,7 +18,7 @@ install-web:  ## install with the web UI dependencies
 dev:  ## install everything including test tooling
 	$(PIP) install -e '.[dev]'
 
-test:  ## run the full test suite (~2.5 min, includes a simulated campaign)
+test:  ## run the full test suite (~3.5 min, includes a simulated campaign)
 	$(PY) -m pytest -q
 
 test-fast:  ## skip the end-to-end campaign test
@@ -47,6 +47,12 @@ api-demo:  ## drive the pipeline from Python (examples/, no radio needed)
 
 ai-cloud:  ## use OpenRouter for the advisor (needs OPENROUTER_API_KEY)
 	$(PY) -m wifipilot --provider openrouter --ai-budget 0.50 ai status
+
+bench:  ## run the benchmarks (pcap, crypto, crack, session, planner, web)
+	$(PY) benchmarks/bench.py
+
+bench-pcap:  ## just the capture-parsing benchmarks
+	$(PY) benchmarks/bench.py pcap crypto
 
 lint:  ## byte-compile everything and check imports
 	$(PY) -m compileall -q wifipilot tests

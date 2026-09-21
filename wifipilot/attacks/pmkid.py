@@ -205,7 +205,7 @@ class PmkidAttack(Attack):
         hcxpcapngtool = registry.path("hcxpcapngtool")
         if hcxpcapngtool:
             converted = ctx.artifact_path("pmkid", ap, ".hc22000")
-            result = run([hcxpcapngtool, "-o", converted, path], timeout=120)
+            run([hcxpcapngtool, "-o", converted, path], timeout=120)
             if os.path.exists(converted) and os.path.getsize(converted) > 0:
                 hash_path = converted
         ctx.bus.log(f"PMKID {pmkid[:16]}… captured from {ap.display_name}", level="success")

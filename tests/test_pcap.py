@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from wifipilot import pcap
 from wifipilot.pcap import analyze_file, aircrack_handshake_count, essid_from_beacon
 from wifipilot.scanner import (band_channels, channel_to_freq, freq_to_channel,
                                normalize_encryption, parse_airodump_csv)
@@ -33,6 +34,78 @@ def test_pmkid_only_capture(pmkid_capture):
     assert not analysis.has_handshake
     assert analysis.pmkids[0].pmkid
     assert len(analysis.pmkids[0].pmkid) == 32
+
+
+def test_growing_capture_parses_incrementally(tmp_path):
+    """A capture that grows between polls must read the same as one read once.
+
+    Handshake hunts poll the same ``.cap`` every second; the analysis is resumed
+    from the last complete record instead of re-read from the start, so the
+    incremental result has to be indistinguishable from a full parse.
+    """
+    frames, _ = build_handshake_frames(SSID, AP_MAC, STA_MAC, PSK, include_pmkid=True)
+    path = tmp_path / "growing.pcap"
+    write_pcap(str(path), frames[:2])
+    pcap.clear_cache()
+    incremental = analyze_file(str(path))
+    for count in range(3, len(frames) + 1):
+        write_pcap(str(path), frames[:count])
+        incremental = analyze_file(str(path))
+    write_pcap(str(path), frames)
+    pcap.clear_cache()
+    fresh = analyze_file(str(path))
+
+    assert incremental.packets == fresh.packets == len(frames)
+    assert incremental.eapol_messages == fresh.eapol_messages
+    assert incremental.beacons == fresh.beacons and incremental.mgmt_packets == fresh.mgmt_packets
+    assert sorted(incremental.bssids) == sorted(fresh.bssids)
+    assert incremental.essids == fresh.essids
+    assert sorted(h.pmkid for h in incremental.pmkids) == sorted(h.pmkid for h in fresh.pmkids)
+    for first, second in zip(incremental.handshakes, fresh.handshakes):
+        assert sorted(first.messages) == sorted(second.messages)
+        for number, message in first.messages.items():
+            assert message.raw == second.messages[number].raw
+
+
+def test_analysis_cache_is_reused_and_invalidated(tmp_path):
+    frames, _ = build_handshake_frames(SSID, AP_MAC, STA_MAC, PSK, include_pmkid=True)
+    path = tmp_path / "cached.pcap"
+    write_pcap(str(path), frames)
+    pcap.clear_cache()
+    first = analyze_file(str(path))
+    assert analyze_file(str(path)) is first              # same file: no re-parse
+    with open(path, "ab") as handle:                     # a new packet appears
+        handle.write(b"\x00" * 4)
+    assert analyze_file(str(path)) is not first
+    pcap.clear_cache()
+    assert analyze_file(str(path)) is not first
+
+
+def test_packet_cap_resumes_where_it_stopped(tmp_path):
+    """Polling with a small cap must not consume packets a later pass needs."""
+    frames, _ = build_handshake_frames(SSID, AP_MAC, STA_MAC, PSK, include_pmkid=True)
+    path = tmp_path / "capped.pcap"
+    write_pcap(str(path), frames)
+    pcap.clear_cache()
+    capped = analyze_file(str(path), max_packets=2)
+    assert capped.packets == 2 and not capped.has_handshake
+    assert analyze_file(str(path), max_packets=2).packets == 2   # still capped
+    full = analyze_file(str(path))
+    assert full.packets == len(frames)
+    assert full.has_handshake and full.has_pmkid
+    assert full.eapol_messages == 4
+
+
+def test_no_cache_still_parses(tmp_path):
+    frames, _ = build_handshake_frames(SSID, AP_MAC, STA_MAC, PSK, include_pmkid=True)
+    path = tmp_path / "nocache.pcap"
+    write_pcap(str(path), frames)
+    first = analyze_file(str(path), use_cache=False)
+    second = analyze_file(str(path), use_cache=False)
+    assert first is not second
+    assert first.packets == second.packets == len(frames)
+    assert first.has_handshake and second.has_pmkid
+
 
 
 def test_incomplete_capture_is_not_marked_crackable(tmp_path):

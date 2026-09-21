@@ -143,6 +143,61 @@ def write_pcap(path: str, frames: List[bytes], spacing: float = 0.001) -> str:
     return str(target)
 
 
+def build_beacon(ssid: str, bssid: str, channel: int = 6, include_rsn: bool = True) -> bytes:
+    """A well-formed 802.11 beacon, for capture-shape benchmarks and tests."""
+    ap = _mac(bssid)
+    ssid_bytes = ssid.encode()[:32]
+    body = (b"\x80\x00\x00\x00" + b"\xff" * 6 + ap + ap + b"\x00\x00"
+            + bytes(8)                                        # timestamp
+            + b"\x64\x00"                                    # beacon interval
+            + b"\x01\x04")                                   # capability: ESS + privacy
+    if include_rsn:
+        body += b"\x00" + bytes([len(ssid_bytes)]) + ssid_bytes
+        body += b"\x01\x08\x82\x84\x8b\x96\x0c\x12\x18\x24"    # rates
+        body += b"\x03\x01" + bytes([channel])                          # DS parameter
+        body += (b"\x30\x14\x01\x00\x00\x0f\xac\x04\x01\x00\x00\x0f\xac\x04"
+                 b"\x01\x00\x00\x0f\xac\x02\x00\x00")               # RSN
+    else:
+        body += b"\x00\x00"                                            # hidden SSID
+    return body
+
+
+def build_data_frame(bssid: str, station: str, payload: bytes = b"") -> bytes:
+    """A plain 802.11 data frame (ARP/DHCP-like background traffic)."""
+    body = payload or (b"\xaa\xaa\x03\x00\x00\x00\x08\x06" + bytes(28))
+    return _data_header(_mac(bssid), _mac(station), _mac(bssid), 0) + body
+
+
+def build_scene(path: str, aps: int = 6, clients: int = 10, rounds: int = 400,
+                seed: int = 7) -> str:
+    """A realistic mixed capture: mostly beacons, some data, occasional EAPOL.
+
+    Real airodump-ng output is dominated by beacons and background traffic; a
+    capture made only of handshakes measures the wrong thing.
+    """
+    rng = random.Random(seed)
+    networks = []
+    for index in range(aps):
+        bssid = "aa:bb:cc:%02x:%02x:%02x" % (index, index * 3 % 256, index * 7 % 256)
+        ssid = f"Scene-{index}" if index % 4 else ""
+        networks.append((bssid, ssid))
+    stations = ["02:00:00:00:%02x:%02x" % (index // 256, index % 256) for index in range(clients)]
+    frames: List[bytes] = []
+    for round_index in range(rounds):
+        for bssid, ssid in networks:                 # the bulk: beacons
+            frames.append(build_beacon(ssid, bssid, channel=1 + round_index % 11,
+                                       include_rsn=bool(ssid)))
+        for index in range(max(1, clients // 5)):    # background traffic
+            frames.append(build_data_frame(rng.choice(networks)[0], rng.choice(stations)))
+        if round_index % 25 == 0:                    # an occasional handshake
+            bssid, ssid = networks[round_index % len(networks)]
+            handshake, _ = build_handshake_frames(ssid or "Scene", bssid,
+                                                  rng.choice(stations), "ScenePassword1")
+            frames.extend(handshake)
+    write_pcap(path, frames)
+    return path
+
+
 def build_capture(path: str, ssid: str, bssid: str, station: str, password: str,
                   seed: Optional[int] = None, include_pmkid: bool = True,
                   include_handshake: bool = True) -> Tuple[str, str]:

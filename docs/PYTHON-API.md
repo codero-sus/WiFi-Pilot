@@ -98,15 +98,17 @@ result.save("engagement.json")          # or markdown=True
 
 | you pass | meaning |
 |---|---|
-| `wp.ALL`, `all`, `"all"`, `"*"`, `None` | every access point discovered |
+| `wp.ALL`, `all`, `"all"`, `"*"`, `None`, `""` | every access point discovered |
 | `"aa:bb:cc:11:22:33"` | one BSSID |
 | `"CafeWiFi"` | an SSID or any substring of one (case-insensitive) |
 | `["aa:bb:...", "CafeWiFi"]` | union of the above |
 | an `AccessPoint` (e.g. from `wp.scan()`) | that access point |
 | `"no-such-network"` | `TargetError`, listing what *was* discovered |
 
-Bare `all` is the Python builtin, and wifipilot treats it as "everything", so
-`wp.attack(target=all, mode="force")` does exactly what it looks like.
+Bare `all` is the Python builtin, and wifipilot treats it as "everything" (as do
+`None` and the empty string), so `wp.attack(target=all, mode="force")` does
+exactly what it looks like.  In simulation mode the neighbourhood is seeded, so
+a BSSID from one call is a valid target for the next one.
 
 ### Budgets
 
@@ -150,9 +152,17 @@ print(hit.cracked, hit.password, hit.verified, hit.tool)
 wp.analyze("capture.cap")            # EAPOL/PMKID inventory of a file
 wp.report(markdown=True)             # write the last run's report
 wp.loot()                            # captures worth keeping
+wp.loot("sessions/20260921-124633/reports/report.json")   # ...or from a report
 wp.status()                          # provider, targets, loot, spend
 wp.session(), wp.engine()            # the underlying objects, if you want them
 ```
+
+Results carry the engagement's context: `result.demo`, `result.authorized`,
+`result.modes`, `result.error`, `result.session.id`, `result.stats`,
+`result.to_dict()` / `result.json()` (JSON-ready), `result.report_json` /
+`result.report_markdown` (paths, written by `result.save()`), and for campaigns
+`result.cracked()` (verified hits) / `result.unbroken()` (targets attacked
+without a key — the honest gaps).
 
 ### Watching the run
 

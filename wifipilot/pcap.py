@@ -15,7 +15,9 @@ reporting and by ``wifipilot analyze``.
 from __future__ import annotations
 
 import re
+import mmap
 import struct
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
@@ -152,168 +154,152 @@ class CaptureAnalysis:
 
 
 def mac(b: bytes) -> str:
-    return ":".join(f"{x:02x}" for x in b)
+    """aa:bb:cc:dd:ee:ff — ``bytes.hex`` with a separator is a C-level fast path."""
+    return b.hex(":", 1)
 
 
-def _iter_pcap(data: bytes) -> Iterator[Tuple[float, bytes]]:
-    magic = data[:4]
-    endian, divisor = PCAP_MAGIC[magic]
-    header_len = 16
-    offset = 24  # global header
+def _iter_pcap(data, start_offset: int = 0, endian: str = "",
+               divisor: float = 0.0) -> Iterator[Tuple[float, int, int, int]]:
+    """Yield ``(timestamp, offset, length, next_offset)`` for every packet record.
+
+    Offsets instead of bytes: a 200 MB capture used to be sliced into millions of
+    small ``bytes`` objects (copy + object header each), which dominated parsing
+    time.  Callers read straight out of the buffer with ``struct.unpack_from`` or
+    a one-off slice for the handful of frames they actually keep.
+
+    ``start_offset`` makes the walk resumable, so a capture that is still being
+    written can be parsed one appended chunk at a time.
+    """
+    if not endian:
+        endian, divisor = PCAP_MAGIC[data[:4]]
     total = len(data)
-    while offset + header_len <= total:
+    offset = start_offset or 24          # 24 byte global header
+    while offset + 16 <= total:
         ts_sec, ts_frac, incl_len, orig_len = struct.unpack_from(endian + "IIII", data, offset)
-        offset += header_len
+        offset += 16
         if incl_len > 262144 or offset + incl_len > total:
             break
-        yield (ts_sec + ts_frac / (1_000_000.0 * divisor)), data[offset:offset + incl_len]
+        yield (ts_sec + ts_frac / (1_000_000.0 * divisor)), offset, incl_len, offset + incl_len
         offset += incl_len
 
 
-def _iter_pcapng(data: bytes) -> Iterator[Tuple[float, bytes]]:
-    offset = 0
-    total = len(data)
-    endian = "<"
-    ts_resolution = 1_000_000.0
-    while offset + 12 <= total:
-        block_type = data[offset:offset + 4]
-        if block_type == b"\x0a\x0d\x0d\x0a":            # SHB resets endianness
-            byte_order_magic = data[offset + 8:offset + 12]
-            endian = "<" if byte_order_magic == b"\x4d\x3c\x2b\x1a" else ">"
-        block_len = struct.unpack_from(endian + "I", data, offset + 4)[0]
-        if block_len < 12 or offset + block_len > total:
-            break
-        body = data[offset + 8: offset + block_len - 4]
-        if block_type == b"\x06\x00\x00\x00":            # Enhanced Packet Block
-            if len(body) >= 20:
-                _, ts_high, ts_low, cap_len, _ = struct.unpack_from(endian + "IIIII", body, 0)
-                timestamp = (ts_high << 32) | ts_low
-                packet = body[20:20 + cap_len]
-                yield timestamp / ts_resolution, packet
-        elif block_type == b"\x03\x00\x00\x00":          # Simple Packet Block
-            if len(body) >= 4:
-                cap_len = struct.unpack_from(endian + "I", body, 0)[0]
-                yield 0.0, body[4:4 + cap_len]
-        elif block_type == b"\x01\x00\x00\x00":          # Interface Description Block
-            if len(body) >= 8:
-                ts_resolution = float(struct.unpack_from(endian + "I", body, 4)[0]) or 1_000_000.0
-        offset += block_len
+class _PcapngReader:
+    """Resumable pcapng block walker.
+
+    Larger than the pcap equivalent because pcapng keeps its timestamp
+    resolution in interface blocks, which has to survive a resumed parse.
+    """
+
+    __slots__ = ("ts_resolution",)
+
+    def __init__(self, ts_resolution: float = 1_000_000.0):
+        self.ts_resolution = ts_resolution
+
+    def rows(self, data, start_offset: int = 0) -> Iterator[Tuple[float, int, int, int]]:
+        offset = start_offset
+        total = len(data)
+        endian = "<"
+        resolution = self.ts_resolution
+        while offset + 12 <= total:
+            block_type = data[offset:offset + 4]
+            if block_type == b"\x0a\x0d\x0d\x0a":            # SHB resets endianness
+                byte_order_magic = data[offset + 8:offset + 12]
+                endian = "<" if byte_order_magic == b"\x4d\x3c\x2b\x1a" else ">"
+            block_len = struct.unpack_from(endian + "I", data, offset + 4)[0]
+            if block_len < 12 or offset + block_len > total:
+                break
+            if block_type == b"\x06\x00\x00\x00":            # Enhanced Packet Block
+                if block_len >= 32:
+                    _, ts_high, ts_low, cap_len, _ = struct.unpack_from(
+                        endian + "IIIII", data, offset + 8)
+                    start = offset + 28
+                    if cap_len and start + cap_len <= offset + block_len - 4:
+                        yield ((ts_high << 32) | ts_low) / resolution, start, cap_len, \
+                            offset + block_len
+            elif block_type == b"\x03\x00\x00\x00":          # Simple Packet Block
+                if block_len >= 16:
+                    cap_len = struct.unpack_from(endian + "I", data, offset + 8)[0]
+                    start = offset + 12
+                    if cap_len and start + cap_len <= offset + block_len - 4:
+                        yield 0.0, start, cap_len, offset + block_len
+            elif block_type == b"\x01\x00\x00\x00":          # Interface Description Block
+                if block_len >= 20:
+                    resolution = float(struct.unpack_from(endian + "I", data, offset + 12)[0]) \
+                        or 1_000_000.0
+                    self.ts_resolution = resolution
+            offset += block_len
+        self.ts_resolution = resolution
+
+
+def _radiotap_length(data, start: int, length: int) -> int:
+    """Length of the radiotap/Prism/AVS header at ``start`` (0 if there is none).
+
+    Byte comparisons rather than slices: no allocation, and this runs once per
+    packet.
+    """
+    if length < 4:
+        return 0
+    if data[start] == 0 and (data[start + 2] or data[start + 3]):
+        header_len = data[start + 2] | (data[start + 3] << 8)
+        if 8 <= header_len <= length:
+            return header_len
+    if (data[start] == 0x44 and data[start + 1] == 0 and data[start + 2] == 0
+            and data[start + 3] == 0 and length >= 8 and data[start + 4] == 0x02):
+        return 144                                              # Prism header
+    if length > 64 and not (data[start] or data[start + 1] or data[start + 2]
+                            or data[start + 3]):
+        return 64                                               # AVS header
+    return 0
 
 
 def _strip_radiotap(packet: bytes) -> bytes:
-    """Remove radiotap/Prism/AVS headers, returning the 802.11 frame."""
-    if len(packet) < 4:
-        return packet
-    version = packet[0]
-    if version == 0 and len(packet) >= 4 and packet[2:4] != b"\x00\x00":
-        header_len = struct.unpack_from("<H", packet, 2)[0]
-        if 8 <= header_len <= len(packet):
-            return packet[header_len:]
-    if packet[:8] == b"\x44\x00\x00\x00\x02\x00\x00\x00":     # Prism monitoring header
-        return packet[144:]
-    if packet[:4] == b"\x00\x00\x00\x00" and len(packet) > 64:
-        return packet[64:]
-    return packet
+    """Remove radiotap/Prism/AVS headers, returning the 802.11 frame.
+
+    Kept as a convenience for scripts; the parse loop uses
+    :func:`_radiotap_length` with offsets and never copies the packet.
+    """
+    length = _radiotap_length(packet, 0, len(packet))
+    return packet[length:] if length else packet
 
 
-def _parse_frame(frame: bytes) -> Optional[dict]:
-    """Parse the bits of an 802.11 frame we care about."""
-    if len(frame) < 24:
+def _parse_frame(buf, start: int, length: int):
+    """The bits of an 802.11 frame we care about, read straight out of the buffer.
+
+    Returns ``(type, subtype, bssid, station, payload_offset)`` or ``None``.
+    A tuple (not a dict) and offsets (not slices) because this runs for every
+    packet in a capture: millions of small allocations dominate otherwise.
+    """
+    if length < 24:
         return None
-    fc = frame[0]
-    flags = frame[1]                      # 802.11: FC byte 1 carries to/from DS + protection
-    version = fc & 0x03
+    fc = buf[start]
+    if fc & 0x03:                          # not an 802.11 frame
+        return None
     ftype = (fc >> 2) & 0x03
     subtype = (fc >> 4) & 0x0F
-    to_ds = bool(flags & 0x01)
-    from_ds = bool(flags & 0x02)
-    if version != 0:
-        return None
-    header_len = 24
-    if ftype == TYPE_DATA and to_ds and from_ds:
-        header_len = 30
-    elif (ftype == TYPE_DATA and (to_ds or from_ds)) or (ftype == TYPE_MGMT and subtype in (SUBTYPE_BEACON, SUBTYPE_PROBE_RESP)):
-        header_len = 24
-    info: dict = {
-        "type": ftype, "subtype": subtype, "bssid": "", "station": "",
-        "payload": b"", "protected": bool(flags & 0x40), "to_ds": to_ds, "from_ds": from_ds,
-    }
+    flags = buf[start + 1]
     if ftype == TYPE_MGMT:
-        info["bssid"] = mac(frame[16:22])
-        info["station"] = mac(frame[10:16])
-        if len(frame) >= 36:
-            info["payload"] = frame[36:]
-    elif ftype == TYPE_DATA:
-        addr1, addr2, addr3 = mac(frame[4:10]), mac(frame[10:16]), mac(frame[16:22])
+        # management frames only ever contribute their BSSID here: don't format
+        # the transmitter address for every beacon in a multi-megabyte capture
+        payload = 36 if length >= 36 else length
+        return ftype, subtype, buf[start + 16:start + 22].hex(":", 1), "", payload
+    if ftype == TYPE_DATA:
+        to_ds = flags & 0x01
+        from_ds = flags & 0x02
         if from_ds and not to_ds:
-            info["bssid"], info["station"] = addr2, addr1
+            bssid = buf[start + 10:start + 16].hex(":", 1)
+            station = buf[start + 4:start + 10].hex(":", 1)
         elif to_ds and not from_ds:
-            info["bssid"], info["station"] = addr1, addr2
+            bssid = buf[start + 4:start + 10].hex(":", 1)
+            station = buf[start + 10:start + 16].hex(":", 1)
         else:
-            info["bssid"], info["station"] = addr3, addr2
-        if len(frame) > header_len:
-            info["payload"] = frame[header_len:]
-    elif ftype == TYPE_CTRL:
+            bssid = buf[start + 16:start + 22].hex(":", 1)
+            station = buf[start + 10:start + 16].hex(":", 1)
+        header_len = 30 if (to_ds and from_ds) else 24
+        payload = header_len if length > header_len else length
+        return ftype, subtype, bssid, station, payload
+    if ftype == TYPE_CTRL:
         return None
-    return info
-
-
-def _parse_eapol(payload: bytes) -> Optional[dict]:
-    """LLC/SNAP -> EAPOL-Key, returning key_info/replay/KDE data."""
-    if len(payload) < 8:
-        return None
-    index = payload.find(b"\xaa\xaa\x03\x00\x00\x00")
-    if index < 0:
-        return None
-    data = payload[index + 6:]
-    if len(data) < 4:
-        return None
-    ethertype = struct.unpack_from(">H", data, 0)[0]
-    if ethertype != ETHERTYPE_EAPOL:
-        return None
-    eapol = data[2:]                     # skip the 2 byte ethertype
-    if len(eapol) < 4:
-        return None
-    version, eapol_type, length = eapol[0], eapol[1], struct.unpack_from(">H", eapol, 2)[0]
-    body = eapol[4:4 + length] if length else eapol[4:]
-    if eapol_type != 3 or len(body) < 3:              # 3 = EAPOL-Key
-        return None
-    desc_type = body[0]
-    if desc_type not in (2, 3):                       # RSN / WPA
-        return None
-    key_info = struct.unpack_from(">H", body, 1)[0]
-    replay = struct.unpack_from(">Q", body, 5)[0] if len(body) >= 13 else 0
-    is_pairwise = bool(key_info & 0x0008)
-    key_ack = bool(key_info & 0x0080)
-    install = bool(key_info & 0x0040)
-    secure = bool(key_info & 0x0200)
-    if is_pairwise:
-        if key_ack and not secure:
-            number = 1
-        elif key_ack and secure:
-            number = 3
-        elif not key_ack and secure:
-            number = 4
-        else:
-            number = 2
-    else:
-        number = 0                                    # group key handshake
-    # 802.11i EAPOL-Key body layout:
-    #   type(1) keyinfo(2) keylen(2) replay(8) nonce(32) iv(16) rsc(8) keyid(8)
-    #   mic(16) keydatalen(2) keydata(...)
-    key_data_len = struct.unpack_from(">H", body, 93)[0] if len(body) >= 95 else 0
-    key_data = body[95:95 + key_data_len] if key_data_len and len(body) >= 95 else b""
-    pmkid = ""
-    if key_data:
-        position = key_data.find(KDE_PMKID)
-        if position >= 0 and len(key_data) >= position + 20:
-            pmkid = key_data[position + 4: position + 20].hex()
-    nonce = body[13:45].hex() if len(body) >= 45 else ""
-    return {
-        "version": version, "number": number, "key_info": key_info,
-        "replay": replay, "pmkid": pmkid, "has_kde": bool(key_data),
-        "key_data_len": key_data_len, "nonce": nonce,
-    }
+    return ftype, subtype, "", "", length
 
 
 def essid_from_beacon(payload: bytes) -> str:
@@ -329,101 +315,321 @@ def essid_from_beacon(payload: bytes) -> str:
     return ""
 
 
-# --------------------------------------------------------------------------- #
-# public API
-# --------------------------------------------------------------------------- #
+def _read_essid(buf, start: int, length: int, payload_at: int, bssid: str,
+                essids: Dict[str, str]) -> None:
+    """Record ``essids[bssid]`` from a beacon, once per BSSID."""
+    if bssid in essids:
+        return
+    ssid = essid_from_beacon(bytes(buf[start + payload_at:start + length]))
+    if ssid:
+        essids[bssid] = ssid
 
 
-def analyze_file(path: str, max_packets: int = 400_000) -> CaptureAnalysis:
-    """Parse a capture file and report handshakes, PMKIDs and WEP IVs."""
-    result = CaptureAnalysis(path=str(path))
+#: first eight bytes of an EAPOL payload: LLC/SNAP + the EAPOL ethertype, which
+#: is the common case and can therefore be tested in place with one slice
+LLC_SNAP = b"\xaa\xaa\x03\x00\x00\x00"   # 802.2 header that precedes EAPOL
+EAPOL_PREFIX = LLC_SNAP + b"\x88\x8e"
+
+
+def _parse_eapol(payload: bytes) -> Optional[dict]:
+    """LLC/SNAP -> EAPOL-Key, returning key_info/replay/KDE data."""
+    if len(payload) < 8:
+        return None
+    index = payload.find(LLC_SNAP)
+    if index < 0 or len(payload) < index + 8:
+        return None
+    return _parse_eapol_body(payload[index + 6:])
+
+
+def _parse_eapol_body(body: bytes) -> Optional[dict]:
+    """The EAPOL-Key parser, given the bytes at the ethertype (``88 8e``).
+
+    Returns ``None`` for anything that is not an EAPOL-Key; the nonce comes back
+    as bytes because only messages that get stored need the hex form.
+    """
+    if len(body) < 6:
+        return None
+    if struct.unpack_from(">H", body, 0)[0] != ETHERTYPE_EAPOL:
+        return None
+    eapol = body[2:]                     # skip the 2 byte ethertype
+    version, eapol_type, length = eapol[0], eapol[1], struct.unpack_from(">H", eapol, 2)[0]
+    eapol_body = eapol[4:4 + length] if length else eapol[4:]
+    if eapol_type != 3 or len(eapol_body) < 3:        # 3 = EAPOL-Key
+        return None
+    desc_type = eapol_body[0]
+    if desc_type not in (2, 3):                       # RSN / WPA
+        return None
+    key_info = struct.unpack_from(">H", eapol_body, 1)[0]
+    replay = struct.unpack_from(">Q", eapol_body, 5)[0] if len(eapol_body) >= 13 else 0
+    is_pairwise = bool(key_info & 0x0008)
+    key_ack = bool(key_info & 0x0080)
+    secure = bool(key_info & 0x0200)
+    if is_pairwise:
+        if key_ack and not secure:
+            number = 1
+        elif key_ack and secure:
+            number = 3
+        elif not key_ack and secure:
+            number = 4
+        else:
+            number = 2
+    else:
+        number = 0                                    # group key handshake
+    # 802.11i EAPOL-Key body layout:
+    #   type(1) keyinfo(2) keylen(2) replay(8) nonce(32) iv(16) rsc(8) keyid(8)
+    #   mic(16) keydatalen(2) keydata(...)
+    key_data_len = struct.unpack_from(">H", eapol_body, 93)[0] if len(eapol_body) >= 95 else 0
+    key_data = (eapol_body[95:95 + key_data_len]
+                if key_data_len and len(eapol_body) >= 95 else b"")
+    pmkid = ""
+    if key_data:
+        position = key_data.find(KDE_PMKID)
+        if position >= 0 and len(key_data) >= position + 20:
+            pmkid = key_data[position + 4: position + 20].hex()
+    nonce = eapol_body[13:45] if len(eapol_body) >= 45 else b""
+    return {
+        "version": version, "number": number, "key_info": key_info,
+        "replay": replay, "pmkid": pmkid, "has_kde": bool(key_data),
+        "key_data_len": key_data_len, "nonce": nonce,
+    }
+
+
+
+@dataclass
+class _AnalysisState:
+    """Resumable parse state.
+
+    Captures are written while we read them — a handshake hunt polls the same
+    ``.cap`` once a second — so this keeps the accumulator and the byte offset of
+    the last complete record, and only the appended bytes get parsed.  Re-reading
+    a growing file from the start was the largest recurring cost of an attack.
+
+    The accumulator is deliberately *not* what callers receive: every call
+    returns a fresh :class:`CaptureAnalysis` snapshot, so an object handed out
+    earlier never changes underneath its owner.
+    """
+
+    path: str = ""
+    format: str = ""
+    error: str = ""
+    packets: int = 0
+    data_packets: int = 0
+    mgmt_packets: int = 0
+    beacons: int = 0
+    wep_data: int = 0
+    eapol_messages: int = 0
+    essids: Dict[str, str] = field(default_factory=dict)
+    bssids: set = field(default_factory=set)
+    handshakes: Dict[Tuple[str, str], Handshake] = field(default_factory=dict)
+    pmkids: List[Handshake] = field(default_factory=list)
+    seen_pmkids: set = field(default_factory=set)
+    offset: int = 0                  # bytes consumed; always on a record boundary
+    capped: bool = False             # stopped early because max_packets was reached
+    max_packets: int = 400_000
+    pcapng: "_PcapngReader" = field(default_factory=_PcapngReader)
+    result: Optional[CaptureAnalysis] = None      # last snapshot handed out
+
+    def snapshot(self) -> CaptureAnalysis:
+        return CaptureAnalysis(
+            path=self.path, format=self.format, packets=self.packets,
+            data_packets=self.data_packets, mgmt_packets=self.mgmt_packets,
+            beacons=self.beacons, wep_data=self.wep_data,
+            eapol_messages=self.eapol_messages,
+            handshakes=list(self.handshakes.values()), pmkids=list(self.pmkids),
+            bssids=sorted(self.bssids), essids=dict(self.essids),
+            error=self.error,
+        )
+
+
+#: path -> parse state (bounded, see ``_ANALYSIS_CACHE_MAX``)
+_ANALYSIS_CACHE: "OrderedDict[str, _AnalysisState]" = OrderedDict()
+_ANALYSIS_CACHE_MAX = 64
+
+
+def clear_cache() -> None:
+    """Forget cached capture analyses (used by tests and long-running services)."""
+    _ANALYSIS_CACHE.clear()
+
+
+def analyze_file(path: str, max_packets: int = 400_000,
+                 use_cache: bool = True) -> CaptureAnalysis:
+    """Parse a capture file and report handshakes, PMKIDs and WEP IVs.
+
+    The file is memory-mapped and walked record by record, so a 200 MB capture
+    costs no copy and only the frames we keep (EAPOL, beacons we need an SSID
+    for) are sliced out.  Analyses are cached per path and *resumed* rather than
+    repeated: an attack cycle — and every poll of a capture that is still being
+    written — pays only for the bytes it has not seen yet.
+    """
     file_path = Path(path)
-    if not file_path.exists():
+    try:
+        stat = file_path.stat()
+    except OSError:
+        result = CaptureAnalysis(path=str(path))
         result.error = "file not found"
         return result
+
+    size = stat.st_size
+    state = _ANALYSIS_CACHE.get(str(file_path)) if use_cache else None
+    if state is not None:
+        if state.error:
+            state = None                              # retry an earlier failure
+        else:
+            _ANALYSIS_CACHE.move_to_end(str(file_path))
+            if state.capped or state.offset >= size:
+                if state.max_packets >= max_packets and state.result is not None:
+                    return state.result               # nothing new to look at
+            if size < state.offset:                   # truncated or replaced
+                state = None
+
+    if state is None:
+        state = _AnalysisState(path=str(file_path))
+        if not size:
+            state.error = "empty capture"
+            state.result = state.snapshot()
+            return state.result
+
     try:
-        data = file_path.read_bytes()
+        handle = open(file_path, "rb")
     except OSError as exc:
-        result.error = str(exc)
-        return result
-    if not data:
-        result.error = "empty capture"
-        return result
+        state.error = str(exc)
+        state.result = state.snapshot()
+        return state.result
+    try:
+        buf = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
+    except (ValueError, OSError):          # empty/second-class files
+        handle.close()
+        try:
+            with open(file_path, "rb") as plain:
+                return _analyze_buffer(plain.read(), state, max_packets, use_cache)
+        except OSError as exc:
+            state.error = str(exc)
+            state.result = state.snapshot()
+            return state.result
 
-    if data[:4] == PCAPNG_MAGIC:
-        packets = _iter_pcapng(data)
-        result.format = "pcapng"
-    elif data[:4] in PCAP_MAGIC:
-        packets = _iter_pcap(data)
-        result.format = "pcap"
+    try:
+        return _analyze_buffer(buf, state, max_packets, use_cache)
+    finally:
+        buf.close()
+        handle.close()
+
+
+def _analyze_buffer(buf, state: _AnalysisState, max_packets: int,
+                    use_cache: bool) -> CaptureAnalysis:
+    """The parser itself: works on anything supporting slicing (mmap or bytes)."""
+    if not state.format:
+        head = buf[:4]
+        if head == PCAPNG_MAGIC:
+            state.format = "pcapng"
+        elif head in PCAP_MAGIC:
+            state.format = "pcap"
+        else:
+            state.error = "not a pcap/pcapng file"
+            state.result = state.snapshot()
+            return state.result
+    state.error = ""
+    state.max_packets = max_packets
+
+    if state.format == "pcapng":
+        rows = state.pcapng.rows(buf, state.offset)
     else:
-        result.error = "not a pcap/pcapng file"
-        return result
+        rows = _iter_pcap(buf, state.offset)
 
-    handshakes: Dict[Tuple[str, str], Handshake] = {}
-    seen_bssids = set()
-    for timestamp, raw in packets:
-        result.packets += 1
-        if result.packets > max_packets:
+    handshakes = state.handshakes
+    pmkids = state.pmkids
+    seen_pmkids = state.seen_pmkids
+    bssids = state.bssids
+    essids = state.essids
+    packets = state.packets
+    capped = False
+    for timestamp, start, length, next_offset in rows:
+        if packets >= max_packets:
+            capped = True
             break
-        frame = _strip_radiotap(raw)
-        info = _parse_frame(frame)
-        if not info:
+        packets += 1
+        state.offset = next_offset
+        header = _radiotap_length(buf, start, length)
+        start += header
+        length -= header
+        if length < 24:
             continue
-        ftype, subtype = info["type"], info["subtype"]
-        bssid, station = info["bssid"], info["station"]
+        parsed = _parse_frame(buf, start, length)
+        if parsed is None:
+            continue
+        ftype, subtype, bssid, station, payload_at = parsed
         if bssid:
-            seen_bssids.add(bssid)
+            bssids.add(bssid)
         if ftype == TYPE_MGMT:
-            result.mgmt_packets += 1
+            state.mgmt_packets += 1
             if subtype == SUBTYPE_BEACON:
-                result.beacons += 1
-                if bssid and bssid not in result.essids:
-                    ssid = essid_from_beacon(info["payload"])
-                    if ssid:
-                        result.essids[bssid] = ssid
+                state.beacons += 1
+                if bssid:
+                    _read_essid(buf, start, length, payload_at, bssid, essids)
             continue
         if ftype != TYPE_DATA:
             continue
-        if subtype == 8:                       # QoS data
-            pass
-        result.data_packets += 1
-        eapol = _parse_eapol(info["payload"])
-        if eapol and eapol["number"] and not eapol.get("protected"):
-            result.eapol_messages += 1
-            key = (bssid, station)
-            handshake = handshakes.setdefault(key, Handshake(bssid=bssid, station=station,
-                                                             first_ts=timestamp))
-            message = EapolMessage(
-                bssid=bssid, station=station, number=eapol["number"],
-                key_info=eapol["key_info"], replay=eapol["replay"],
-                frame_time=timestamp, pmkid=eapol["pmkid"], has_kde=eapol["has_kde"],
-                nonce=eapol["nonce"], raw=frame,
-            )
-            previous = handshake.messages.get(message.number)
-            if previous is None or message.replay >= previous.replay:
-                handshake.messages[message.number] = message
-            if message.pmkid:
-                handshake.pmkid = message.pmkid
-                if not any(h.pmkid == message.pmkid for h in result.pmkids):
-                    result.pmkids.append(Handshake(
-                        bssid=bssid, station=station, pmkid=message.pmkid,
-                        first_ts=timestamp, last_ts=timestamp, messages={1: message},
-                    ))
+        state.data_packets += 1
+        payload_start = start + payload_at
+        payload_end = start + length
+        # EAPOL always starts with LLC/SNAP immediately after the 802.11 header:
+        # check those bytes in place so ordinary traffic costs no slice at all
+        if payload_start + 8 <= payload_end:
+            if buf[payload_start:payload_start + 8] == EAPOL_PREFIX:
+                eapol = _parse_eapol_body(buf[payload_start + 6:payload_end])
+            elif LLC_SNAP in buf[payload_start:payload_end]:
+                eapol = _parse_eapol(buf[payload_start:payload_end])
+            else:
+                eapol = None
+        else:
+            eapol = None
+        if eapol and eapol["number"]:
+            state.eapol_messages += 1
+            pair = (bssid, station)
+            handshake = handshakes.get(pair)
+            if handshake is None:
+                handshake = handshakes[pair] = Handshake(bssid=bssid, station=station,
+                                                         first_ts=timestamp)
+            number = eapol["number"]
+            replay = eapol["replay"]
+            previous = handshake.messages.get(number)
+            if previous is None or replay >= previous.replay:
+                handshake.messages[number] = EapolMessage(
+                    bssid=bssid, station=station, number=number,
+                    key_info=eapol["key_info"], replay=replay,
+                    frame_time=timestamp, pmkid=eapol["pmkid"], has_kde=eapol["has_kde"],
+                    nonce=eapol["nonce"].hex(), raw=bytes(buf[start:start + length]),
+                )
+            if eapol["pmkid"] and eapol["pmkid"] not in seen_pmkids:
+                seen_pmkids.add(eapol["pmkid"])
+                pmkids.append(Handshake(
+                    bssid=bssid, station=station, pmkid=eapol["pmkid"],
+                    first_ts=timestamp, last_ts=timestamp,
+                    messages={number: handshake.messages[number]},
+                ))
+            if eapol["pmkid"]:
+                handshake.pmkid = eapol["pmkid"]
             handshake.last_ts = timestamp
         else:
-            # WEP: unencrypted-flag data frames with an IV header (no LLC/SNAP)
-            if len(info["payload"]) > 4 and not result.essids.get(bssid, ""):
-                result.wep_data += 1
+            # anything that is not a numbered EAPOL-Key: on a network whose SSID
+            # we never saw, this is how WEP IV traffic shows up
+            if length > payload_at + 4 and not essids.get(bssid, ""):
+                state.wep_data += 1
 
-    result.handshakes = list(handshakes.values())
-    result.bssids = sorted(seen_bssids)
+    state.packets = packets
+    state.capped = capped
+    state.result = result = state.snapshot()
+    if use_cache:
+        _ANALYSIS_CACHE[state.path] = state
+        _ANALYSIS_CACHE.move_to_end(state.path)
+        while len(_ANALYSIS_CACHE) > _ANALYSIS_CACHE_MAX:
+            _ANALYSIS_CACHE.popitem(last=False)
     return result
 
 
-def quick_check(path: str) -> Tuple[bool, str]:
+
+def quick_check(path: str, use_cache: bool = True) -> Tuple[bool, str]:
     """Fast ``(valid, human summary)`` used after each capture attempt."""
-    analysis = analyze_file(path)
+    analysis = analyze_file(path, use_cache=use_cache)
     if analysis.error:
         return False, analysis.error
     bits = []

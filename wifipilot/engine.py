@@ -21,7 +21,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .advisor import Advisor
 from .attacks import AttackContext, ATTACK_CLASSES, get_attack

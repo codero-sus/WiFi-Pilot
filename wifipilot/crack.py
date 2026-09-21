@@ -27,10 +27,11 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence
+from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 from .config import Config, default_wordlist, find_wordlists
-from .crypto import verify_handshake, verify_pmkid
+from .crypto import (HandshakeVerifier, PmkidVerifier, pmk, verify_handshake,
+                     verify_pmkid)
 from .deps import registry
 from .events import EK
 from .models import AccessPoint, Capture
@@ -223,6 +224,8 @@ class Cracker:
         self.bus = bus or session.bus
         self.demo = demo
         self.radio = radio
+        # prepared per-capture verification state (see _verifiers)
+        self._prepared: Dict[Tuple[str, str, str], List[object]] = {}
 
     # -- public API --------------------------------------------------------
     def crack_capture(self, ap: AccessPoint, capture: Capture,
@@ -237,7 +240,6 @@ class Cracker:
         path = capture.path or capture.hash_path
         analysis = analyze_file(path) if os.path.exists(path) else CaptureAnalysis(path=path)
         lists = list(wordlists or self._wordlists())
-        started = time.time()
 
         self.bus.publish(EK.CRACK_START, {
             "bssid": ap.bssid, "essid": ap.essid, "kind": capture.kind,
@@ -369,9 +371,77 @@ class Cracker:
                            log="\n".join(log_chunks)[-4000:], tried_wordlists=lists)
 
     # -- python engines ----------------------------------------------------
+    def _verifiers(self, ap: AccessPoint, capture: Capture,
+                   analysis: CaptureAnalysis) -> List[object]:
+        """Verifiers for one capture, prepared once and reused for every candidate.
+
+        Preparing means parsing MACs, extracting the EAPOL frames from the 802.11
+        frames and zeroing the MIC field.  Doing it per candidate would waste
+        time on bookkeeping, and — worse — a capture with three handshakes would
+        pay for three PBKDF2 derivations of the same password.
+        """
+        key = (capture.path or capture.hash_path or "", ap.bssid, ap.essid)
+        prepared = self._prepared.get(key)
+        if prepared is not None:
+            return prepared
+        prepared = []
+        pmkid = (capture.extra.get("pmkid") if capture.extra else "") or ""
+        if analysis and analysis.pmkids:
+            pmkid = pmkid or analysis.pmkids[0].pmkid
+            station = analysis.pmkids[0].station or "ff:ff:ff:ff:ff:ff"
+            verifier = PmkidVerifier(pmkid, ap.essid, ap.bssid, station)
+            if verifier.usable:
+                prepared.append(verifier)
+        if pmkid and not prepared:
+            verifier = PmkidVerifier(pmkid, ap.essid, ap.bssid, "ff:ff:ff:ff:ff:ff")
+            if verifier.usable:
+                prepared.append(verifier)
+        if analysis and analysis.handshakes and ap.essid:
+            for handshake in analysis.handshakes:
+                if not handshake.can_verify_mic:
+                    continue
+                verifier = HandshakeVerifier.from_analysis(handshake, ap.essid, ap.bssid)
+                if verifier.usable:
+                    prepared.append(verifier)
+        if len(self._prepared) > 32:                 # bounded: one entry per capture
+            self._prepared.clear()
+        self._prepared[key] = prepared
+        return prepared
+
     def _verify(self, ap: AccessPoint, capture: Capture, analysis: CaptureAnalysis,
                 password: str) -> bool:
-        """Prove a candidate password against the capture."""
+        """Prove a candidate password against the capture.
+
+        The PBKDF2 derivation is the expensive half of a WPA check, and a
+        capture can hold several handshakes plus a PMKID for the same network,
+        so it is derived *once* per candidate and shared by every verifier.
+        """
+        verifiers = self._verifiers(ap, capture, analysis)
+        if not verifiers:
+            # nothing could be prepared: keep the old one-shot behaviour
+            return self._verify_direct(ap, capture, analysis, password)
+        if len(verifiers) == 1:
+            return verifiers[0].check(password)
+        try:
+            key = pmk(password, ap.essid)
+        except (ValueError, UnicodeEncodeError):
+            return False
+        for verifier in verifiers:
+            if verifier.check_pmk(key):
+                return True
+        return False
+
+    @staticmethod
+    def _verify_direct(ap: AccessPoint, capture: Capture,
+                       analysis: CaptureAnalysis, password: str) -> bool:
+        try:
+            return Cracker._verify_direct_unsafe(ap, capture, analysis, password)
+        except (ValueError, TypeError, AttributeError):
+            return False
+
+    @staticmethod
+    def _verify_direct_unsafe(ap: AccessPoint, capture: Capture,
+                              analysis: CaptureAnalysis, password: str) -> bool:
         if capture.kind == "pmkid" or (analysis and analysis.pmkids):
             pmkid = (capture.extra.get("pmkid") if capture.extra else "") or ""
             station = ""
@@ -387,10 +457,9 @@ class Cracker:
                 if not handshake.can_verify_mic or not ap.essid:
                     continue
                 frames = {n: m.raw for n, m in handshake.messages.items()}
-                descriptor = 2
                 if verify_handshake(frames, ap.essid, ap.bssid, handshake.station,
                                     bytes.fromhex(handshake.anonce),
-                                    bytes.fromhex(handshake.snonce), password, descriptor):
+                                    bytes.fromhex(handshake.snonce), password, 2):
                     return True
         return False
 
@@ -447,7 +516,7 @@ class Cracker:
             target = os.path.splitext(path)[0] + ".hc22000"
             if target != capture.hash_path:
                 with contextlib.suppress(Exception):
-                    result = run([converter, "-o", target, path], timeout=180)
+                    run([converter, "-o", target, path], timeout=180)
                     if os.path.exists(target) and os.path.getsize(target) > 0:
                         self.bus.log(f"converted capture -> {target}", level="debug")
                         return target
