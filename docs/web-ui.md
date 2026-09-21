@@ -41,10 +41,19 @@ Passwords verified by MIC/PMKID recomputation are labelled as such.
 
 ### AI advisor
 
-* **Local model status** — reachability, host, selected model, plan counts, call/error
-  counters, average latency, tokens used.
-* **Model picker** — every installed Ollama model; `ollama pull <name>` installs one without
+* **Model provider** — switch between `auto`, `ollama` (local, private) and `openrouter`
+  (cloud) at runtime. The header badge always shows which provider is planning and whether it
+  is reachable.
+* **Provider status** — reachability, endpoint, selected model, plan counts, call/error
+  counters, average latency, tokens and spend.
+* **Model picker** — the live catalogue of the active provider (installed Ollama models, or
+  OpenRouter's full model list with per-million-token prices), with a search box and a
+  *free only* filter. `⟳` refreshes it. `ollama pull <name>` installs a local model without
   leaving the browser (progress streams into the log).
+* **OpenRouter card** — paste an API key (stored in `wifipilot.json`, mode 600, and never
+  sent back to the page), tick the consent box to enable the cloud provider, toggle
+  identifier pseudonymisation, and set a USD spend cap. The card shows the key source and
+  the running spend for the session.
 * **Last plan** — the model's reasoning verbatim, the prioritised actions, and any actions
   **rejected by the safety validator** (so you can see when the model was overruled).
 * **Chat** — ask about the running engagement; answers are grounded in the live situation
@@ -71,6 +80,8 @@ the effective engagement settings.
 | **Cancel attack** | cancels only the running attack, the campaign continues |
 | **Rescan** | 20 s extra discovery |
 | **Think now** | forces one advisor cycle and shows the plan |
+| **switch provider** | moves the advisor between local Ollama and OpenRouter (the cloud switch asks for consent) |
+| **save key** | stores an OpenRouter key in the config file; the value is never echoed back |
 | **scope** | paste BSSIDs to restrict the campaign |
 | **simulation** | switches between live and simulated radio (rebuilds the engine) |
 | **I have written authorisation** | required for any live attack; without it the API returns 403 |
@@ -88,6 +99,7 @@ POST /api/attack              POST /api/cancel     POST /api/crack
 POST /api/rescan              POST /api/targets
 POST /api/ai/think            POST /api/ai/chat    POST /api/ai/model
 POST /api/ai/pull             POST /api/ai/toggle
+GET  /api/ai/models           POST /api/ai/provider   POST /api/ai/key
 GET  /api/report              GET  /api/export     GET  /api/file
 GET  /api/events              WS   /ws
 ```
@@ -114,6 +126,12 @@ PY
 
 * The UI has **no authentication**: it is a local operator console. Bind it to loopback or
   put it behind a reverse proxy with auth when you need remote access.
+* The OpenRouter API key is never returned by any endpoint: `GET /api/config` reports only
+  `has_api_key`, the source (`environment`, `key file`, `config file`) and the key length.
+  Prefer `OPENROUTER_API_KEY` in the server's environment over pasting a key into the UI.
+* Switching to OpenRouter from the UI requires the consent checkbox; the server rejects the
+  request otherwise (400), and every provider change is published as a `session.info` event
+  so it lands in the session journal.
 * All state-changing endpoints that transmit are additionally gated by the authorisation flag
   (403 otherwise) and by the plan validator.
 * `/api/file` only serves files inside this session's loot and state directories.

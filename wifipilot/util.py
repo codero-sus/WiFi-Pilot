@@ -55,6 +55,108 @@ class C:
         return re.sub(r"\033\[[0-9;]*m", "", text)
 
 
+# --------------------------------------------------------------------------- #
+# platform
+# --------------------------------------------------------------------------- #
+
+#: wifipilot drives Linux-only subsystems: nl80211 via iw/airmon-ng, /sys/class/net,
+#: rfkill, the aircrack-ng suite's monitor-mode handling and Linux-specific
+#: hcxdumptool flags.  There is no supported non-Linux target.
+SUPPORTED_PLATFORMS = ("linux",)
+
+#: escape hatch for packaging/tests on other operating systems (never for real use)
+PLATFORM_OVERRIDE_ENV = "WIFIPILOT_ALLOW_NON_LINUX"
+
+
+def platform_name() -> str:
+    """The platform string reported by the running interpreter."""
+    return sys.platform
+
+
+def is_linux() -> bool:
+    return sys.platform.startswith("linux")
+
+
+def distro_name() -> str:
+    """Best-effort Linux distribution name (``Kali GNU/Linux``, ``Ubuntu`` …)."""
+    data = read_kv_file("/etc/os-release")
+    pretty = data.get("PRETTY_NAME") or data.get("NAME")
+    if pretty:
+        return pretty
+    for path, key in (("/etc/redhat-release", None), ("/etc/arch-release", None)):
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace").strip()
+            if text:
+                return text.splitlines()[0]
+        except OSError:
+            continue
+    return "unknown Linux"
+
+
+def read_kv_file(path: str) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    try:
+        for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            out[key.strip()] = value.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return out
+
+
+def package_manager() -> str:
+    """The distro's package manager binary, for install hints (``apt``, ``pacman`` …)."""
+    for candidate in ("apt-get", "apt", "pacman", "dnf", "zypper", "apk", "xbps-install",
+                      "nix-env", "emerge"):
+        found = which(candidate)
+        if found:
+            return candidate
+    return ""
+
+
+def kernel_release() -> str:
+    try:
+        return os.uname().release
+    except AttributeError:  # pragma: no cover - non-POSIX
+        return ""
+
+
+def platform_info() -> Dict[str, str]:
+    """Everything the dashboards and reports need to say about the host OS."""
+    info = {
+        "platform": platform_name(),
+        "os": "linux" if is_linux() else platform_name(),
+        "kernel": kernel_release(),
+        "distro": distro_name() if is_linux() else "",
+        "package_manager": package_manager() if is_linux() else "",
+        "supported": is_linux(),
+    }
+    return info
+
+
+def require_linux(component: str = "wifipilot",
+                  override_env: str = PLATFORM_OVERRIDE_ENV) -> None:
+    """Abort with a clear message when running anywhere but Linux.
+
+    Import the library anywhere you like — but *running* wifipilot needs Linux:
+    every attack path drives Linux wireless tooling and sysfs.  Set
+    ``WIFIPILOT_ALLOW_NON_LINUX=1`` only for packaging checks and test suites.
+    """
+    if is_linux() or os.environ.get(override_env, "").strip() not in ("", "0", "false", "no"):
+        return
+    raise SystemExit(
+        f"{component} runs on Linux only (detected: {sys.platform}).\n"
+        f"It drives the aircrack-ng suite, nl80211 monitor mode, /sys/class/net and\n"
+        f"rfkill, none of which exist on {sys.platform} in a usable form.\n"
+        f"Run it in a Linux VM, a container with the radio passed through, or on\n"
+        f"Kali/Parrot/Ubuntu/Debian/Arch directly.  The simulated radio (--demo) is\n"
+        f"also Linux-only in this build."
+    )
+
+
 def banner() -> str:
     return (
         f"{C.CYAN}{C.BOLD}"

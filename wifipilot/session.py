@@ -74,7 +74,7 @@ class Session:
         self.interface_summary: Dict[str, Any] = {}
         self.scanning = False
         self.attacking = False
-        self.auto_think = bool(config.ollama.enable_autothink)
+        self.auto_think = bool(config.autothink_enabled())
         self.stealth = config.stealth
         self.selected_bssids: List[str] = []
         self.known_wordlists: List[Dict[str, Any]] = []

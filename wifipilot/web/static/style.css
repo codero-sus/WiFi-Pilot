@@ -181,3 +181,16 @@ td.mono, .mono { font-family: var(--mono); font-size: .78rem; }
   font-size: .84rem; max-width: 420px; z-index: 50; box-shadow: 0 8px 30px rgba(0,0,0,.5);
 }
 footer { padding: .8rem 1.1rem 2rem; font-size: .74rem; border-top: 1px solid var(--line); }
+
+/* ---------------------------------------------------------------- providers */
+.banner-cloud {
+  background: rgba(255, 176, 32, 0.10);
+  border: 1px solid rgba(255, 176, 32, 0.35);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  font-size: 12px;
+}
+.card-active { border-color: rgba(255, 176, 32, 0.55); }
+.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: inherit; }
+.warn { color: #ffb020; }

@@ -15,7 +15,7 @@ fit together and, more importantly, *why* they are shaped this way.
                            │           │               │              │               │
              ┌─────────────▼──┐ ┌──────▼──────┐ ┌──────▼──────┐ ┌─────▼──────┐ ┌──────▼──────┐
              │ session.py     │ │ scanner.py  │ │ attacks/*   │ │ crack.py   │ │ advisor.py  │
-             │ state + report │ │ airodump    │ │ real tools  │ │ 3 engines  │ │ Ollama LLM  │
+             │ state + report │ │ airodump    │ │ real tools  │ │ 3 engines  │ │ llm.py      │
              └───────┬────────┘ └──────┬──────┘ └──────┬──────┘ └─────┬──────┘ └──────┬──────┘
                      │                 │               │              │               │
              ┌───────▼─────────────────▼───────────────▼──────────────▼───────────────▼───────┐
@@ -71,8 +71,18 @@ Tool output is a claim; wifipilot checks it.
 
 ## 4. The LLM is an advisor, never an authority
 
-`advisor.py` talks to Ollama over stdlib `urllib` (no extra dependency, loopback-only by
-default). It sends a compact situation report and receives JSON.
+`llm.py` holds the transports — a local Ollama server and OpenRouter's OpenAI-compatible
+gateway — behind one `LLMClient` interface (stdlib `urllib` only, no extra dependency).
+`advisor.py` picks the transport, sends a compact situation report and receives JSON.
+
+Provider policy is enforced in the transport, not in the prompt:
+
+* Ollama: loopback-only unless the operator explicitly allows a remote host.
+* OpenRouter: disabled until enabled *and* given a key; HTTPS-only unless the base URL is
+  loopback; identifiers pseudonymised before sending; a USD budget that hard-stops planning;
+  401/402/429 are distinct errors with operator-facing advice.
+* The API key never leaves the config layer: `Config.to_dict(redact_secrets=True)` is what the
+  web serves, and `key_hint()` exposes only length and source.
 
 The security model:
 
@@ -130,8 +140,22 @@ planner/LLM ──► validate_plan ──► Engine.run_attack ──► Attack
   `session.add_client()` (Kismet, `iw scan`, a CSV replay, …).
 * **new UI** — subscribe to `EventBus` and read `Engine.snapshot()`.
 * **new cracking engine** — subclass/extend `Cracker` and return `CrackResult`.
+* **new model provider** — implement `LLMClient` (`ping`, `list_models`, `resolve_model`,
+  `chat`, optional `pull`), register it in `build_client()` and in `Config.llm_config()`.
+  Everything above it (advisor, planner validation, CLI, web UI, cost accounting) works
+  unchanged.
 
-## 8. Failure philosophy
+## 8. Linux-only by construction
+
+The engine drives nl80211 monitor mode through `iw`/`airmon-ng`, reads `/sys/class/net` to
+confirm interfaces and MAC addresses, unblocks radios with `rfkill`, and parses Linux-specific
+tool output. None of that has a portable equivalent, so the tool does not pretend otherwise:
+`util.require_linux()` gates the CLI and the web server (with an explicit
+`WIFIPILOT_ALLOW_NON_LINUX` escape hatch for packaging checks and the test suite), the install
+hints are Linux package names only, and `tests/test_platform.py` fails if a non-Linux code
+path is reintroduced.
+
+## 9. Failure philosophy
 
 Wireless tooling fails constantly: adapters lie about injection, clients sleep, WPS locks,
 drivers drop monitor mode. wifipilot therefore treats every failure as data:

@@ -8,6 +8,8 @@ on:
 
 jobs:
   test:
+    # wifipilot is a Linux-only tool; the suite also asserts that the CLI and the
+    # web server refuse to start on other platforms.
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -36,6 +38,12 @@ jobs:
       - name: Crypto self-test (published test vectors)
         run: python -m pytest tests/test_crypto.py -q
 
+      - name: AI provider tests (faked transport + local mock OpenRouter gateway)
+        run: python -m pytest tests/test_openrouter.py tests/test_openrouter_http.py -q
+
+      - name: Platform guard (Linux-only enforcement)
+        run: python -m pytest tests/test_platform.py -q
+
       - name: Full test suite
         run: python -m pytest -q
 
@@ -46,9 +54,16 @@ jobs:
           python -m wifipilot analyze wifipilot/data/wifi-defaults.txt > /dev/null 2>&1 || true
           python -m wifipilot --json config > /dev/null
 
+      - name: Provider smoke test (no network calls)
+        run: |
+          python -m wifipilot ai providers --json > /dev/null
+          python -m wifipilot ai --provider openrouter --json status > /dev/null
+          python -m wifipilot ai models --json > /dev/null 2>&1 || true
+
       - name: Web API smoke test
         run: |
           python - <<'PY'
+          import json
           from fastapi.testclient import TestClient
           from wifipilot.config import Config
           from wifipilot.web.app import create_app
@@ -57,6 +72,9 @@ jobs:
               assert client.get("/").status_code == 200
               state = client.get("/api/state").json()
               assert "access_points" in state and "advisor" in state
+              assert "openrouter" not in json.dumps(state["config"]) or \
+                  "sk-or" not in json.dumps(state["config"])
+              assert "provider" in state["advisor"]
               assert client.post("/api/ai/think", json={}).status_code == 200
           print("web api ok")
           PY

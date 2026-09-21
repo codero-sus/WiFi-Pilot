@@ -29,7 +29,9 @@ minimum you need to know before running it.
 | Stealth mode | `--stealth` never deauthenticates and disables online PIN attacks | stop passive capture, which may itself be regulated |
 | Attack whitelist | only the six implemented attacks can ever run | stop misuse of those six |
 | Plan validator | rejects LLM proposals that violate rules | audit your scope |
-| Loopback-only LLM | engagement data stays on the machine | prevent a remote model if you opt in |
+| Loopback-only LLM (Ollama) | engagement data stays on the machine | prevent a remote model if you set `allow_remote_host` |
+| OpenRouter consent + budget | cloud use is opt-in, capped, and identifiers are pseudonymised by default | make a cloud provider acceptable under your client's data-processing terms |
+| Linux-only guard | refuses to run anywhere but Linux | — |
 
 ## Operational hygiene
 
@@ -44,6 +46,21 @@ minimum you need to know before running it.
   the interface and MAC on exit, but verify with `iw dev` and `systemctl status NetworkManager`.
 * Report what you find — including the WPS-locked APs and the SAE-only ones you could not
   break. "Not vulnerable" is a finding.
+
+## Third-party AI providers
+
+Using OpenRouter means your **client's** engagement data (network inventory, security
+posture, timing of attacks) is processed by a third party under *their* terms, and your API
+key identifies you. Before enabling it:
+
+* check the engagement contract and any DPA/NDA for third-party processing clauses;
+* keep `redact_identifiers` on (the default) — SSIDs, BSSIDs, client MACs and recovered PSKs
+  are replaced with pseudonyms before anything is sent;
+* set `--ai-budget` so a runaway loop cannot spend the client's money;
+* remember that captures, handshakes, hashes and wordlists are never sent — only the tactical
+  summary — and note in the report which AI provider was used;
+* if the contract forbids it, use the local provider: `--provider ollama`. It costs nothing,
+  needs no key, and keeps every byte on the audit box.
 
 ## What to warn clients about (the usual outcomes)
 

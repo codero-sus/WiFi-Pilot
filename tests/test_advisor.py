@@ -9,6 +9,7 @@ import pytest
 
 from wifipilot.advisor import Advisor, OllamaClient, OllamaError, extract_json
 from wifipilot.config import OllamaConfig
+from wifipilot.llm import ModelInfo
 from tests.conftest import AP_MAC
 
 
@@ -25,11 +26,11 @@ class FakeClient(OllamaClient):
     def ping(self) -> bool:
         return not self.fail
 
-    def list_models(self, force: bool = False):
+    def list_models(self, force: bool = False, **kwargs):
         if self.fail:
             return []
-        return [type("M", (), {"name": n, "size": 4_000_000_000, "parameters": "8B",
-                               "family": "llama", "modified": "", "size_gb": 4.0})
+        return [ModelInfo(name=n, provider="ollama", size=4_000_000_000,
+                          parameters="8B", family="llama")
                 for n in self._fake_models]
 
     def chat(self, messages, model="", json_mode=False, on_token=None, timeout=0.0, options=None):

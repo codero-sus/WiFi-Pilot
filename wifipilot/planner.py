@@ -44,6 +44,7 @@ class Plan:
     reasoning: str = ""
     source: str = "heuristic"          # heuristic | llm
     model: str = ""
+    provider: str = ""                 # ollama | openrouter | heuristic
     notes: str = ""
     stop: bool = False
     created: float = field(default_factory=time.time)
@@ -54,6 +55,7 @@ class Plan:
         return {
             "actions": [a.to_dict() for a in self.actions],
             "reasoning": self.reasoning, "source": self.source, "model": self.model,
+            "provider": self.provider,
             "notes": self.notes, "stop": self.stop, "created": self.created,
             "latency": round(self.latency, 2), "dropped": self.dropped,
             "summary": self.summary(),

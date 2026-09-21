@@ -58,6 +58,101 @@ class OllamaConfig:
 
 
 @dataclass
+class OpenRouterConfig:
+    """OpenRouter settings — a *cloud* provider, so everything here is opt-in.
+
+    wifipilot only talks to OpenRouter when ``enabled`` is true *and* a key is
+    present.  Engagement identifiers (SSIDs, BSSIDs, client MACs) are replaced
+    with stable pseudonyms before the situation report is sent unless
+    ``redact_identifiers`` is switched off; the advisor maps the pseudonyms back
+    before validating the plan, so the model never sees the real network names
+    while wifipilot still knows what it was told to attack.
+    """
+
+    enabled: bool = False              # explicit consent to send data off-box
+    api_key: str = ""                  # prefer the environment or a key file
+    api_key_env: str = "OPENROUTER_API_KEY"
+    key_file: str = ""                 # e.g. ~/.config/wifipilot/openrouter.key
+    base_url: str = "https://openrouter.ai/api/v1"
+    model: str = "auto"                # "auto" picks from fallback_models
+    fallback_models: List[str] = field(default_factory=lambda: [
+        "openai/gpt-4o-mini", "google/gemini-2.5-flash", "anthropic/claude-3.5-haiku",
+        "meta-llama/llama-3.3-70b-instruct", "qwen/qwen-2.5-72b-instruct",
+        "deepseek/deepseek-chat", "openrouter/auto",
+    ])
+    temperature: float = 0.15
+    max_tokens: int = 900
+    timeout: float = 120.0
+    think_interval: float = 45.0
+    min_interval: float = 12.0
+    enable_autothink: bool = True
+    enable_chat: bool = True
+    json_mode: bool = True             # response_format={"type":"json_object"}
+    stream: bool = True                # SSE streaming (token-by-token in the UI)
+    redact_identifiers: bool = True    # pseudonymise SSID/BSSID/MAC before sending
+    provider_routing: Dict[str, Any] = field(default_factory=dict)   # e.g. {"sort": "throughput"}
+    site_url: str = ""                 # HTTP-Referer attribution
+    app_title: str = "wifipilot"
+    allow_insecure_base_url: bool = False   # http:// base URLs (local proxies only)
+    max_cost_usd: float = 0.0          # 0 = no cap; else stop planning when exceeded
+
+    def base(self) -> str:
+        return self.base_url.rstrip("/")
+
+    def key_file_value(self) -> str:
+        if not self.key_file:
+            return ""
+        try:
+            path = Path(os.path.expanduser(self.key_file))
+            if path.exists():
+                return path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+        return ""
+
+    def api_key_value(self) -> str:
+        """Environment first, then key file, then the literal config value."""
+        env = os.environ.get(self.api_key_env or "OPENROUTER_API_KEY", "").strip()
+        if env:
+            return env
+        return self.key_file_value() or (self.api_key or "").strip()
+
+    def key_source(self) -> str:
+        if os.environ.get(self.api_key_env or "OPENROUTER_API_KEY", "").strip():
+            return f"environment ({self.api_key_env})"
+        if self.key_file_value():
+            return f"key file ({self.key_file})"
+        if (self.api_key or "").strip():
+            return "config file"
+        return "not configured"
+
+    def key_hint(self) -> str:
+        """Safe to display *and* to serve to a browser: length and source, no material."""
+        key = self.api_key_value()
+        if not key:
+            return ""
+        return f"set ({len(key)} chars, {self.key_source()})"
+
+    def ai_enabled(self) -> bool:
+        """True when *any* usable provider is configured (no network probe)."""
+        provider, _ = self.active_provider(probe=False)
+        return provider != "none"
+
+    def think_interval_seconds(self) -> float:
+        """Autonomous re-plan interval of the active provider (0 = never)."""
+        cfg = self.llm_config()
+        if cfg is None:
+            return 0.0
+        return float(getattr(cfg, "think_interval", 45.0) or 0.0)
+
+    def autothink_enabled(self) -> bool:
+        return bool(self.enabled and self.enable_autothink)
+
+    def think_interval_for(self) -> float:
+        return max(self.min_interval, self.think_interval)
+
+
+@dataclass
 class Config:
     # -- engagement ---------------------------------------------------------
     interface: str = ""
@@ -121,7 +216,10 @@ class Config:
     web_open_browser: bool = False
 
     # -- ai -----------------------------------------------------------------
+    #: auto | ollama | openrouter | none  ("auto" prefers the local model)
+    ai_provider: str = "auto"
     ollama: OllamaConfig = field(default_factory=OllamaConfig)
+    openrouter: OpenRouterConfig = field(default_factory=OpenRouterConfig)
 
     # ------------------------------------------------------------------ #
     def attack_timeout_for(self, attack: str) -> float:
@@ -136,13 +234,65 @@ class Config:
             "passive": self.scan_time,
         }.get(attack, self.attack_timeout or 60.0)
 
-    def to_dict(self) -> Dict[str, Any]:
+    # -- ai providers -------------------------------------------------- #
+    def llm_config(self, provider: str = "") -> Any:
+        """The provider-specific config dataclass for ``provider`` (or the active one)."""
+        name = (provider or self.ai_provider or "auto").strip().lower()
+        if name == "openrouter":
+            return self.openrouter
+        if name == "ollama":
+            return self.ollama
+        if name in ("none", "off", "disabled"):
+            return self.ollama          # inert: nothing is called while AI is off
+        # auto: the provider that would actually be used
+        return self.ollama if self.ollama.enabled else (
+            self.openrouter if self.openrouter.enabled else self.ollama)
+
+    def ai_enabled(self) -> bool:
+        """True when *any* usable provider is configured (no network probe)."""
+        provider, _ = self.active_provider(probe=False)
+        return provider != "none"
+
+    def think_interval_seconds(self) -> float:
+        """Autonomous re-plan interval of the active provider (0 = never)."""
+        cfg = self.llm_config()
+        if cfg is None:
+            return 0.0
+        return float(getattr(cfg, "think_interval", 45.0) or 0.0)
+
+    def autothink_enabled(self) -> bool:
+        """True when the *active* provider wants autonomous re-planning."""
+        name, _ = self.active_provider(probe=False)
+        if name == "openrouter":
+            return self.openrouter.autothink_enabled()
+        if name == "ollama":
+            return bool(self.ollama.enabled and self.ollama.enable_autothink)
+        return False
+
+    def active_provider(self, probe: bool = False) -> tuple:
+        """(provider, reason) — see :func:`wifipilot.llm.select_provider`."""
+        from .llm import select_provider
+        return select_provider(self.ai_provider, self.ollama, self.openrouter, probe=probe)
+
+    def to_dict(self, redact_secrets: bool = False) -> Dict[str, Any]:
         data = asdict(self)
+        if redact_secrets:
+            secret = bool(data["openrouter"].get("api_key"))
+            data["openrouter"]["api_key"] = ""
+            data["openrouter"]["has_api_key"] = secret or bool(self.openrouter.api_key_value())
+            data["openrouter"]["key_source"] = self.openrouter.key_source()
+            data["openrouter"]["key_hint"] = self.openrouter.key_hint()
+        data["ai_provider_resolved"] = self.active_provider(probe=False)[0]
         return data
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Config":
+        data = dict(data)
         ollama_data = data.pop("ollama", None) or {}
+        openrouter_data = data.pop("openrouter", None) or {}
+        # pseudo-keys returned by to_dict(redact_secrets=True) are not config fields
+        for key in ("ai_provider_resolved",):
+            data.pop(key, None)
         known = {f.name for f in fields(cls)}
         clean = {k: v for k, v in data.items() if k in known}
         cfg = cls(**clean)
@@ -150,6 +300,10 @@ class Config:
         for key, value in ollama_data.items():
             if key in ollama_known:
                 setattr(cfg.ollama, key, value)
+        openrouter_known = {f.name for f in fields(OpenRouterConfig)}
+        for key, value in openrouter_data.items():
+            if key in openrouter_known:
+                setattr(cfg.openrouter, key, value)
         return cfg
 
     def update(self, **values: Any) -> "Config":
@@ -160,6 +314,10 @@ class Config:
                 for k2, v2 in value.items():
                     if hasattr(self.ollama, k2):
                         setattr(self.ollama, k2, v2)
+            elif key == "openrouter" and isinstance(value, dict):
+                for k2, v2 in value.items():
+                    if hasattr(self.openrouter, k2):
+                        setattr(self.openrouter, k2, v2)
             elif hasattr(self, key):
                 setattr(self, key, value)
         return self
@@ -167,7 +325,22 @@ class Config:
     def save(self, path: Optional[str] = None) -> str:
         target = Path(path or CONFIG_NAME)
         write_json(target, self.to_dict())
+        try:
+            # the file can contain an API key: keep it out of other users' reach
+            target.chmod(0o600)
+        except OSError:
+            pass
         return str(target)
+
+    def provider_note(self) -> str:
+        """One line for banners/logs: which model brain is in use and where it runs."""
+        provider, reason = self.active_provider(probe=False)
+        if provider == "openrouter":
+            return (f"AI: OpenRouter cloud ({self.openrouter.model}) — engagement data "
+                    f"leaves this machine; {'identifiers pseudonymised' if self.openrouter.redact_identifiers else 'identifier redaction OFF'}")
+        if provider == "ollama":
+            return f"AI: local Ollama ({self.ollama.model}) at {self.ollama.host}"
+        return f"AI: disabled ({reason})"
 
     @classmethod
     def load(cls, path: Optional[str] = None) -> "Config":
