@@ -362,12 +362,25 @@ class Advisor:
         return self.provider == "openrouter"
 
     def key_info(self, force: bool = False) -> Dict[str, Any]:
-        """OpenRouter quota/usage for the configured key (empty for other providers)."""
+        """OpenRouter quota/usage for the configured key (empty for other providers).
+
+        Reporting must never explode: a refused request (no key, provider
+        disabled, insecure base URL) is answered with an empty dict plus the
+        reason in :attr:`last_error`, which is what the dashboards show.  The
+        transport itself still raises — see ``LLMClient.key_info()``.
+        """
         if not isinstance(self.client, OpenRouterClient):
             return {}
         if not force and self._key_info and time.time() - self._key_info_at < 60:
             return self._key_info
-        info = self.client.key_info()
+        try:
+            info = self.client.key_info()
+        except LLMPolicyError as exc:
+            self.last_error = str(exc)
+            return {}
+        except LLMError as exc:
+            self.last_error = str(exc)
+            return {}
         if info:
             self._key_info = info
             self._key_info_at = time.time()

@@ -21,6 +21,7 @@ import pytest
 
 from wifipilot.advisor import Advisor
 from wifipilot.config import OpenRouterConfig
+from wifipilot.cli import build_parser
 from wifipilot.llm import (LLMAuthError, LLMCreditError, OpenRouterClient)
 from tests.conftest import AP_MAC, SSID, STA_MAC
 
@@ -323,3 +324,34 @@ def test_cli_can_run_against_the_mock_gateway(mock_api, tmp_path, monkeypatch, c
     assert payload["available"] is True
     assert payload["key"]["configured"] is True
     assert "sk-or" not in json.dumps(payload)
+
+
+# --------------------------------------------------------------------------- #
+# global flags may appear before *or* after the sub-command
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("before,after", [
+    (["--json", "tools"], ["tools", "--json"]),
+    (["--demo", "--json", "scan", "-t", "1"], ["scan", "-t", "1", "--demo", "--json"]),
+    (["-y", "--stealth", "attack"], ["attack", "--stealth", "-y"]),
+    (["--model", "qwen2.5:7b", "attack"], ["attack", "--model", "qwen2.5:7b"]),
+    (["--ai-budget", "0.5", "ai", "providers"], ["ai", "providers", "--ai-budget", "0.5"]),
+    (["--provider", "none", "ai", "status"], ["ai", "status", "--provider", "none"]),
+    (["--no-color", "config"], ["config", "--no-color"]),
+])
+def test_global_flags_work_in_either_position(before, after):
+    left = vars(build_parser().parse_args(before))
+    right = vars(build_parser().parse_args(after))
+    for key in set(left) | set(right):
+        if key in ("command", "ai_command"):
+            continue
+        assert left.get(key) == right.get(key), key
+
+
+def test_subcommand_values_survive_the_shared_global_defaults():
+    args = build_parser().parse_args(["attack", "-d", "45m", "-t", "20"])
+    assert args.duration == "45m" and args.time == "20"
+    # and the globals keep their real defaults when only the sub-command is used
+    assert args.json is False and args.provider == "" and args.wordlist == []
+    assert build_parser().parse_args(["ai", "status"]).ai_command == "status"

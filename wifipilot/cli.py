@@ -28,7 +28,7 @@ from . import LEGAL_NOTICE, TOOL_NAME, __version__
 from .config import Config, find_wordlists
 from .deps import list_interfaces, registry
 from .events import EK, Event, EventBus
-from .llm import provider_status
+from .llm import LLMError, provider_status
 from .models import ATTACK_NAMES, Capture
 from .util import (C, banner, human_duration, mac_norm, parse_duration,
                    platform_info, require_linux)
@@ -54,70 +54,94 @@ except ImportError:  # pragma: no cover
 # --------------------------------------------------------------------------- #
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog=TOOL_NAME,
-        description="AI-piloted WiFi auditing — a wifite alternative with a local-LLM "
-                    "advisor (Ollama) and a web UI.",
-        epilog=LEGAL_NOTICE,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument("--version", action="version",
+def _global_arguments(parser: argparse.ArgumentParser, suppress: bool = False) -> None:
+    """Every option that is valid before *and* after the sub-command.
+
+    ``suppress`` marks the defaults as "not given", which is what the copies
+    attached to each subparser need: argparse applies a subparser's defaults
+    after the top level has been parsed, so real defaults there would silently
+    wipe out a flag the operator placed before the sub-command.
+    """
+
+    def add(container, *args, **kwargs):
+        if suppress:
+            if "default" in kwargs:
+                kwargs["default"] = argparse.SUPPRESS
+            elif kwargs.get("action") in ("store_true", "store_false", "append", "count"):
+                kwargs["default"] = argparse.SUPPRESS
+        return container.add_argument(*args, **kwargs)
+
+    add(parser, "--version", action="version",
                         version=f"{TOOL_NAME} {__version__}")
-    parser.add_argument("-c", "--config", default="", help="config file to load")
-    parser.add_argument("-i", "--interface", default="", help="wireless interface to use")
-    parser.add_argument("-m", "--monitor", default="", help="monitor interface to use")
-    parser.add_argument("--demo", action="store_true",
+    add(parser, "-c", "--config", default="", help="config file to load")
+    add(parser, "-i", "--interface", default="", help="wireless interface to use")
+    add(parser, "-m", "--monitor", default="", help="monitor interface to use")
+    add(parser, "--demo", action="store_true",
                         help="simulation mode: no radio is touched")
-    parser.add_argument("-y", "--i-am-authorized", dest="authorized", action="store_true",
+    add(parser, "-y", "--i-am-authorized", dest="authorized", action="store_true",
                         help="confirm you have written permission to test the targets "
                              "(required before wifipilot transmits)")
-    parser.add_argument("--stealth", action="store_true",
+    add(parser, "--stealth", action="store_true",
                         help="listen-only: never deauthenticate and no online PIN attacks")
-    parser.add_argument("--attacks", default="",
+    add(parser, "--attacks", default="",
                         help=f"comma separated attack list (from: {', '.join(ATTACK_NAMES)})")
-    parser.add_argument("--wps-pin", action="store_true",
+    add(parser, "--wps-pin", action="store_true",
                         help="enable the online WPS PIN attack (slow, disruptive, off by default)")
-    parser.add_argument("-w", "--wordlist", action="append", default=[],
+    add(parser, "-w", "--wordlist", action="append", default=[],
                         help="wordlist to crack with (repeatable)")
-    parser.add_argument("-o", "--output", default="", help="loot directory (default: loot/)")
-    parser.add_argument("--session-dir", default="", help="session directory (default: sessions/)")
-    parser.add_argument("--timeout", default="", help="attack budget override, e.g. 5m")
-    parser.add_argument("--log-level", default="", help="debug|info|warning|error")
-    parser.add_argument("-v", "--verbose", action="store_true", help="verbose (tool chatter)")
-    parser.add_argument("--no-color", action="store_true", help="disable ANSI colour")
-    parser.add_argument("--json", action="store_true", help="machine readable output")
+    add(parser, "-o", "--output", default="", help="loot directory (default: loot/)")
+    add(parser, "--session-dir", default="", help="session directory (default: sessions/)")
+    add(parser, "--timeout", default="", help="attack budget override, e.g. 5m")
+    add(parser, "--log-level", default="", help="debug|info|warning|error")
+    add(parser, "-v", "--verbose", action="store_true", help="verbose (tool chatter)")
+    add(parser, "--no-color", action="store_true", help="disable ANSI colour")
+    add(parser, "--json", action="store_true", help="machine readable output")
 
     # -- ai ----------------------------------------------------------------
     ai = parser.add_argument_group("AI advisor (local Ollama or OpenRouter)")
-    ai.add_argument("--no-ai", action="store_true", help="disable the AI advisor entirely")
-    ai.add_argument("--provider", default="",
+    add(ai, "--no-ai", action="store_true", help="disable the AI advisor entirely")
+    add(ai, "--provider", default="",
                     choices=["", "auto", "ollama", "openrouter", "none"],
                     help="model provider: auto (prefer local Ollama), ollama, openrouter, none")
-    ai.add_argument("--model", default="", help="model name for the active provider")
-    ai.add_argument("--ollama-host", default="", help="Ollama base URL")
-    ai.add_argument("--openrouter-key", default="",
+    add(ai, "--model", default="", help="model name for the active provider")
+    add(ai, "--ollama-host", default="", help="Ollama base URL")
+    add(ai, "--openrouter-key", default="",
                     help="OpenRouter API key (prefer the OPENROUTER_API_KEY environment "
                          "variable: a key on the command line lands in your shell history)")
-    ai.add_argument("--openrouter-base-url", default="",
+    add(ai, "--openrouter-base-url", default="",
                     help="OpenRouter API base URL (default https://openrouter.ai/api/v1)")
-    ai.add_argument("--ai-redact", dest="ai_redact", action="store_true", default=None,
+    add(ai, "--ai-redact", dest="ai_redact", action="store_true", default=None,
                     help="pseudonymise SSIDs/BSSIDs/MACs/PSKs before sending them to a "
                          "cloud provider (default on for OpenRouter)")
-    ai.add_argument("--no-ai-redact", dest="ai_redact", action="store_false",
+    add(ai, "--no-ai-redact", dest="ai_redact", action="store_false",
                     help="send real identifiers to the cloud provider (not recommended)")
-    ai.add_argument("--ai-budget", default="",
+    add(ai, "--ai-budget", default="",
                     help="stop cloud planning after this much spend, e.g. 0.50 (USD)")
-    ai.add_argument("--think-interval", default="", help="seconds between advisor re-plans")
+    add(ai, "--think-interval", default="", help="seconds between advisor re-plans")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog=TOOL_NAME,
+        description="AI-piloted WiFi auditing — a wifite alternative for Linux, with a "
+                    "local (Ollama) or cloud (OpenRouter) LLM advisor and a web UI.",
+        epilog=LEGAL_NOTICE,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _global_arguments(parser)
+
+    # the same options, without defaults, so they also work *after* the sub-command
+    common = argparse.ArgumentParser(add_help=False, argument_default=argparse.SUPPRESS)
+    _global_arguments(common, suppress=True)
 
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
-    p_scan = sub.add_parser("scan", help="discover access points and clients")
+    p_scan = sub.add_parser("scan", parents=[common], help="discover access points and clients")
     p_scan.add_argument("-t", "--time", default="30", help="scan duration (default 30s)")
     p_scan.add_argument("--band", default="", choices=["", "2.4GHz", "5GHz", "both"])
     p_scan.add_argument("--save", default="", help="write the discovered APs to a JSON file")
 
-    p_attack = sub.add_parser("attack", help="run a full attack campaign")
+    p_attack = sub.add_parser("attack", parents=[common], help="run a full attack campaign")
     p_attack.add_argument("-b", "--bssid", action="append", default=[],
                           help="attack only this BSSID (repeatable)")
     p_attack.add_argument("-t", "--time", default="", help="discovery phase length (default 30s)")
@@ -126,55 +150,50 @@ def build_parser() -> argparse.ArgumentParser:
     p_attack.add_argument("--skip-crack", action="store_true",
                           help="capture only, do not run the cracker")
 
-    p_web = sub.add_parser("web", help="start the web UI")
+    p_web = sub.add_parser("web", parents=[common], help="start the web UI")
     p_web.add_argument("--host", default="", help="bind address (default 0.0.0.0)")
     p_web.add_argument("--port", type=int, default=0, help="port (default 8787)")
     p_web.add_argument("--open", action="store_true", help="open a browser window")
 
-    p_crack = sub.add_parser("crack", help="crack a capture you already have")
+    p_crack = sub.add_parser("crack", parents=[common], help="crack a capture you already have")
     p_crack.add_argument("capture", nargs="+", help=".cap / .pcap / .pcapng / .hc22000 file(s)")
     p_crack.add_argument("-b", "--bssid", default="", help="BSSID (optional, inferred from the file)")
     p_crack.add_argument("-e", "--essid", default="", help="SSID (needed for handshake MIC checks)")
     p_crack.add_argument("--engine", default="", choices=["", "auto", "aircrack", "hashcat"])
     p_crack.add_argument("--mask", action="store_true", help="also try common mask patterns")
 
-    p_analyze = sub.add_parser("analyze", help="inspect captures: handshakes, PMKIDs, EAPOL")
+    p_analyze = sub.add_parser("analyze", parents=[common], help="inspect captures: handshakes, PMKIDs, EAPOL")
     p_analyze.add_argument("capture", nargs="+", help="capture file(s)")
 
-    p_tools = sub.add_parser("tools", help="show tool availability and capabilities")
+    p_tools = sub.add_parser("tools", parents=[common], help="show tool availability and capabilities")
     p_tools.add_argument("--force", action="store_true", help="re-probe instead of using cache")
 
-    p_ai = sub.add_parser("ai", help="AI advisor utilities (Ollama, OpenRouter)")
+    p_ai = sub.add_parser("ai", parents=[common], help="AI advisor utilities (Ollama, OpenRouter)")
     ai_sub = p_ai.add_subparsers(dest="ai_command", metavar="ACTION")
     p_ai.add_argument("--report", default="",
                       help="load access points from a previous JSON export for context")
-    p_ai.add_argument("--provider", default="", choices=["", "auto", "ollama", "openrouter", "none"],
-                      help="provider to inspect (overrides the global --provider)")
-    ai_sub.add_parser("status", help="which provider/model is active, and is it reachable?")
-    p_ai_models = ai_sub.add_parser("models", help="list models the active provider offers")
+    ai_sub.add_parser("status", parents=[common], help="which provider/model is active, and is it reachable?")
+    p_ai_models = ai_sub.add_parser("models", parents=[common], help="list models the active provider offers")
     p_ai_models.add_argument("--search", default="", help="filter by name")
     p_ai_models.add_argument("--free", action="store_true", help="only free models")
     p_ai_models.add_argument("--limit", type=int, default=0, help="show at most N models")
     p_ai_models.add_argument("--refresh", action="store_true", help="ignore the cache")
-    p_ai_providers = ai_sub.add_parser("providers", help="show every provider and what it needs")
+    p_ai_providers = ai_sub.add_parser("providers", parents=[common], help="show every provider and what it needs")
     p_ai_providers.add_argument("--probe", action="store_true",
                                 help="test reachability (network/daemon calls)")
-    p_pull = ai_sub.add_parser("pull", help="download a model through Ollama")
+    p_pull = ai_sub.add_parser("pull", parents=[common], help="download a model through Ollama")
     p_pull.add_argument("model", help="model name, e.g. llama3.1:8b")
-    p_use = ai_sub.add_parser("use", help="select the active provider and/or model")
+    p_use = ai_sub.add_parser("use", parents=[common], help="select the active provider and/or model")
     p_use.add_argument("model", nargs="?", default="", help="model name (e.g. openai/gpt-4o-mini)")
-    p_use.add_argument("--provider", default="", choices=["", "auto", "ollama", "openrouter", "none"],
-                       help="switch provider as well")
     p_use.add_argument("--save", action="store_true", help="persist the choice to wifipilot.json")
-    p_ask = ai_sub.add_parser("ask", help="ask the advisor about an engagement")
+    p_ask = ai_sub.add_parser("ask", parents=[common], help="ask the advisor about an engagement")
     p_ask.add_argument("question", nargs="+", help="your question")
-    p_ask.add_argument("--model", default="", help="override the model for this question")
 
-    p_config = sub.add_parser("config", help="show or write the configuration")
+    p_config = sub.add_parser("config", parents=[common], help="show or write the configuration")
     p_config.add_argument("--write", default="", help="write the effective config to this file")
     p_config.add_argument("--init", action="store_true", help="write ./wifipilot.json")
 
-    sub.add_parser("demo", help="run the whole pipeline in simulation mode (no radio)")
+    sub.add_parser("demo", parents=[common], help="run the whole pipeline in simulation mode (no radio)")
     return parser
 
 
@@ -1104,6 +1123,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except KeyboardInterrupt:
         console.print("\n[yellow]interrupted[/yellow]")
         return 130
+    except LLMError as exc:
+        # expected, operator-facing conditions (no key, daemon down, out of
+        # credit, rate limited, over budget): say so plainly instead of dumping
+        # a traceback at the operator mid-engagement.
+        if args.verbose:
+            raise
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":  # pragma: no cover
