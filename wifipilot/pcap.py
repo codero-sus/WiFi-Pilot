@@ -50,10 +50,48 @@ class EapolMessage:
     has_kde: bool = False
     nonce: str = ""       # ANonce (M1/M3) or SNonce (M2)
     raw: bytes = b""      # full 802.11 data frame, for MIC recomputation
+    mic: bytes = b""      # the MIC as it appears on air (16 bytes)
+    key_version: int = 0  # 1 = WPA/TKIP (HMAC-MD5), 2 = WPA2/RSN (AES-CMAC)
+    key_len: int = 0
+    install: bool = False
+    encrypted: bool = False
+    error: bool = False
+    retransmits: int = 0  # identical frames seen after this one
+
+    @property
+    def from_ap(self) -> bool:
+        return self.number in (1, 3)
+
+    @property
+    def mic_present(self) -> bool:
+        return bool(self.key_info & 0x0100)
+
+    @property
+    def message(self) -> str:
+        return f"M{self.number}"
+
+    @property
+    def flags(self) -> Dict[str, bool]:
+        return {"install": self.install, "secure": bool(self.key_info & 0x0200),
+                "ack": bool(self.key_info & 0x0080),
+                "mic": bool(self.key_info & 0x0100),
+                "encrypted": self.encrypted, "error": self.error}
 
     @property
     def label(self) -> str:
-        return f"M{self.number} {self.station}->{self.bssid}" + (f" pmkid={self.pmkid}" if self.pmkid else "")
+        return (f"M{self.number} {self.station}->{self.bssid}"
+                + (f" pmkid={self.pmkid}" if self.pmkid else "")
+                + (f" x{self.retransmits + 1}" if self.retransmits else ""))
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            "number": self.number, "bssid": self.bssid, "station": self.station,
+            "key_info": self.key_info, "replay": self.replay, "nonce": self.nonce,
+            "pmkid": self.pmkid, "mic": self.mic.hex(), "has_kde": self.has_kde,
+            "key_version": self.key_version, "key_len": self.key_len,
+            "flags": self.flags, "retransmits": self.retransmits,
+            "time": self.frame_time,
+        }
 
 
 @dataclass
@@ -92,12 +130,50 @@ class Handshake:
     def eapol_count(self) -> int:
         return len(self.messages)
 
+    @property
+    def challenge(self) -> bool:
+        """M1+M2: the pair every client actually produces (and WPA defines)."""
+        return 1 in self.messages and 2 in self.messages
+
+    @property
+    def authorized(self) -> bool:
+        """M2+M3: the pair produced when the handshake is completed."""
+        return 2 in self.messages and 3 in self.messages
+
+    @property
+    def mic_message(self) -> Optional[EapolMessage]:
+        """The message whose MIC a cracker recomputes (M2 first, then M4)."""
+        for number in (2, 4):
+            message = self.messages.get(number)
+            if message is not None and message.mic:
+                return message
+        return None
+
+    @property
+    def score(self) -> int:
+        """How good a cracking candidate this handshake is; higher is better.
+
+        Ranked by what makes a *verifiable* MIC: a real challenge pair, then an
+        authorized pair, then anything else; retransmitted frames and missing
+        nonces cost nothing but add no value either.
+        """
+        if not self.can_verify_mic:
+            return 0
+        value = 3 if self.challenge else 2 if self.authorized else 1
+        if self.mic_message is not None and not self.mic_message.retransmits:
+            value += 1
+        if self.pmkid:
+            value += 1
+        return value
+
     def to_dict(self) -> Dict[str, object]:
         return {
             "bssid": self.bssid, "station": self.station,
             "messages": sorted(self.messages), "complete": self.complete,
-            "pmkid": self.pmkid, "eapol": self.eapol_count,
+            "challenge": self.challenge, "authorized": self.authorized,
+            "pmkid": self.pmkid, "eapol": self.eapol_count, "score": self.score,
             "first": self.first_ts, "last": self.last_ts,
+            "detail": [m.to_dict() for _, m in sorted(self.messages.items())],
         }
 
 
@@ -111,6 +187,7 @@ class CaptureAnalysis:
     beacons: int = 0
     wep_data: int = 0
     eapol_messages: int = 0
+    retransmits: int = 0
     handshakes: List[Handshake] = field(default_factory=list)
     pmkids: List[Handshake] = field(default_factory=list)
     bssids: List[str] = field(default_factory=list)
@@ -130,16 +207,39 @@ class CaptureAnalysis:
         return self.has_handshake or self.has_pmkid or self.wep_data > 5000
 
     def best_handshake(self) -> Optional[Handshake]:
+        """The most useful handshake: verifiable, challenge pair first."""
         complete = [h for h in self.handshakes if h.complete]
         if complete:
-            return max(complete, key=lambda h: h.eapol_count)
+            return max(complete, key=lambda h: (h.score, h.eapol_count))
         return self.handshakes[0] if self.handshakes else None
+
+    def crackable_handshakes(self) -> List[Handshake]:
+        """Every handshake a MIC can be recomputed for, best first and unique.
+
+        Retransmitted messages produce identical handshakes, and identical
+        handshakes produce identical MIC checks: a long capture of one client
+        must not cost one verification per copy.
+        """
+        seen = set()
+        unique: List[Handshake] = []
+        for handshake in sorted(self.handshakes, key=lambda h: -h.score):
+            if not handshake.can_verify_mic:
+                continue
+            mic = handshake.mic_message
+            key = (handshake.station, handshake.anonce, handshake.snonce,
+                   mic.mic.hex() if mic else "")
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(handshake)
+        return unique
 
     def to_dict(self) -> Dict[str, object]:
         return {
             "path": self.path, "format": self.format, "packets": self.packets,
             "data": self.data_packets, "mgmt": self.mgmt_packets, "beacons": self.beacons,
             "wep_data": self.wep_data, "eapol": self.eapol_messages,
+            "retransmits": self.retransmits,
             "handshakes": [h.to_dict() for h in self.handshakes],
             "pmkids": [h.to_dict() for h in self.pmkids],
             "bssids": self.bssids, "essids": self.essids,
@@ -364,6 +464,11 @@ def _parse_eapol_body(body: bytes) -> Optional[dict]:
     is_pairwise = bool(key_info & 0x0008)
     key_ack = bool(key_info & 0x0080)
     secure = bool(key_info & 0x0200)
+    install = bool(key_info & 0x0040)
+    mic_present = bool(key_info & 0x0100)
+    encrypted = bool(key_info & 0x1000)
+    error_flag = bool(key_info & 0x0400)
+    key_len = struct.unpack_from(">H", eapol_body, 3)[0] if len(eapol_body) >= 5 else 0
     if is_pairwise:
         if key_ack and not secure:
             number = 1
@@ -387,10 +492,16 @@ def _parse_eapol_body(body: bytes) -> Optional[dict]:
         if position >= 0 and len(key_data) >= position + 20:
             pmkid = key_data[position + 4: position + 20].hex()
     nonce = eapol_body[13:45] if len(eapol_body) >= 45 else b""
+    # the MIC is what proves a password: slice it once, here, instead of making
+    # every consumer find the offset again
+    mic = eapol_body[77:93] if mic_present and len(eapol_body) >= 93 else b""
     return {
         "version": version, "number": number, "key_info": key_info,
         "replay": replay, "pmkid": pmkid, "has_kde": bool(key_data),
-        "key_data_len": key_data_len, "nonce": nonce,
+        "key_data_len": key_data_len, "nonce": nonce, "mic": mic,
+        "key_version": key_info & 0x0007, "key_len": key_len,
+        "install": install, "encrypted": encrypted, "error": error_flag,
+        "mic_present": mic_present,
     }
 
 
@@ -418,6 +529,7 @@ class _AnalysisState:
     beacons: int = 0
     wep_data: int = 0
     eapol_messages: int = 0
+    retransmits: int = 0
     essids: Dict[str, str] = field(default_factory=dict)
     bssids: set = field(default_factory=set)
     handshakes: Dict[Tuple[str, str], Handshake] = field(default_factory=dict)
@@ -434,7 +546,7 @@ class _AnalysisState:
             path=self.path, format=self.format, packets=self.packets,
             data_packets=self.data_packets, mgmt_packets=self.mgmt_packets,
             beacons=self.beacons, wep_data=self.wep_data,
-            eapol_messages=self.eapol_messages,
+            eapol_messages=self.eapol_messages, retransmits=self.retransmits,
             handshakes=list(self.handshakes.values()), pmkids=list(self.pmkids),
             bssids=sorted(self.bssids), essids=dict(self.essids),
             error=self.error,
@@ -591,13 +703,23 @@ def _analyze_buffer(buf, state: _AnalysisState, max_packets: int,
                                                          first_ts=timestamp)
             number = eapol["number"]
             replay = eapol["replay"]
+            mic = eapol["mic"]
             previous = handshake.messages.get(number)
-            if previous is None or replay >= previous.replay:
+            if (previous is not None and replay == previous.replay
+                    and mic == previous.mic):
+                # an exact retransmission: same replay counter, same MIC.  Keep
+                # the frame we already extracted (and measured) and count it.
+                previous.retransmits += 1
+                state.retransmits += 1
+            elif previous is None or replay >= previous.replay:
                 handshake.messages[number] = EapolMessage(
                     bssid=bssid, station=station, number=number,
                     key_info=eapol["key_info"], replay=replay,
                     frame_time=timestamp, pmkid=eapol["pmkid"], has_kde=eapol["has_kde"],
                     nonce=eapol["nonce"].hex(), raw=bytes(buf[start:start + length]),
+                    mic=mic, key_version=eapol["key_version"], key_len=eapol["key_len"],
+                    install=eapol["install"], encrypted=eapol["encrypted"],
+                    error=eapol["error"],
                 )
             if eapol["pmkid"] and eapol["pmkid"] not in seen_pmkids:
                 seen_pmkids.add(eapol["pmkid"])
@@ -625,6 +747,17 @@ def _analyze_buffer(buf, state: _AnalysisState, max_packets: int,
             _ANALYSIS_CACHE.popitem(last=False)
     return result
 
+
+
+def eapol_frame(message: EapolMessage) -> bytes:
+    """The raw EAPOL-Key frame of a stored message (hashcat mode 22000 wants it).
+
+    ``EapolMessage.raw`` is a whole 802.11 data frame; the EAPOL frame starts
+    after LLC/SNAP + ethertype, which is why the MIC offset (81) is defined
+    relative to the returned buffer.
+    """
+    from .crypto import _eapol_frame_from_bytes
+    return _eapol_frame_from_bytes(message.raw)
 
 
 def quick_check(path: str, use_cache: bool = True) -> Tuple[bool, str]:

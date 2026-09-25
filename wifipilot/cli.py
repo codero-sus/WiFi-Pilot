@@ -743,13 +743,23 @@ def command_analyze(args, config: Config, console) -> int:
             f"[bold]{Path(path).name}[/bold]  format={analysis.format or '?'}  "
             f"packets={analysis.packets}  beacons={analysis.beacons}  data={analysis.data_packets}\n"
             f"EAPOL messages: {analysis.eapol_messages} · "
-            f"handshakes: {len(analysis.handshakes)} ({'crackable' if analysis.has_handshake else 'incomplete'}) · "
+            f"retransmits ignored: {analysis.retransmits}\n"
+            f"handshakes: {len(analysis.crackable_handshakes())} crackable / "
+            f"{len(analysis.handshakes)} seen · "
             f"PMKIDs: {len(analysis.pmkids)} · WEP IV frames: {analysis.wep_data}",
             title="analysis", border_style="cyan"))
+        for handshake in analysis.crackable_handshakes():
+            pair = ("M1+M2 challenge" if handshake.challenge
+                    else "M2+M3 authorized" if handshake.authorized else "partial")
+            console.print(f"  [green]crackable[/green] {handshake.bssid} ↔ {handshake.station} "
+                          f"messages={sorted(handshake.messages)} ({pair}) "
+                          f"pmkid={'yes' if handshake.pmkid else 'no'} score={handshake.score}")
         for handshake in analysis.handshakes:
-            mark = "[green]crackable[/green]" if handshake.complete else "[yellow]incomplete[/yellow]"
-            console.print(f"  {mark} {handshake.bssid} ↔ {handshake.station} "
-                          f"messages={sorted(handshake.messages)} pmkid={'yes' if handshake.pmkid else 'no'}")
+            if handshake.can_verify_mic:
+                continue
+            console.print(f"  [yellow]incomplete[/yellow] {handshake.bssid} ↔ {handshake.station} "
+                          f"messages={sorted(handshake.messages)} "
+                          f"(no usable MIC: needs M1+M2 or M2+M3 plus both nonces)")
         for pmkid in analysis.pmkids:
             console.print(f"  [green]PMKID[/green] {pmkid.bssid} → {pmkid.pmkid}")
         if analysis.essids:

@@ -184,6 +184,28 @@ def bench_crack(repeat: int = 1) -> None:
     report("crack: handshake (end to end)", single.seconds,
            f"cracked={single.cracked} password={single.password!r} tool={single.tool}",
            f"{single.attempts / max(1e-9, single.seconds):,.0f} cand/s")
+
+    # real captures carry every frame more than once.  Retransmissions must cost
+    # parsing time only, not one MIC check per copy for every candidate.
+    noisy_path = "/tmp/wifipilot-bench-retrans.pcap"
+    frames, _ = synth.build_handshake_frames(SSID, BSSID, STA, PSK)
+    synth.write_pcap(noisy_path, frames[:1] + [f for f in frames[1:] for _ in range(5)])
+    noisy = analyze_file(noisy_path, use_cache=False)
+    noisy_capture = Capture(kind="handshake", bssid=BSSID, essid=SSID,
+                            path=noisy_path, valid=True)
+    noisy_cracker = Cracker(session, config, session.bus, demo=False)
+    verifiers = len(noisy_cracker._verifiers(ap, noisy_capture, noisy))
+
+    def verify_noisy(count=min(len(wrong), 20)):
+        _, tested = noisy_cracker._python_pass(ap, noisy_capture, noisy, wrong[:count],
+                                               verifier_deadline, lambda *_: None)
+        return tested
+
+    timed("crack: verify (5x retransmitted capture)", verify_noisy, 1,
+          detail=(f"{noisy.eapol_messages} EAPOL frames -> {verifiers} verifier(s), "
+                  f"{noisy.retransmits} retransmits not re-verified"),
+          unit="cand/s")
+    Path(noisy_path).unlink(missing_ok=True)
     Path(path).unlink(missing_ok=True)
 
 

@@ -193,6 +193,14 @@ work went — nothing else was allowed to get slower:
   only the appended bytes; an unchanged file returns a cached snapshot without
   touching the disk again.  Every call hands out a fresh `CaptureAnalysis`, so a
   result someone already holds never changes underneath them.
+* **the capture tells the truth about itself.** EAPOL messages are parsed down
+  to the flags that matter (ack/install/secure/MIC/encrypted/error), the key
+  version (WPA/TKIP vs WPA2/RSN) and the MIC itself; exact retransmissions are
+  recognised by replay counter + MIC and *counted* rather than stored again, so
+  "12 EAPOL frames" and "1 handshake to verify" stop being the same number.
+  `CaptureAnalysis.crackable_handshakes()` is the deduplicated, quality-sorted
+  view a cracker wants: a handshake relayed by a second AP, or captured five
+  times, costs one MIC check per candidate, not five.
 * **verification state is prepared once.** `crypto.HandshakeVerifier` and
   `crypto.PmkidVerifier` hoist the per-capture work (EAPOL extraction, MIC
   zeroing, MAC parsing, AES-CMAC subkeys) out of the candidate loop, and

@@ -402,9 +402,10 @@ class Cracker:
             if verifier.usable:
                 prepared.append(verifier)
         if analysis and analysis.handshakes and ap.essid:
-            for handshake in analysis.handshakes:
-                if not handshake.can_verify_mic:
-                    continue
+            # crackable_handshakes() drops retransmissions and sorts by quality:
+            # a capture with the same M1+M2 five times costs one MIC check, not
+            # five, and the challenge pair is tried before the leftovers.
+            for handshake in analysis.crackable_handshakes():
                 verifier = HandshakeVerifier.from_analysis(handshake, ap.essid, ap.bssid)
                 if verifier.usable:
                     prepared.append(verifier)
