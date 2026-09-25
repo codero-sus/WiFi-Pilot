@@ -310,19 +310,23 @@ class Cracker:
     def _crack_real(self, ap: AccessPoint, capture: Capture, path: str,
                     analysis: CaptureAnalysis, lists: List[str],
                     timeout: float) -> CrackResult:
-        deadline = time.time() + timeout
+        started = time.time()
+        deadline = started + timeout
         attempts = 0
         log_chunks: List[str] = []
 
+        def elapsed() -> float:
+            return time.time() - started
+
         # 1) targeted Python pass (proves the capture is crackable *now*)
         candidates = list(itertools.islice(smart_candidates(ap), 3000))
-        found = self._python_pass(ap, capture, analysis, candidates, deadline,
-                                  on_progress=lambda n, detail: self._progress(
-                                      ap, attempts + n, len(candidates), 0, detail))
-        attempts += len(candidates)
+        found, tested = self._python_pass(ap, capture, analysis, candidates, deadline,
+                                          on_progress=lambda n, detail: self._progress(
+                                              ap, attempts + n, len(candidates), 0, detail))
+        attempts += tested
         if found:
             return CrackResult(cracked=True, password=found, tool="wifipilot (built-in)",
-                               attempts=attempts, seconds=timeout - (deadline - time.time()),
+                               attempts=attempts, seconds=elapsed(),
                                reason="targeted candidate list (SSID/vendor/date patterns)",
                                verified=True)
 
@@ -357,16 +361,17 @@ class Cracker:
 
         # 3) pure-Python sweep of the primary wordlist (works with no tools at all)
         if time.time() < deadline and lists:
-            found = self._python_wordlist_pass(ap, capture, analysis, lists, deadline,
-                                               lambda n, d: self._progress(ap, attempts + n, 0, 0, d))
-            attempts += 1
+            found, tested = self._python_wordlist_pass(
+                ap, capture, analysis, lists, deadline,
+                lambda n, d: self._progress(ap, attempts + n, 0, 0, d))
+            attempts += tested
             if found:
                 return CrackResult(cracked=True, password=found, tool="wifipilot (built-in)",
-                                   attempts=attempts, seconds=timeout - (deadline - time.time()),
+                                   attempts=attempts, seconds=elapsed(),
                                    reason="dictionary sweep", verified=True)
 
         return CrackResult(cracked=False, attempts=attempts,
-                           seconds=timeout - (deadline - time.time()),
+                           seconds=elapsed(),
                            reason="password not in the candidate space",
                            log="\n".join(log_chunks)[-4000:], tried_wordlists=lists)
 
@@ -465,28 +470,38 @@ class Cracker:
 
     def _python_pass(self, ap: AccessPoint, capture: Capture, analysis: CaptureAnalysis,
                      candidates: Sequence[str], deadline: float,
-                     on_progress: Callable[[int, str], None]) -> str:
+                     on_progress: Callable[[int, str], None]) -> Tuple[str, int]:
+        """Verify ``candidates``; return ``(password or "", candidates verified)``.
+
+        The count is what was really tested, not the length of the list: an early
+        hit must not be reported (or logged) as a full sweep of the space.
+        """
         started = time.time()
-        seen = set()
+        seen: set = set()
+        tested = 0
         for index, candidate in enumerate(candidates):
             if index % 200 == 0:
                 if time.time() > deadline:
-                    return ""
+                    return "", tested
                 on_progress(index, f"built-in engine: {candidate[:24]}")
             if candidate in seen:
                 continue
             seen.add(candidate)
+            tested += 1
             if self._verify(ap, capture, analysis, candidate):
-                return candidate
-        rate = len(candidates) / max(0.001, time.time() - started)
-        self.bus.log(f"built-in engine tested {len(candidates)} targeted candidates "
+                self.bus.log(f"built-in engine cracked it after {tested} candidates "
+                             f"({tested / max(0.001, time.time() - started):,.0f}/s)", level="debug")
+                return candidate, tested
+        rate = tested / max(0.001, time.time() - started)
+        self.bus.log(f"built-in engine tested {tested} targeted candidates "
                      f"({rate:,.0f}/s)", level="debug")
-        return ""
+        return "", tested
 
     def _python_wordlist_pass(self, ap: AccessPoint, capture: Capture,
                               analysis: CaptureAnalysis, lists: List[str],
                               deadline: float,
-                              on_progress: Callable[[int, str], None]) -> str:
+                              on_progress: Callable[[int, str], None]) -> Tuple[str, int]:
+        """Sweep wordlists; return ``(password or "", words verified)``."""
         tested = 0
         started = time.time()
         use_rules = bool(self.config.use_rules)
@@ -500,13 +515,13 @@ class Cracker:
                     tested += 1
                     if tested % 250 == 0:
                         if time.time() > deadline:
-                            return ""
+                            return "", tested
                         rate = tested / max(0.001, time.time() - started)
                         on_progress(tested, f"built-in dictionary sweep: {name} ({rate:,.0f}/s)")
                     if self._verify(ap, capture, analysis, candidate):
-                        return candidate
+                        return candidate, tested
         self.bus.log(f"built-in dictionary sweep exhausted {tested:,} words", level="debug")
-        return ""
+        return "", tested
 
     # -- external engines --------------------------------------------------
     def _hash_path(self, capture: Capture, path: str) -> str:

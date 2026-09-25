@@ -437,8 +437,10 @@ How:
 * **one PBKDF2 per candidate.** A capture can hold several handshakes plus a PMKID for the
   same network; the PMK is derived once and shared, and the per-handshake state (EAPOL
   extraction, MIC zeroing) is prepared once instead of per candidate.
-* **honest benchmarks.** `benchmarks/bench.py` measures the real paths (wrong candidates, real
-  handshakes, real captures) so the numbers cannot be flattered by an early hit.
+* **honest benchmarks and honest counts.** `benchmarks/bench.py` measures the real paths (wrong
+  candidates, real handshakes, real captures) so the numbers cannot be flattered by an early
+  hit, and the engine reports the candidates it actually derived: a run that stops at candidate
+  #48 says 49 candidates at ~340/s, not the full candidate space at an imaginary rate.
 
 Pure Python caps the built-in engine at roughly 2.6 ms per candidate — that is PBKDF2-HMAC-SHA1
 with 4096 rounds, as WPA specifies, and it is the reason the built-in engine is a fallback:
@@ -483,7 +485,7 @@ More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ```bash
 pip install -e '.[dev]'
-pytest -q                      # 228 tests, ~4 min (includes full simulated campaigns)
+pytest -q                      # 229 tests, ~4 min (includes full simulated campaigns)
 make bench                     # timing numbers for the hot paths (see Performance)
 ```
 
