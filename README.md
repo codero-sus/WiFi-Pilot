@@ -434,6 +434,9 @@ How:
 * **table-driven AES.** The CMAC behind every MIC check uses folded T-tables, so a MIC costs
   ~0.2 ms instead of ~3 ms; the readable implementation stays in the file and the two are
   cross-checked in the tests.
+* **no wasted verifications.** EAPOL frames are parsed down to their flags, key version and
+  MIC, and exact retransmissions are counted instead of stored again: a handshake seen five
+  times (or relayed by a second AP) costs one MIC check per candidate, not five.
 * **one PBKDF2 per candidate.** A capture can hold several handshakes plus a PMKID for the
   same network; the PMK is derived once and shared, and the per-handshake state (EAPOL
   extraction, MIC zeroing) is prepared once instead of per candidate.
@@ -485,7 +488,7 @@ More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ```bash
 pip install -e '.[dev]'
-pytest -q                      # 229 tests, ~4 min (includes full simulated campaigns)
+pytest -q                      # 234 tests, ~4 min (includes full simulated campaigns)
 make bench                     # timing numbers for the hot paths (see Performance)
 ```
 

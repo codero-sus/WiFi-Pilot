@@ -67,6 +67,103 @@ def test_growing_capture_parses_incrementally(tmp_path):
             assert message.raw == second.messages[number].raw
 
 
+def _retransmitted(path: str, copies: int = 3) -> str:
+    """A capture where every EAPOL frame is on air ``copies`` times."""
+    frames, _ = build_handshake_frames(SSID, AP_MAC, STA_MAC, PSK, include_pmkid=True)
+    beam = frames[:1]                       # beacon once
+    eapol = [frame for frame in frames[1:] for _ in range(copies)]
+    write_pcap(path, beam + eapol)
+    return path
+
+
+def test_retransmissions_are_counted_not_stored_again(tmp_path):
+    """A long capture of one client must not cost one MIC check per copy."""
+    path = _retransmitted(str(tmp_path / "retrans.pcap"), copies=3)
+    pcap.clear_cache()
+    analysis = analyze_file(path)
+
+    assert analysis.eapol_messages == 12                 # every frame was seen
+    assert analysis.retransmits == 8                     # ...but only 4 are stored
+    handshake = analysis.best_handshake()
+    assert sorted(handshake.messages) == [1, 2, 3, 4]
+    assert all(message.retransmits == 2 for message in handshake.messages.values())
+    assert len(analysis.crackable_handshakes()) == 1
+    assert analysis.handshakes[0].messages[2].label.endswith("x3")
+
+
+def test_messages_expose_the_eapol_flags_and_the_mic(tmp_path):
+    path = _retransmitted(str(tmp_path / "flags.pcap"), copies=1)
+    pcap.clear_cache()
+    analysis = analyze_file(path)
+    handshake = analysis.best_handshake()
+
+    m1, m2, m3, m4 = (handshake.messages[n] for n in (1, 2, 3, 4))
+    assert (m1.key_info, m1.mic, m1.from_ap) == (0x008A, b"", True)
+    assert m2.flags == {"install": False, "secure": False, "ack": False,
+                        "mic": True, "encrypted": False, "error": False}
+    assert len(m2.mic) == 16 and m2.mic_present
+    assert (m3.install, m3.flags["secure"], m3.from_ap) == (True, True, True)
+    assert (m4.flags["secure"], m4.flags["ack"], m4.from_ap) == (True, False, False)
+    assert all(message.key_version == 2 for message in handshake.messages.values())
+    assert handshake.challenge and handshake.authorized
+    assert handshake.mic_message is m2
+    assert handshake.score == 5          # challenge pair + no retransmit + PMKID
+
+
+def test_one_handshake_under_two_bssids_is_verified_once(tmp_path):
+    """A relay/repeater records the same handshake twice; that is one MIC check."""
+    frames, _ = build_handshake_frames(SSID, AP_MAC, STA_MAC, PSK)
+    old, new = bytes.fromhex(AP_MAC.replace(":", "")), bytes.fromhex("aabbccddeeff")
+
+    def relay(frame: bytes) -> bytes:
+        """The same frame, relayed by a second AP: addresses change, EAPOL does not."""
+        out = bytearray(frame)
+        for start in (4, 10, 16):                  # addr1 / addr2 / addr3
+            if bytes(out[start:start + 6]) == old:
+                out[start:start + 6] = new
+        return bytes(out)
+
+    path = str(tmp_path / "relayed.pcap")
+    write_pcap(path, frames[:1] + frames[1:] + [relay(frame) for frame in frames[1:]])
+    pcap.clear_cache()
+    analysis = analyze_file(path)
+
+    assert len(analysis.handshakes) == 2                     # two APs saw it
+    assert len(analysis.crackable_handshakes()) == 1         # one thing to verify
+    assert analysis.retransmits == 0
+
+
+def test_best_handshake_prefers_the_clean_challenge_pair(tmp_path):
+    """Retransmission noise must not win over a handshake seen once, cleanly."""
+    good, _ = build_handshake_frames(SSID, AP_MAC, STA_MAC, PSK, include_pmkid=True)
+    other = "02:00:00:00:00:11"
+    noisy, _ = build_handshake_frames(SSID, AP_MAC, other, PSK, include_pmkid=True)
+    frames = good[:1] + noisy[1:] + noisy[1:] + good[1:]
+    path = str(tmp_path / "two-clients.pcap")
+    write_pcap(path, frames)
+    pcap.clear_cache()
+    analysis = analyze_file(path)
+
+    assert len(analysis.crackable_handshakes()) == 2
+    assert analysis.best_handshake().station == STA_MAC
+    assert analysis.crackable_handshakes()[0].station == STA_MAC
+    assert analysis.retransmits == 4
+    assert analysis.to_dict()["retransmits"] == 4
+
+
+def test_eapol_frame_is_recoverable_for_export(tmp_path):
+    """hashcat mode 22000 wants the raw EAPOL-Key frame, MIC included."""
+    path = _retransmitted(str(tmp_path / "export.pcap"), copies=1)
+    pcap.clear_cache()
+    message = analyze_file(path).best_handshake().messages[2]
+    frame = pcap.eapol_frame(message)
+
+    assert frame[:2] == b"\x02\x03"          # EAPOL version 2, type 3 (key)
+    assert frame[4] == 2                      # RSN descriptor
+    assert frame[81:97] == message.mic and len(message.mic) == 16
+    assert len(frame) == int.from_bytes(frame[2:4], "big") + 4
+
+
 def test_analysis_cache_is_reused_and_invalidated(tmp_path):
     frames, _ = build_handshake_frames(SSID, AP_MAC, STA_MAC, PSK, include_pmkid=True)
     path = tmp_path / "cached.pcap"
