@@ -205,5 +205,11 @@ work went — nothing else was allowed to get slower:
 * **benchmarks measure the real path** (`benchmarks/`, `make bench`): real
   captures, real handshakes, wrong candidates only, and the artifact (frame
   count, MiB, candidate space) printed next to every number.
+* **counts are counts.** The built-in engine reports the candidates it actually
+  derived, and its log line says how many it took to crack, so an early hit
+  cannot be presented as a full sweep: the end-to-end benchmark stops at
+  candidate #48 and reports 49 candidates at ~340/s, not the 2,799 it never
+  derived — nor the 21,000/s that dividing the whole space by the elapsed time
+  would have claimed.
 
 Details and before/after numbers: README → *Performance*.

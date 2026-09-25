@@ -25,7 +25,6 @@ from wifipilot import crypto, pcap, planner, synth
 from wifipilot.pcap import analyze_file                 # noqa: E402
 from wifipilot.config import Config                                # noqa: E402
 from wifipilot.crack import Cracker, smart_candidates              # noqa: E402
-from wifipilot.demo import DemoRadio                               # noqa: E402
 from wifipilot.events import EventBus                              # noqa: E402
 from wifipilot.models import AccessPoint, Capture                  # noqa: E402
 from wifipilot.session import Session                              # noqa: E402
@@ -173,9 +172,9 @@ def bench_crack(repeat: int = 1) -> None:
     verifier_deadline = time.time() + 600
 
     def verify_wrong(count=len(wrong)):
-        cracker._python_pass(ap, capture, analysis, wrong[:count], verifier_deadline,
-                             lambda *_: None)
-        return count
+        _, tested = cracker._python_pass(ap, capture, analysis, wrong[:count],
+                                         verifier_deadline, lambda *_: None)
+        return tested
 
     timed("crack: built-in verify", verify_wrong, 1,
           detail=f"{len(wrong)} wrong candidates through the real engine",

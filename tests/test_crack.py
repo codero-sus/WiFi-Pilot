@@ -53,6 +53,22 @@ def test_builtin_engine_cracks_a_pmkid(pmkid_capture, session):
     assert capture.password == PSK
 
 
+def test_attempts_count_what_was_verified_not_the_candidate_space(handshake_capture, session):
+    """An early hit must not be reported as a full sweep of the candidate space."""
+    cracker = Cracker(session, session.config, session.bus, demo=False)
+    ap = _target(session)
+    analysis = analyze_file(handshake_capture)
+    capture = Capture(kind="handshake", bssid=AP_MAC, essid=SSID, path=handshake_capture,
+                      valid=True)
+    found, tested = cracker._python_pass(ap, capture, analysis,
+                                         ["wrong-1", "wrong-2", "wrong-3", PSK, "unreached"],
+                                         time.time() + 30, lambda *_: None)
+    assert found == PSK
+    assert tested == 4                       # the fifth candidate is never derived
+    result = cracker.crack_capture(ap, capture, wordlists=[], timeout=30)
+    assert result.cracked and 0 < result.attempts < 100
+
+
 def test_builtin_engine_cracks_a_handshake_via_mic(handshake_capture, session):
     ap = _target(session)
     capture = Capture(kind="handshake", bssid=AP_MAC, essid=SSID, path=handshake_capture,
