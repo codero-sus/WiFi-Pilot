@@ -6,7 +6,8 @@ import os
 
 import pytest
 
-from wifipilot.crypto import (AES, aes_cmac, compute_pmkid, mic_from_ptk, pmk, prf512,
+from wifipilot.crypto import (AES, aes_cmac, compute_pmkid, key_descriptor_version,
+                              mic_algorithms, mic_candidates, mic_from_ptk, pmk, prf512,
                               ptk, verify_handshake, verify_pmkid)
 from wifipilot.pcap import analyze_file
 from tests.conftest import AP_MAC, PSK, SSID, STA_MAC
@@ -92,8 +93,16 @@ def test_handshake_mic_accepts_only_the_right_password(handshake_capture):
     assert not verify_handshake(frames, password="", **kwargs)
 
 
-def test_mic_uses_cmac_for_ccmp_and_hmac_for_tkip():
+def test_mic_algorithm_follows_the_key_descriptor_version():
+    """KDV 1 = HMAC-MD5, 2 = HMAC-SHA1-128 (classic WPA2), 3 = AES-128-CMAC."""
     key = os.urandom(64)
-    frame = os.urandom(120)
-    assert mic_from_ptk(key, frame, 2) != mic_from_ptk(key, frame, 1)
-    assert len(mic_from_ptk(key, frame, 2)) == 16
+    frame = bytearray(os.urandom(120))
+    frame[5:7] = (0x010A).to_bytes(2, "big")          # KDV 2, pairwise, MIC present
+
+    assert key_descriptor_version(bytes(frame)) == 2
+    assert mic_algorithms(2) == ("sha1",)
+    assert len(mic_from_ptk(key, bytes(frame))) == 16
+    assert mic_from_ptk(key, bytes(frame)) == mic_from_ptk(key, bytes(frame), 2)
+    assert mic_from_ptk(key, bytes(frame), 2) != mic_from_ptk(key, bytes(frame), 3)
+    assert mic_from_ptk(key, bytes(frame), 3) != mic_from_ptk(key, bytes(frame), 1)
+    assert len(list(mic_candidates(key, bytes(frame), 0))) == 2      # KDV 0: try both

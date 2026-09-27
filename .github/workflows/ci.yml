@@ -44,6 +44,22 @@ jobs:
       - name: Scriptable API tests
         run: python -m pytest tests/test_api.py -q
 
+      - name: Hash files (hashcat mode 22000) round-trip
+        run: |
+          python -m pytest tests/test_hash22000.py -q
+          python - <<'PY'
+          from wifipilot.synth import build_capture
+          from wifipilot import hash22000
+          path, _ = build_capture("/tmp/ci.pcap", "ci-net", "aa:bb:cc:dd:ee:ff",
+                                  "02:00:00:00:00:01", "ci-passphrase-1", include_pmkid=True)
+          target, count = hash22000.write_capture(path, "/tmp/ci.hc22000")
+          lines, problems = hash22000.parse_text(open(target).read())
+          assert count == 2 and not problems, (count, problems)
+          verifiers = hash22000.verifiers(lines)
+          assert len(verifiers) == 2 and all(v.check("ci-passphrase-1") for v in verifiers)
+          print("hash round trip ok:", count, "lines")
+          PY
+
       - name: Platform guard (Linux-only enforcement)
         run: python -m pytest tests/test_platform.py -q
 
@@ -67,6 +83,17 @@ jobs:
           assert len(survey) > 0, "the simulator should produce access points"
           print("api ok:", len(survey), "APs")
           PY
+
+      - name: CLI export round-trip (no hashcat, no hcxtools)
+        run: |
+          python - <<'PY'
+          from wifipilot.synth import build_capture
+          build_capture("/tmp/cli.pcap", "ci-net", "aa:bb:cc:dd:ee:ff",
+                        "02:00:00:00:00:01", "ci-passphrase-1", include_pmkid=True)
+          PY
+          python -m wifipilot export /tmp/cli.pcap --out /tmp/ci-cli.hc22000 --no-color
+          python -m wifipilot --json analyze /tmp/ci-cli.hc22000 | grep -q '"format": "hc22000"'
+          echo "cli export ok"
 
       - name: Benchmarks run (and their output parses)
         run: |

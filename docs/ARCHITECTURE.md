@@ -20,7 +20,7 @@ fit together and, more importantly, *why* they are shaped this way.
                      │                 │               │              │               │
              ┌───────▼─────────────────▼───────────────▼──────────────▼───────────────▼───────┐
              │  events.py · models.py · util.py · iface.py · planner.py                          │
-             │  pcap.py (802.11/EAPOL parser) · crypto.py (AES/CMAC/PBKDF2/PRF) · synth.py       │
+             │  pcap.py (802.11/EAPOL) · hash22000.py · masks.py · crypto.py · synth.py          │
              └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -179,7 +179,88 @@ drivers drop monitor mode. wifipilot therefore treats every failure as data:
   immediately — so the campaign never loops on a solved or hopeless target;
 * the advisor can be asked to triage a failure and propose the next move.
 
-## 11. Performance
+## 11. Mask attacks
+
+A mask is a candidate space written down: `Telekom-?d?d?d?d` is 10,000 candidates, `?d` × 8 is
+100 million.  `wifipilot/masks.py` implements the hashcat tokens (`?l ?u ?d ?s ?a`, `??` for a
+literal `?`), derives the patterns worth trying from the target (ESSID prefix, vendor token, ISP
+numeric defaults), and hands the rest to :class:`~wifipilot.crack.Cracker`, which splits them:
+
+* masks whose space fits the built-in budget (`--mask-candidates`, default 10000) are expanded
+  lazily with `itertools.product` and verified — 5.8 M candidates/s of generation, 405/s of
+  verification, because PBKDF2 is the wall;
+* masks that do not fit are *named in the log with their size* and left to `hashcat -a 3`.  A
+  half-swept 100-million space reported as "mask attack exhausted" would be a lie, so the
+  engine refuses to do it quietly;
+* a pattern the operator typed is validated where it is written (`Mask.__post_init__`), and a
+  typo disables that pattern only — never the rest of the stage.
+
+Masks are deliberately *ordered by space*: the cheap, likely ones (four digits behind a
+four-character vendor prefix) run first, and the 10^11 "eight lowercase letters" masks are only
+useful to a GPU, which is exactly where they go.
+
+## 12. Rules, wordlists and files (no radio required)
+
+`wifipilot/rules.py` and `wifipilot/toolbox.py` are the parts an operator uses on a laptop, with
+the loot from an engagement and no adapter:
+
+* **rule files** — hashcat's rule language (the subset that can be modelled exactly: `l u c C t r
+  d f { } $ ^ [ ] D x O i s @ z Z q k K * T p '` and the `<N`/`>N`/`!X`/`/X` filters).  A rule
+  containing anything unmodelled is *skipped*, never half-applied, because a partial rule would
+  silently produce different candidates than `hashcat -r` does.
+* **the file toolbox** — merge / dedupe / filter / split / normalize mode-22000 files (dedupe on
+  the hash material, ignoring the message-pair byte, exactly as hashcat does),
+  `rescue_partial_capture()` for PMKIDs a converter drops, wordlist statistics and rule
+  expansion, hashcat potfile import/export, and a sha256 manifest so "the loot has not changed"
+  is a check rather than a hope.
+* **strategy presets** — `crack.py`'s `STRATEGIES` turn "quick" or "thorough" into the six knobs
+  that actually control a run (targeted budget, mask budget, rules, rule file, wordlist count,
+  timeout) plus the **stage order**.  Where the stages run is data
+  (`crack_order="targeted,masks,hashcat-masks,external,builtin"`), not code: the cheap,
+  target-derived candidates always get their chance before a dictionary sweep, and an unknown
+  stage name is dropped rather than run.
+
+## 13. Password analytics and vendor intelligence
+
+Two module-level datasets, both labelled as heuristics where they are heuristics:
+
+* `wifipilot/analytics.py` + `data/default-patterns.json` — per-vendor/ISP default schemes (a
+  vendor's numeric default, its WPS behaviour, the masks worth trying) and a password report:
+  pattern family, character classes, entropy, a 0–100 weakness score, and time-to-crack for four
+  engine speeds.  It answers "how bad is this PSK", which a bare password list cannot.
+* `wifipilot/vendors.py` + `data/oui-wifi.json` — the OUI registry is a *lookup* (a curated
+  subset of IEEE's `oui.txt`: 10,000+ 24-bit prefixes for the WiFi/CPE/chipset vendors an
+  engagement meets, plus 28-bit fallback blocks, with `import_oui_file()` merging a full
+  `oui.txt` when you want everything).  The vendor *dossier* is explicitly a heuristic:
+  `confidence: "heuristic"`, a disclaimer, and attack suggestions.  A randomised MAC is
+  reported as locally administered — never matched to a vendor it cannot have.
+
+## 14. Hash files (hashcat mode 22000)
+
+`wifipilot/hash22000.py` reads and writes the text format that WiFi cracking
+tools exchange, in both directions and with no external converter:
+
+* `WPA*01` PMKID lines and `WPA*02` EAPOL message pairs, with the fields in the
+  order hashcat documents (signature, type, PMKID/MIC, MAC_AP, MAC_STA, ESSID,
+  nonce, EAPOL, message-pair byte);
+* the ESSID is hex and is kept as *bytes*: `crypto.pmk()` salts PBKDF2 with the
+  raw SSID, so a network name that is not valid UTF-8 still verifies;
+* the EAPOL field is the raw frame with its MIC zeroed, and the separate MIC
+  field is what gets compared;
+* a line carries its Key Descriptor Version, so verification picks the right
+  MIC algorithm from the line itself (see §12's parsing notes);
+* lines that cannot be verified by anyone (a zeroed client nonce, a missing
+  ESSID, a truncated frame) are reported as such — `analyze` says "no usable
+  nonce", the cracker says "no verifiable hash" — rather than counted as
+  failures.
+
+`wifipilot export` (and `wp.export()`) prefer `hcxpcapngtool` when the operator
+asks for it (`--hcxtools`) and otherwise use this writer, which means the
+feature works on a machine with no hcxtools installed.  Reading a hash file
+needs nothing but the file: the built-in engine verifies candidates directly
+against the PMKID or the EAPOL MIC.
+
+## 15. Performance
 
 The hot paths are capture parsing and WPA key derivation, so that is where the
 work went — nothing else was allowed to get slower:
@@ -209,7 +290,17 @@ work went — nothing else was allowed to get slower:
 * **the crypto primitives are table-driven.** AES uses folded T-tables (~20x
   faster than the readable implementation, which is kept and cross-checked in
   the tests); the decryption schedule is built lazily because MIC checks only
-  encrypt.
+  encrypt.  The MIC algorithm comes from the frame's Key Descriptor Version —
+  HMAC-MD5 (KDV 1), HMAC-SHA1-128 (KDV 2, classic WPA2/CCMP), AES-128-CMAC
+  (KDV 3, 802.11w/PMF and SAE) — not from the descriptor type; a version of 0
+  ("whatever the negotiated AKM says") is the only case that tries two.  This
+  is checked against hashcat's own published mode 22000 example, whose
+  PMK/PMKID/MIC all reproduce.
+* **the candidate loop is PBKDF2-bound.** At ~415 candidates/s on this container,
+  2.31 ms of the 2.41 ms per candidate is PBKDF2-HMAC-SHA1 with 4096 rounds —
+  the MIC verification is a rounding error on top (2.7 µs for HMAC-SHA1-128,
+  0.18 ms for AES-CMAC).  That is the argument for the hashcat path: the KDF is
+  the wall, and a GPU is the only thing that moves it.
 * **benchmarks measure the real path** (`benchmarks/`, `make bench`): real
   captures, real handshakes, wrong candidates only, and the artifact (frame
   count, MiB, candidate space) printed next to every number.

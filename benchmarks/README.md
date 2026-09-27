@@ -15,6 +15,8 @@ actually measured. They run against real artifacts:
 | `pcap` | synthesizes captures (handshake, 20k frames, 69 MiB, a mixed "scene" that is 74% beacons) and parses them cold, from the cache, and incrementally |
 | `crypto` | the built-in engine's hot path: PBKDF2, PTK + MIC, and a full candidate verification through a prepared handshake |
 | `crack` | the real `Cracker` against a real synthesized handshake — wrong candidates only, so an early hit cannot flatter the throughput |
+| `hash` | hashcat mode 22000: writing lines from a capture, parsing + preparing verifiers, and verifying candidates through them |
+| `mask` | deriving patterns for a target, expanding a 10k space, budget selection, and one real candidate through the mask stage |
 | `session` | snapshot/loot/situation/export at 50/200/500 APs |
 | `planner` | `rank_targets`, `heuristic_plan`, `validate_plan` |
 | `web` | FastAPI request handling for the state snapshot and the JSON payload size |

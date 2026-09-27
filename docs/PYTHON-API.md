@@ -150,6 +150,11 @@ hit = wp.crack("capture.cap", wordlist=["words.txt"])  # -> CrackResult
 print(hit.cracked, hit.password, hit.verified, hit.tool)
 
 wp.analyze("capture.cap")            # EAPOL/PMKID inventory of a file
+wp.export("capture.cap")             # -> capture.hc22000 (hashcat mode 22000)
+wp.crack("web.hc22000")              # crack a hash file with the built-in engine
+wp.analyze("web.hc22000")            # -> {"format": "hc22000", "verifiable": 2, ...}
+wp.suggest_masks("Telekom-9F3A")     # -> [{"mask": "Telekom?d?d?d?d", "space": 10000, ...}]
+wp.crack("capture.cap", mask="Telekom-?d?d?d?d")   # mask attack, built-in engine
 wp.report(markdown=True)             # write the last run's report
 wp.loot()                            # captures worth keeping
 wp.loot("sessions/20260921-124633/reports/report.json")   # ...or from a report
@@ -226,3 +231,79 @@ catches everything the library raises on purpose.
 
 Runnable examples: `examples/triage.py` (discovery + report), `examples/crack.py`
 (offline cracking), `examples/handshake_hunt.py` (targeted, events, loot).
+
+## Hash files (hashcat mode 22000)
+
+``wp.export()`` writes a capture in the format cracking tools speak, and
+``wp.crack()``/``wp.analyze()`` read one back — no hashcat and no hcxtools
+required, in either direction:
+
+```python
+path = wp.export("loot/handshake-01.cap")          # PMKID + EAPOL lines
+report = wp.analyze(path)                          # lines, verifiable, essids, pairs
+hit = wp.crack(path, wordlist=["rockyou.txt"])     # -> CrackResult
+hit.cracked, hit.password, hit.verified
+wp.export("capture.cap", "out.json", fmt="json")   # or "csv" for a spreadsheet
+```
+
+The MIC algorithm is taken from each line's Key Descriptor Version, so classic
+WPA2 (HMAC-SHA1-128), 802.11w/PMF and SAE (AES-128-CMAC) and TKIP (HMAC-MD5)
+all verify correctly; lines with no usable nonce are reported as unverifiable
+rather than counted as failures.
+
+## Scoping, notes and analytics
+
+The functions around a campaign — usable before it starts and after it ends,
+with no radio attached:
+
+```python
+wp.configure(output_dir="loot", session_dir="sessions")
+
+wp.strategies()                       # the presets, with what each one does
+wp.targets(kind="guest", vendor="AVM", loot=True)   # filter what was discovered
+wp.select(tag="in-scope")             # make them the campaign scope
+wp.selected()                         # [{"bssid", "essid", "kind", "tags", "score"}]
+wp.tag("d0:12:cb:00:00:01", "in-scope")
+wp.note("back-office AP, retest after 18:00", bssid="d0:12:cb:00:00:01")
+wp.notes()                            # everything on disk, newest first
+wp.history(limit=20)                  # attempts, captures, notes, tags
+
+wp.vendor(bssid="d0:12:cb:00:00:01")  # OUI match + dossier (heuristic, and says so)
+wp.identify("Telekom-9F3A")           # scheme guess + masks worth trying
+wp.passwords()                        # every cracked PSK with its weakness verdict
+wp.advice()                           # prioritised next steps, no LLM call
+wp.benchmark(seconds=5)               # this machine's candidate rate -> ETAs
+```
+
+## Cracking from a file: strategies and the toolbox
+
+```python
+wp.crack("capture.cap", strategy="thorough")     # or quick/mask-only/wordlist-only/...
+wp.rules_info("best64")                          # what a rule file/preset actually does
+wp.hash_stats("someone-elses.hc22000")           # lines, verifiable, ESSIDs, pairs
+wp.merge_hashes(["a.hc22000", "b.hc22000"], "all.hc22000")
+wp.rescue_capture("partial.pcap", "rescued.hc22000")
+wp.wordlist_stats("rockyou.txt")
+wp.expand_wordlist("words.txt", "candidates.txt", "best64")
+wp.loot_manifest()                               # sha256 every loot file
+wp.verify_loot()                                 # {"ok": True, "checked": 12, ...}
+```
+
+`wp.crack` is the function; the module behind it is `wifipilot.crack` — import
+`from wifipilot.crack import STRATEGIES, apply_strategy` when you want the
+presets programmatically (the package attribute is the function, by design).
+
+## Mask attacks
+
+`wp.crack(..., mask=...)` takes a hashcat-style mask (`?d ?l ?u ?s ?a`, `??` for a literal `?`)
+or a list of them; `masks=False` switches the stage off:
+
+```python
+wp.crack("capture.cap", mask=["Telekom-?d?d?d?d", "?d?d?d?d?d?d?d?d"])
+wp.suggest_masks(essid="TP-LINK_1A2B", vendor="TP-Link")   # what the cracker would try
+```
+
+The built-in engine expands masks whose space fits its budget
+(`wp.configure(mask_candidates=50_000)`); bigger ones go to `hashcat -a 3` when it is installed.
+Because both engines end in the same verifier, a mask hit is proven the same way a dictionary
+hit is.
