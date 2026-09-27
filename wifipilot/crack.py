@@ -32,6 +32,7 @@ from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence,
 from .config import Config, default_wordlist, find_wordlists
 from .crypto import (HandshakeVerifier, PmkidVerifier, pmk, verify_handshake,
                      verify_pmkid)
+from . import analytics, hash22000, masks, rules as rules_module
 from .deps import registry
 from .events import EK
 from .models import AccessPoint, Capture
@@ -150,6 +151,119 @@ def rule_expand(word: str, limit: int = 40) -> Iterator[str]:
 
 
 # --------------------------------------------------------------------------- #
+# strategy presets (one name instead of six flags)
+# --------------------------------------------------------------------------- #
+
+STRATEGIES: Dict[str, Dict[str, object]] = {
+    # (targeted_candidates, mask_candidates, use_rules, rule_file, wordlists, order)
+    "quick": {
+        "label": "quick",
+        "targeted_candidates": 1500,
+        "mask_candidates": 5_000,
+        "use_rules": True,
+        "rule_file": "best64",
+        "wordlists": 0,
+        "order": "targeted,masks,builtin",
+        "crack_timeout": 120.0,
+        "note": "one fast pass: target-derived words, small masks, no big wordlists",
+    },
+    "default": {
+        "label": "default",
+        "targeted_candidates": 3000,
+        "mask_candidates": 10_000,
+        "use_rules": True,
+        "rule_file": "",
+        "wordlists": 0,
+        "order": "targeted,masks,hashcat-masks,external,builtin",
+        "crack_timeout": 600.0,
+        "note": "the normal engine order",
+    },
+    "thorough": {
+        "label": "thorough",
+        "targeted_candidates": 20_000,
+        "mask_candidates": 250_000,
+        "use_rules": True,
+        "rule_file": "best64",
+        "wordlists": 2,
+        "order": "targeted,masks,hashcat-masks,external,builtin",
+        "crack_timeout": 1800.0,
+        "note": "bigger targeted and mask passes, every wordlist, rules on",
+    },
+    "insane": {
+        "label": "insane",
+        "targeted_candidates": 100_000,
+        "mask_candidates": 2_000_000,
+        "use_rules": True,
+        "rule_file": "best64",
+        "wordlists": 5,
+        "order": "targeted,masks,hashcat-masks,external,builtin",
+        "crack_timeout": 7200.0,
+        "note": "everything the built-in engine can do; hashcat for the rest",
+    },
+    "mask-only": {
+        "label": "mask-only",
+        "targeted_candidates": 0,
+        "mask_candidates": 2_000_000,
+        "use_rules": False,
+        "rule_file": "",
+        "wordlists": 0,
+        "order": "masks,hashcat-masks",
+        "crack_timeout": 1800.0,
+        "note": "no dictionaries, no target words: masks and hashcat -a 3 only",
+    },
+    "wordlist-only": {
+        "label": "wordlist-only",
+        "targeted_candidates": 0,
+        "mask_candidates": 0,
+        "use_rules": True,
+        "rule_file": "best64",
+        "wordlists": 5,
+        "order": "external,builtin",
+        "crack_timeout": 3600.0,
+        "note": "dictionaries and rules only — the classic route",
+    },
+    "pixie-then-crack": {
+        "label": "pixie-then-crack",
+        "targeted_candidates": 3000,
+        "mask_candidates": 10_000,
+        "use_rules": True,
+        "rule_file": "best64",
+        "wordlists": 1,
+        "order": "targeted,masks,builtin,external",
+        "crack_timeout": 900.0,
+        "note": "same as default but the built-in engine runs before external tools",
+    },
+}
+
+
+def strategy_names() -> List[str]:
+    return sorted(STRATEGIES)
+
+
+def strategy(label: str) -> Dict[str, object]:
+    """Return a preset by name, or an empty dict (and let the caller complain)."""
+    return dict(STRATEGIES.get(label.strip().lower(), {}))
+
+
+def apply_strategy(config: Config, label: str) -> Dict[str, object]:
+    """Stamp a preset onto a config.  Unknown names raise :class:`KeyError`."""
+    if label not in STRATEGIES:
+        raise KeyError(f"unknown strategy {label!r} (known: "
+                       f"{', '.join(strategy_names())})")
+    preset = STRATEGIES[label]
+    config.targeted_candidates = int(preset["targeted_candidates"])
+    config.mask_candidates = int(preset["mask_candidates"])
+    config.use_rules = bool(preset["use_rules"])
+    config.use_masks = int(preset["mask_candidates"]) > 0
+    config.crack_timeout = float(preset["crack_timeout"])
+    config.crack_order = str(preset["order"])
+    config.rule_file = str(preset["rule_file"])
+    config.wordlist_limit = int(preset["wordlists"])
+    config.crack_strategy = label
+    return dict(preset)
+
+
+# --------------------------------------------------------------------------- #
 # candidate generation (targeted, before touching big wordlists)
 # --------------------------------------------------------------------------- #
 
@@ -177,24 +291,38 @@ def smart_candidates(ap: AccessPoint, analysis: Optional[CaptureAnalysis] = None
     bssid_bits = ap.bssid.replace(":", "")
     words += [bssid_bits[-4:], bssid_bits[-6:], bssid_bits[-8:], bssid_bits[-4:].upper()]
     words += ["admin", "password", "wifi", "internet", "guest", "default", "changeme"]
+    # known default schemes for this vendor/ISP (data/default-patterns.json)
+    scheme = analytics.vendor_patterns(essid, ap.vendor or "")
+    words += [str(word) for word in (scheme.get("words") or [])]
     if extra_words:
         words.extend(extra_words)
-    seen = set()
+    seen_words = set()
+    produced = set()
     for word in words:
         word = (word or "").strip()
         if len(word) < 3:          # too short to reach 8 chars with a suffix
             continue
-        if word in seen:
+        if word in seen_words:
             continue
-        seen.add(word)
-        if len(word) >= 8:
-            yield word
-        yield from rule_expand(word, limit=25)
+        seen_words.add(word)
+        for candidate in ([word] if len(word) >= 8 else []) + list(
+                rule_expand(word, limit=25)):
+            # the same candidate reached by two routes wastes one unit of a
+            # budget that an operator sized on purpose
+            if candidate in produced:
+                continue
+            produced.add(candidate)
+            yield candidate
     # numeric patterns common on ISP routers
     if ap.channel and ap.signal > -80:
         for prefix in ("1", "0", "8"):
             for length in (7, 9, 10):
-                yield prefix + str(abs(hash(ap.bssid)) % (10 ** (length - 1))).zfill(length - 1)
+                candidate = prefix + str(abs(hash(ap.bssid)) % (10 ** (length - 1))
+                                         ).zfill(length - 1)
+                if candidate in produced:
+                    continue
+                produced.add(candidate)
+                yield candidate
 
 
 def iter_wordlist(path: str) -> Iterator[str]:
@@ -226,11 +354,19 @@ class Cracker:
         self.radio = radio
         # prepared per-capture verification state (see _verifiers)
         self._prepared: Dict[Tuple[str, str, str], List[object]] = {}
+        #: masks for *this* call only (the web UI's per-request patterns)
+        self._call_masks: List[str] = []
+        #: strategy for *this* call only (``--strategy`` on the CLI, ``strategy=`` in the API)
+        self._strategy: str = ""
+        #: candidates verified by the stage that just ran (see _crack_real)
+        self._stage_attempts: int = 0
 
     # -- public API --------------------------------------------------------
     def crack_capture(self, ap: AccessPoint, capture: Capture,
                       wordlists: Optional[Sequence[str]] = None,
-                      timeout: Optional[float] = None) -> CrackResult:
+                      timeout: Optional[float] = None,
+                      masks: Optional[Sequence[str]] = None,
+                      strategy: str = "") -> CrackResult:
         if capture.password:
             return CrackResult(cracked=True, password=capture.password, tool="cached",
                                verified=True, reason="already cracked")
@@ -238,17 +374,37 @@ class Cracker:
             return CrackResult(reason="capture has no file on disk")
         timeout = timeout or self.config.crack_timeout
         path = capture.path or capture.hash_path
-        analysis = analyze_file(path) if os.path.exists(path) else CaptureAnalysis(path=path)
+        is_hash = hash22000.is_hash_file(path)
+        analysis = (CaptureAnalysis(path=path) if is_hash or not os.path.exists(path)
+                    else analyze_file(path))
         lists = list(wordlists or self._wordlists())
+        limit = int(getattr(self.config, "wordlist_limit", 0) or 0)
+        if limit and not wordlists:
+            lists = lists[:limit]
 
         self.bus.publish(EK.CRACK_START, {
             "bssid": ap.bssid, "essid": ap.essid, "kind": capture.kind,
             "path": path, "wordlists": lists[:5], "timeout": timeout,
         })
+        if hash22000.is_hash_file(path):
+            lines = hash22000.parse_file(path)
+            verifiable = len(hash22000.verifiers(lines))
+            self.bus.log(f"hash file: {len(lines)} line(s), {verifiable} verifiable "
+                         f"({len(lines) - verifiable} have no usable nonce or MIC)",
+                         level="info")
         self.session.set_progress(f"cracking {ap.display_name}", kind="crack",
                                   bssid=ap.bssid, detail="preparing engines")
 
         result = CrackResult(reason="no engine available", tried_wordlists=lists)
+        self._call_masks = [str(m) for m in (masks or [])]
+        self._strategy = strategy or ""
+        if self._strategy:
+            try:
+                preset = strategy(self._strategy)
+            except KeyError as error:
+                return CrackResult(reason=str(error), tried_wordlists=lists)
+            self.bus.log(f"crack strategy {preset['label']}: {preset['note']}", level="info")
+            lists = lists[:int(preset["wordlists"])] if int(preset["wordlists"]) else []
         try:
             if self.demo:
                 result = self._crack_demo(ap, capture, timeout)
@@ -284,6 +440,8 @@ class Cracker:
                 self.session.stats.crack_attempts += result.attempts
             self.bus.publish(EK.CRACK_END, {"bssid": ap.bssid, **result.to_dict()})
             self.session.clear_progress()
+            self._call_masks = []
+            self._strategy = ""
         return result
 
     # -- demo --------------------------------------------------------------
@@ -310,27 +468,139 @@ class Cracker:
     def _crack_real(self, ap: AccessPoint, capture: Capture, path: str,
                     analysis: CaptureAnalysis, lists: List[str],
                     timeout: float) -> CrackResult:
+        """Run the stages named in ``config.crack_order``, in that order.
+
+        Each stage is a method that either returns a :class:`CrackResult` (found
+        it) or ``None`` and appends a ``(candidates tested, log)`` pair.  Keeping
+        the order data — not code — is what makes ``--strategy`` possible: the
+        same stages, in a different sequence, with different budgets.
+        """
         started = time.time()
         deadline = started + timeout
         attempts = 0
         log_chunks: List[str] = []
+        order = self._stage_order()
 
         def elapsed() -> float:
             return time.time() - started
 
-        # 1) targeted Python pass (proves the capture is crackable *now*)
-        candidates = list(itertools.islice(smart_candidates(ap), 3000))
-        found, tested = self._python_pass(ap, capture, analysis, candidates, deadline,
-                                          on_progress=lambda n, detail: self._progress(
-                                              ap, attempts + n, len(candidates), 0, detail))
-        attempts += tested
+        def base_attempts() -> int:
+            return attempts
+
+        class _StageFailed(Exception):
+            pass
+
+        if not self._verifiers(ap, capture, analysis):
+            reason = ("hash file holds no verifiable hash (PMKID or an EAPOL pair "
+                      "with both nonces)" if hash22000.is_hash_file(path)
+                      else "capture holds nothing with a recomputable MIC or PMKID")
+            self.bus.log(reason, level="warning")
+            return CrackResult(cracked=False, attempts=0, seconds=elapsed(), reason=reason)
+
+        stages = {
+            "targeted": self._stage_targeted,
+            "masks": self._stage_masks,
+            "hashcat-masks": self._stage_hashcat_masks,
+            "external": self._stage_external,
+            "builtin": self._stage_builtin,
+        }
+        for stage in order:
+            if time.time() > deadline:
+                self.bus.log(f"stopping: {int(timeout)}s budget exhausted "
+                             f"({attempts:,} candidates verified)", level="info")
+                break
+            handler = stages.get(stage)
+            if handler is None:
+                self.bus.log(f"crack: ignoring unknown stage {stage!r}", level="warning")
+                continue
+            try:
+                found = handler(ap, capture, analysis, path, lists, deadline,
+                                base_attempts, log_chunks)
+            except _StageFailed:
+                break
+            if found is not None:
+                # the stage counted what it verified; the result reports that
+                found.attempts = self._stage_attempts
+                found.seconds = found.seconds or elapsed()
+                return found
+            attempts = self._stage_attempts
+        return CrackResult(cracked=False, attempts=attempts, seconds=elapsed(),
+                           reason="password not in the candidate space",
+                           log="\n".join(log_chunks)[-4000:], tried_wordlists=lists)
+
+    def _stage_order(self) -> List[str]:
+        """The stages to run: the strategy's order, or the configured one.
+
+        ``hashcat-masks`` is implied by ``masks`` (it is the same idea, handed to
+        hashcat) and is only run when hashcat is installed and the built-in
+        budget could not cover the spaces.
+        """
+        raw = (self.config.crack_order or
+               "targeted,masks,hashcat-masks,external,builtin")
+        order = [token.strip().lower() for token in raw.split(",") if token.strip()]
+        valid = ("targeted", "masks", "hashcat-masks", "external", "builtin")
+        clean = [token for token in order if token in valid]
+        for token in order:
+            if token not in valid:
+                self.bus.log(f"crack: ignoring unknown stage {token!r} in crack_order",
+                             level="warning")
+        return clean
+
+    def _count(self, tested: int) -> None:
+        self._stage_attempts = tested
+
+    # -- stages ------------------------------------------------------------ #
+    def _stage_targeted(self, ap, capture, analysis, path, lists, deadline,
+                        base_attempts, log_chunks) -> Optional[CrackResult]:
+        self._stage_attempts = base_attempts
+        limit = max(0, int(self.config.targeted_candidates))
+        if not limit:
+            return None
+        candidates = list(itertools.islice(smart_candidates(ap), limit))
+        found, tested = self._python_pass(
+            ap, capture, analysis, candidates, deadline,
+            on_progress=lambda n, detail: self._progress(ap, base_attempts() + n,
+                                                         len(candidates), 0, detail))
+        self._count(base_attempts() + tested)
         if found:
             return CrackResult(cracked=True, password=found, tool="wifipilot (built-in)",
-                               attempts=attempts, seconds=elapsed(),
+                               attempts=0, seconds=0.0,
                                reason="targeted candidate list (SSID/vendor/date patterns)",
                                verified=True)
+        return None
 
-        # 2) wordlists through aircrack-ng / hashcat
+    def _stage_masks(self, ap, capture, analysis, path, lists, deadline,
+                     base_attempts, log_chunks) -> Optional[CrackResult]:
+        self._stage_attempts = base_attempts()
+        mask_total = self._mask_total(ap)
+        found, tested, pattern = self._mask_pass(
+            ap, capture, analysis, deadline, base_attempts(),
+            lambda n, d: self._progress(ap, base_attempts() + n, mask_total, 0, d))
+        self._count(base_attempts() + tested)
+        if found:
+            return CrackResult(cracked=True, password=found, tool="wifipilot (built-in)",
+                               attempts=0, seconds=0.0,
+                               reason=f"mask attack ({pattern})", verified=True)
+        return None
+
+    def _stage_hashcat_masks(self, ap, capture, analysis, path, lists, deadline,
+                             base_attempts, log_chunks) -> Optional[CrackResult]:
+        self._stage_attempts = base_attempts()
+        if not (self.config.cracker in ("auto", "hashcat") and registry.has("hashcat")):
+            return None
+        result = self._run_hashcat_masks(ap, capture, path, deadline - time.time())
+        self._count(base_attempts() + result.attempts)
+        if result.cracked:
+            result.attempts = 0
+            result.tried_wordlists = self.config.mask_patterns or ["<target masks>"]
+            return result
+        if result.log:
+            log_chunks.append(result.log)
+        return None
+
+    def _stage_external(self, ap, capture, analysis, path, lists, deadline,
+                        base_attempts, log_chunks) -> Optional[CrackResult]:
+        self._stage_attempts = base_attempts()
         for wordlist in lists:
             if time.time() > deadline:
                 break
@@ -341,39 +611,183 @@ class Cracker:
                 self.config.cracker in ("auto", "hashcat") and registry.has("hashcat")
             ) else CrackResult(reason="hashcat unavailable")
             if result.cracked:
-                result.attempts += attempts
+                self._count(base_attempts() + result.attempts)
+                result.attempts = 0
                 result.tried_wordlists = [wordlist]
                 return result
             if result.log:
                 log_chunks.append(result.log)
-            attempts += result.attempts
             if time.time() > deadline:
                 break
             result = self._run_aircrack(ap, capture, path, wordlist, deadline - time.time(),
-                                        base_attempts=attempts)
+                                        base_attempts=base_attempts())
             if result.cracked:
-                result.attempts += attempts
+                self._count(base_attempts() + result.attempts)
+                result.attempts = 0
                 result.tried_wordlists = [wordlist]
                 return result
             if result.log:
                 log_chunks.append(result.log)
-            attempts += result.attempts
+        self._count(base_attempts())
+        return None
 
-        # 3) pure-Python sweep of the primary wordlist (works with no tools at all)
-        if time.time() < deadline and lists:
-            found, tested = self._python_wordlist_pass(
-                ap, capture, analysis, lists, deadline,
-                lambda n, d: self._progress(ap, attempts + n, 0, 0, d))
-            attempts += tested
-            if found:
-                return CrackResult(cracked=True, password=found, tool="wifipilot (built-in)",
-                                   attempts=attempts, seconds=elapsed(),
-                                   reason="dictionary sweep", verified=True)
+    def _stage_builtin(self, ap, capture, analysis, path, lists, deadline,
+                       base_attempts, log_chunks) -> Optional[CrackResult]:
+        self._stage_attempts = base_attempts()
+        if not lists or time.time() >= deadline:
+            return None
+        found, tested = self._python_wordlist_pass(
+            ap, capture, analysis, lists, deadline,
+            lambda n, d: self._progress(ap, base_attempts() + n, 0, 0, d))
+        self._count(base_attempts() + tested)
+        if found:
+            return CrackResult(cracked=True, password=found, tool="wifipilot (built-in)",
+                               attempts=0, seconds=0.0,
+                               reason="dictionary sweep", verified=True)
+        return None
 
-        return CrackResult(cracked=False, attempts=attempts,
-                           seconds=elapsed(),
-                           reason="password not in the candidate space",
-                           log="\n".join(log_chunks)[-4000:], tried_wordlists=lists)
+    # -- masks -------------------------------------------------------------
+    def _masks(self, ap: AccessPoint) -> Tuple[List[masks.Mask], List[str]]:
+        """Masks for this target: the operator's patterns first, then the ones
+        the target itself suggests.  Returns ``(masks, problems)``."""
+        if not self.config.use_masks or self.config.mask_candidates == 0:
+            return [], []
+        chosen: List[masks.Mask] = []
+        patterns: set = set()
+        problems: List[str] = []
+        for pattern in [*self._call_masks, *self.config.mask_patterns]:
+            try:
+                mask = masks.Mask(pattern, "operator-supplied")
+            except masks.MaskError as error:
+                problems.append(str(error))
+                continue
+            if not mask.usable:
+                problems.append(f"mask {pattern!r} cannot produce an 8-63 character "
+                                f"passphrase ({mask.length} characters)")
+                continue
+            chosen.append(mask)
+            patterns.add(mask.pattern)
+        for mask in masks.suggest_masks(ap.essid or "", ap.vendor or ""):
+            if mask.pattern not in patterns:
+                patterns.add(mask.pattern)
+                chosen.append(mask)
+        return chosen, problems
+
+    def _mask_total(self, ap: AccessPoint) -> int:
+        """Total candidate space of the masks the built-in engine will run."""
+        chosen, _ = self._masks(ap)
+        runnable, _ = masks.select_masks(chosen, max(0, int(self.config.mask_candidates)))
+        return sum(mask.space for mask in runnable)
+
+    def _mask_pass(self, ap: AccessPoint, capture: Capture, analysis: CaptureAnalysis,
+                   deadline: float, base_attempts: int,
+                   on_progress: Callable[[int, str], None]) -> Tuple[str, int, str]:
+        """Expand the masks the built-in engine can afford and verify them.
+
+        Returns ``(password or "", candidates verified, pattern used)``.  Masks
+        too big for the budget are *named* in the log and left to hashcat: a
+        half-swept 100-million space would be a lie dressed up as a result.
+        """
+        chosen, problems = self._masks(ap)
+        for problem in problems:
+            self.bus.log(f"mask: {problem}", level="warning")
+        if not chosen:
+            return "", 0, ""
+        budget = max(0, int(self.config.mask_candidates))
+        runnable, skipped = masks.select_masks(chosen, budget)
+        for mask in runnable:
+            self.bus.log(f"mask: {mask.pattern} — {mask.space:,} candidates "
+                         f"({mask.note})", level="debug")
+        for mask in skipped:
+            self.bus.log(f"mask: {mask.pattern} ({mask.space:,} candidates) skipped by the "
+                         f"built-in engine — hashcat -a 3 territory", level="debug")
+        if not runnable:
+            self.bus.log(f"mask: nothing fits the built-in budget of {budget:,} "
+                         f"candidates (smallest mask is {min(chosen, key=lambda m: m.space).pattern}"
+                         f" at {min(mask.space for mask in chosen):,})", level="debug")
+            return "", 0, ""
+        patterns = [mask.pattern for mask in runnable]
+        started = time.time()
+        tested = 0
+        for candidate in masks.mask_candidates(patterns, limit=budget):
+            tested += 1
+            if tested % 200 == 0:
+                if time.time() > deadline:
+                    self.bus.log(f"mask: stopped after {tested:,} candidates (time budget)",
+                                 level="debug")
+                    break
+                on_progress(tested, f"mask {patterns[0]}")
+            if self._verify(ap, capture, analysis, candidate):
+                rate = tested / max(0.001, time.time() - started)
+                self.bus.log(f"mask attack: {patterns} cracked after {tested:,} "
+                             f"candidates ({rate:,.0f}/s)", level="debug")
+                return candidate, tested, patterns[0]
+        rate = tested / max(0.001, time.time() - started)
+        self.bus.log(f"mask attack: {tested:,} candidates from {len(patterns)} mask(s) "
+                     f"({rate:,.0f}/s), no match", level="debug")
+        return "", tested, ""
+
+    def _run_hashcat_masks(self, ap: AccessPoint, capture: Capture, path: str,
+                           timeout: float) -> CrackResult:
+        """Hand every selected mask to hashcat ``-a 3``, big spaces included."""
+        chosen, _ = self._masks(ap)
+        if not chosen:
+            return CrackResult(reason="no masks")
+        hashcat = registry.path("hashcat")
+        if not hashcat:
+            return CrackResult(reason="hashcat not installed")
+        hash_file = self._hash_path(capture, path)
+        if not hash_file:
+            return CrackResult(reason="no mode 22000 file to feed hashcat")
+        potfile = os.path.join(self.session.state_dir, "cracks", "hashcat.potfile")
+        started = time.time()
+        attempts = 0
+        log_chunks: List[str] = []
+        for mask in chosen:
+            remaining = timeout - (time.time() - started)
+            if remaining <= 1:
+                break
+            cmd = [hashcat, "-m", str(self.config.hashcat_mode), "-a", "3",
+                   hash_file, mask.pattern,
+                   "--potfile-path", potfile, "--status", "--status-timer", "5",
+                   "--workload-profile", str(self.config.hashcat_workload)]
+            if self.config.hashcat_devices:
+                cmd += ["-d", self.config.hashcat_devices]
+            self.bus.log(f"hashcat -a 3 {mask.pattern} — {mask.space:,} candidates "
+                         f"({mask.note})", level="info")
+
+            def on_line(line: str, _started=started) -> None:
+                nonlocal attempts
+                match = HASHCAT_PROGRESS_RE.search(line)
+                if match:
+                    done, total = int(match.group(1)), int(match.group(2))
+                    attempts = max(attempts, done)
+                    speed = HASHCAT_SPEED_RE.search(line)
+                    self._progress(ap, done, total,
+                                   safe_float(speed.group(1).rstrip("kMH/s")) if speed else 0,
+                                   f"hashcat -a 3 {mask.pattern}")
+
+            proc = Process(cmd, name="hashcat", echo_lines=self.config.verbose_tools,
+                           on_line=on_line)
+            proc.start()
+            if proc.error:
+                return CrackResult(reason=f"hashcat failed: {proc.error}", attempts=attempts)
+            while proc.running and time.time() - started < timeout:
+                time.sleep(0.5)
+            if proc.running:
+                proc.stop()
+            log_chunks.append("\n".join(proc.lines[-15:]))
+            if proc.returncode == 0:
+                password = self._hashcat_potfile_lookup(potfile, ap, hash_file)
+                if password:
+                    return CrackResult(cracked=True, password=password, tool="hashcat",
+                                       attempts=attempts, seconds=time.time() - started,
+                                       reason=f"hashcat -a 3 {mask.pattern}",
+                                       log="\n".join(log_chunks)[-4000:],
+                                       hash_path=hash_file, verified=True)
+        return CrackResult(cracked=False, attempts=attempts, seconds=time.time() - started,
+                           reason="masks exhausted", log="\n".join(log_chunks)[-4000:],
+                           hash_path=hash_file)
 
     # -- python engines ----------------------------------------------------
     def _verifiers(self, ap: AccessPoint, capture: Capture,
@@ -385,9 +799,17 @@ class Cracker:
         time on bookkeeping, and — worse — a capture with three handshakes would
         pay for three PBKDF2 derivations of the same password.
         """
-        key = (capture.path or capture.hash_path or "", ap.bssid, ap.essid)
+        path = capture.path or capture.hash_path or ""
+        key = (path, ap.bssid, ap.essid)
         prepared = self._prepared.get(key)
         if prepared is not None:
+            return prepared
+        if hash22000.is_hash_file(path):
+            # a mode 22000 file *is* the capture: the EAPOL/MIC data is the file
+            prepared = hash22000.verifiers(hash22000.parse_file(path))
+            if len(self._prepared) > 32:
+                self._prepared.clear()
+            self._prepared[key] = prepared
             return prepared
         prepared = []
         pmkid = (capture.extra.get("pmkid") if capture.extra else "") or ""
@@ -459,13 +881,13 @@ class Cracker:
                 if verify_pmkid(pmkid, ap.essid, ap.bssid, station, password):
                     return True
         if analysis and analysis.handshakes:
-            for handshake in analysis.handshakes:
-                if not handshake.can_verify_mic or not ap.essid:
+            for handshake in analysis.crackable_handshakes():
+                if not ap.essid:
                     continue
                 frames = {n: m.raw for n, m in handshake.messages.items()}
                 if verify_handshake(frames, ap.essid, ap.bssid, handshake.station,
                                     bytes.fromhex(handshake.anonce),
-                                    bytes.fromhex(handshake.snonce), password, 2):
+                                    bytes.fromhex(handshake.snonce), password):
                     return True
         return False
 
@@ -498,6 +920,28 @@ class Cracker:
                      f"({rate:,.0f}/s)", level="debug")
         return "", tested
 
+    def _rule_set(self) -> List[rules_module.Rule]:
+        """The rule set the built-in engine applies to each word.
+
+        ``config.rule_file`` may be a path to a hashcat ``.rule`` file or one of
+        the built-in set names; either way the rules are applied in Python.  An
+        unreadable file is reported once, not silently ignored.
+        """
+        spec = (self.config.rule_file or "").strip()
+        if not spec:
+            return []
+        if os.path.exists(spec):
+            loaded = rules_module.parse_file(spec)
+            if not loaded:
+                self.bus.log(f"rule file {spec} could not be parsed: no rules applied",
+                             level="warning")
+            return loaded
+        preset = rules_module.preset(spec)
+        if not preset and spec:
+            self.bus.log(f"unknown rule set {spec!r} (try best64, leet, append-digits, "
+                         f"case, or a path to a .rule file)", level="warning")
+        return preset
+
     def _python_wordlist_pass(self, ap: AccessPoint, capture: Capture,
                               analysis: CaptureAnalysis, lists: List[str],
                               deadline: float,
@@ -506,12 +950,20 @@ class Cracker:
         tested = 0
         started = time.time()
         use_rules = bool(self.config.use_rules)
+        rule_set = self._rule_set() if use_rules else []
+        if rule_set:
+            self.bus.log(f"built-in engine: applying {len(rule_set)} rule(s) per word "
+                         f"from {os.path.basename(self.config.rule_file) or 'preset'}",
+                         level="debug")
         for wordlist in lists[:2]:
             name = Path(wordlist).name
             for word in iter_wordlist(wordlist):
                 variants = [word]
                 if use_rules:
-                    variants += list(rule_expand(word, limit=8))
+                    if rule_set:
+                        variants += list(rules_module.apply_rules(word, rule_set, limit=24))
+                    else:
+                        variants += list(rule_expand(word, limit=8))
                 for candidate in variants:
                     tested += 1
                     if tested % 250 == 0:
@@ -689,6 +1141,7 @@ class Cracker:
 
     # -- helpers -----------------------------------------------------------
     def _wordlists(self) -> List[str]:
+        # (wordlist_limit is applied in _crack_real so an explicit --wordlist wins)
         lists = [os.path.abspath(os.path.expanduser(p)) for p in self.config.wordlists if p]
         lists = [p for p in lists if os.path.exists(p)]
         if not lists:

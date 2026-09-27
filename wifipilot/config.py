@@ -191,7 +191,27 @@ class Config:
     wordlists: List[str] = field(default_factory=list)
     rules: str = "best64"
     use_rules: bool = True
+    #: a hashcat ``.rule`` file (or the name of a built-in set) that the
+    #: *built-in* engine applies too, so a machine without hashcat can still use
+    #: ``best64.rule``/``rockyou-30000.rule``
+    rule_file: str = ""
+    #: one name instead of six flags: quick | default | thorough | insane |
+    #: mask-only | wordlist-only | pixie-then-crack
+    crack_strategy: str = ""
+    #: which stages run, and in which order (only these four tokens)
+    crack_order: str = "targeted,masks,hashcat-masks,external,builtin"
+    #: cap on how many configured wordlists a run uses (0 = all)
+    wordlist_limit: int = 0
     use_masks: bool = True
+    #: operator-supplied masks (``--mask 'Telekom-?d?d?d?d'``); empty means
+    #: "use the patterns derived from the target itself"
+    mask_patterns: List[str] = field(default_factory=list)
+    #: what the *built-in* engine may spend on the mask stage (~25 s at its
+    #: ~400 candidates/s).  A mask bigger than this is left to hashcat rather
+    #: than half-swept in Python.
+    mask_candidates: int = 10000
+    #: how many target-derived candidates the built-in engine tries first
+    targeted_candidates: int = 3000
     hashcat_mode: int = 22000
     hashcat_workload: int = 3
     hashcat_devices: str = ""
