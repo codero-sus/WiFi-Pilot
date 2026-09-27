@@ -46,7 +46,10 @@ are sent. See [docs/AI-PROVIDERS.md](docs/AI-PROVIDERS.md).
 - [Attacks](#attacks)
 - [Cracking](#cracking)
 - [CLI reference](#cli-reference)
+- [Hash files (hashcat mode 22000)](#hash-files-hashcat-mode-22000)
 - [Configuration](#configuration)
+- [Performance](#performance)
+- [Offline toolbox (no radio, no root)](#offline-toolbox-no-radio-no-root)
 - [Architecture](#architecture)
 - [Testing](#testing)
 - [FAQ / troubleshooting](#faq--troubleshooting)
@@ -84,17 +87,47 @@ aircrack-ng suite properly) and rebuilds everything around it:
 **Attacks**
 - **PMKID** capture, client-less (hcxdumptool, with an own-parser sniffing fallback)
 - **WPA/WPA2 handshake** capture: targeted deauth bursts, per-client or broadcast
+- **mask attacks**: `--mask 'Telekom-?d?d?d?d'`, or the patterns the target itself suggests
+  (ESSID prefix, vendor, ISP numeric defaults) — small spaces in the built-in engine, big ones
+  handed to `hashcat -a 3`
 - **WPS Pixie-Dust** (reaver `-K 1` / bully `--pixiewps`), plus opt-in online PIN recovery
   with vendor default-PIN algorithms tried first
 - **WEP IV harvesting** with ARP replay
 - **Passive** mode that never transmits anything
 
 **Cracking**
-- hashcat (with rules + `hcxpcapngtool` → mode 22000 conversion)
+- **strategy presets** instead of six flags: `--strategy quick|default|thorough|insane` plus
+  `mask-only`, `wordlist-only` and `pixie-then-crack` (`wifipilot crack FILE --list-strategies`)
+- **stage-ordered cracking** (`--crack-order targeted,masks,hashcat-masks,external,builtin`):
+  the cheap target-derived candidates run first, the expensive sweep last, and a stage can be
+  reordered or dropped without touching code
+- **hashcat rule files** (`-r best64.rule`, or a built-in preset) applied to every wordlist in
+  the built-in engine too, not only by hashcat
+- hashcat (with rules; `hcxpcapngtool` is used when present, and the built-in writer
+  produces mode 22000 itself)
 - aircrack-ng, fed a rule-expanded candidate stream on stdin (aircrack has no rule engine)
-- **built-in engine**: pure-Python PBKDF2 → PTK → AES-CMAC/HMAC-MD5 MIC verification and
+- **hashcat mode 22000 in and out**: read a `.hc22000` someone sent you, or write one from a
+  capture — no hashcat, no hcxtools, and the PMKID/ESSID bytes survive intact
+- **built-in engine**: pure-Python PBKDF2 → PTK → MIC verification (HMAC-SHA1-128 for classic
+  WPA2, AES-CMAC for 802.11w/PMF and SAE, HMAC-MD5 for TKIP) and
   PMKID recomputation. It cracks targeted candidate spaces with no GPU and no external tools,
   and it *proves* every password it reports.
+
+**Analysis without a radio**
+- **password analytics**: every cracked PSK gets a weakness verdict, its pattern family and
+  time-to-crack estimates for four engines (`wifipilot analyze`/session report) — “how bad is
+  this password”, not just the string
+- **vendor intelligence**: an OUI registry plus per-vendor dossiers (default key scheme, WPS
+  behaviour, bands, what to try first) — `wifipilot vendor d0:12:cb:00:00:01`. Dossiers are
+  labelled heuristics, never findings
+- **target scoping**: classify (`home-router`, `guest`, `iot`, …), tag, filter and select the
+  targets of an engagement (`wifipilot targets --tag in-scope --select`), with notes and a
+  per-AP history persisted to the session directory
+- **file toolbox**: merge/dedupe/filter/split/normalize mode-22000 hash files, rescue the PMKID
+  a converter drops (e.g. in message 1), wordlist stats/merge/rule-expansion, hashcat potfile
+  import/export, and a sha256 manifest that proves the loot has not changed
+- **benchmark**: `wifipilot benchmark` measures this machine's candidate rate and turns it into
+  ETAs — no radio, no target, safe to run anywhere
 
 **Intelligence (optional, two providers)**
 - **auto-think**: the advisor re-reads a compact situation report every N seconds and picks
@@ -333,14 +366,70 @@ Three engines run in order, and every reported password is verified:
 ```bash
 wifipilot crack loot/handshake-HOME-2F4A-*.cap -e HOME-2F4A
 wifipilot crack capture.pcapng -b AA:BB:CC:DD:EE:FF -w rockyou.txt --engine hashcat
+wifipilot crack capture.cap -e HOME-2F4A --mask 'HOME-?d?d?d?d'   # router default numbering
 wifipilot analyze capture.pcapng          # what is actually in this file?
+wifipilot analyze --masks -e HOME-2F4A    # what would the mask stage try, and how big?
 ```
 
-1. **hashcat** (`-m 22000`, rules, status parsing) when installed;
+The stages a single `crack` run goes through:
+
+| # | stage | why here |
+| --- | --- | --- |
+| 1 | target-derived candidates (ESSID words, vendor, dates, leet) | microseconds each, high hit rate |
+| 2 | masks (patterns from the ESSID/vendor, plus any `--mask`) | router defaults are not dictionary words |
+| 3 | `hashcat -a 3` for the masks too big for Python | a GPU eats 10⁸ candidates |
+| 4 | wordlists through hashcat / aircrack-ng (rules) | the classic path |
+| 5 | wordlists through the built-in engine | works on a machine with no tools at all |
+
+The built-in mask stage is *budgeted* (`--mask-candidates`, default 10000 ≈ 25 s): a mask bigger
+than the budget is named in the log with its size and left to hashcat, never half-swept in
+silence.  `--no-masks` turns the stage off.
+
+1. **hashcat** (`-m 22000`, rules, status parsing) when installed — and `.hc22000` files
+   crack with the built-in engine even where hashcat is not;
 2. **aircrack-ng** with a rule-expanded candidate stream on stdin;
-3. **built-in engine** — PBKDF2 → PTK → AES-CMAC/HMAC-MD5 MIC, or PMKID recomputation.
+3. **built-in engine** — PBKDF2 → PTK → MIC (HMAC-SHA1-128 / AES-CMAC / HMAC-MD5, picked
+   per frame from the Key Descriptor Version), or PMKID recomputation.
    Also used to *verify* what the external tools claim, so "cracked ✓ verified" means the
    MIC or PMKID actually matched.
+
+## Hash files (hashcat mode 22000)
+
+`wifipilot export` writes the format every cracking tool speaks, from wifipilot's own parser —
+no `hcxtools`, no hashcat:
+
+```bash
+wifipilot export loot/handshake-01.cap              # -> handshake-01.hc22000
+wifipilot export loot/*.cap --out hashes/           # one file per capture
+wifipilot export capture.cap --eapol-only --out -   # to stdout, handshakes only
+wifipilot export capture.cap --format csv           # sheet: one row per handshake
+wifipilot export capture.cap --hcxtools             # prefer hcxpcapngtool when installed
+```
+
+Both kinds of line are written and read: `WPA*01` PMKIDs and `WPA*02` EAPOL message pairs, with
+the MIC zeroed in the EAPOL field, the ANonce where hashcat expects it, the ESSID hex-encoded so
+even a non-UTF-8 network name round-trips, and the message-pair byte describing the pair
+(`00` = M1+M2 challenge, `02` = M2+M3 authorized, ...).  The Key Descriptor Version travels with
+the frame, so the MIC algorithm is the right one per line — HMAC-SHA1-128 for classic WPA2,
+AES-128-CMAC for 802.11w/PMF and SAE, HMAC-MD5 for TKIP.
+
+Reading them back needs no radio, no hashcat and no converter:
+
+```bash
+wifipilot analyze web.hc22000                # what is in the file, and what is testable
+wifipilot crack web.hc22000 -w rockyou.txt   # built-in engine first, then aircrack/hashcat
+```
+
+```python
+import wifipilot as wp
+wp.export("loot/handshake-01.cap")           # -> loot/handshake-01.hc22000
+wp.analyze("web.hc22000")["verifiable"]      # how many lines can be checked at all
+hit = wp.crack("web.hc22000", wordlist=["rockyou.txt"])
+hit.cracked, hit.password, hit.verified
+```
+
+A line whose client nonce was zeroed on air cannot be verified by anyone (hashcat calls those
+unbreakable): it is reported as "no usable nonce" rather than counted as a failure.
 
 ## CLI reference
 
@@ -350,7 +439,41 @@ wifipilot attack [-b BSSID] [--time 30s] [-d 45m] [--no-scan] [--skip-crack]
 wifipilot demo
 wifipilot web    [--host 0.0.0.0] [--port 8787] [--open]
 wifipilot crack  FILE [FILE…] [-b BSSID] [-e ESSID] [--engine auto|aircrack|hashcat]
-wifipilot analyze FILE [FILE…]
+                 [--strategy NAME|--list-strategies] [--rule-file FILE]
+                 [--mask PATTERN] [--mask-candidates N] [--no-masks]
+wifipilot analyze FILE [FILE…] [--masks [-b BSSID] [-e ESSID]]
+
+wifipilot targets [--kind home-router] [--tag in-scope] [--vendor AVM] [--cracked|--loot]
+                  [--encryption WPA2] [--channel N] [--select] [--kinds] [--report export.json]
+wifipilot tag     [BSSID TAG] [--remove] [--list]
+wifipilot note    [TEXT] [--list] [--history] [--bssid BSSID] [--state-dir DIR]
+wifipilot vendor  [MAC|NAME|ESSID] [--bssid MAC] [--oui-stats] [--import-oui oui.txt]
+wifipilot advice  [--report export.json]
+wifipilot benchmark [--seconds 5]
+
+wifipilot wordlist stats FILE [FILE…]
+wifipilot wordlist merge  FILE [FILE…] --out merged.txt [--limit N] [--keep-short]
+wifipilot wordlist expand FILE --out candidates.txt [-r best64|file.rule] [--limit N]
+wifipilot wordlist from-masks --out out.txt '?d?d?d?d' [--limit N]
+wifipilot wordlist rules-info [best64|file.rule]
+
+wifipilot hash    stats    FILE [FILE…]
+wifipilot hash    merge    FILE [FILE…] [--out merged.hc22000] [--no-dedupe]
+wifipilot hash    dedupe   FILE [--out out.hc22000]
+wifipilot hash    filter   FILE [--essid S] [--bssid MAC] [--kind pmkid|eapol]
+                           [--verifiable-only] [--out out.hc22000]
+wifipilot hash    split    FILE --out-dir DIR [--per-file N]
+wifipilot hash    normalize FILE [--out out.hc22000]
+wifipilot hash    rescue   capture.pcap [--out rescued.hc22000]
+
+wifipilot potfile show   [FILE] [--limit N]
+wifipilot potfile export FILE [--out cracks.csv] [--format csv|json]
+wifipilot potfile remove FILE NEEDLE
+
+wifipilot loot    list     [--dir DIR]
+wifipilot loot    manifest [--dir DIR]
+wifipilot loot    verify   [--dir DIR]
+
 wifipilot tools  [--force]
 wifipilot ai     status|models|providers|use MODEL|pull MODEL|ask "…"
                  [--provider auto|ollama|openrouter|none] [--report export.json]
@@ -415,12 +538,19 @@ capture parsing and in WPA key derivation. Both were measured and optimised (`be
 
 | what | before | after |
 | --- | --- | --- |
-| parse a 1.1 MiB mixed capture (74% beacons, some EAPOL) | 68.7 ms | **21.6 ms** (3.2x) |
-| parse a 69 MiB capture | 3515 ms | **1530 ms** (2.3x) |
+| parse a 1.1 MiB mixed capture (74% beacons, some EAPOL) | 68.7 ms | **22.8 ms** (3.0x) |
+| parse a 69 MiB capture | 3515 ms | **1436 ms** (2.4x) |
 | parse the same unchanged capture again | full re-parse | **0.02 ms** (cached) |
 | poll a capture that grew by a few packets (handshake hunt) | full re-parse every second | **only the new bytes** |
-| test one candidate password (1 handshake) | 5.49 ms | **2.67 ms** (2.1x → 374 cand/s) |
-| test one candidate password (handshake + PMKID) | 7.79 ms | **2.62 ms** (3.0x → 382 cand/s) |
+| MIC check alone, classic WPA2 (HMAC-SHA1-128, KDV 2) | 0.19 ms (AES-CMAC, wrong for these frames) | **2.7 µs** → 369,000/s |
+| MIC check alone, 802.11w/PMF or SAE (AES-CMAC, KDV 3) | ~3 ms (readable AES) | **0.18 ms** → 5,600/s |
+| test one candidate password (1 handshake) | 5.49 ms | **2.41 ms** (2.3x → 415 cand/s) |
+| test one candidate password (handshake + PMKID in one file) | 7.79 ms | **2.42 ms** (3.2x → 413 cand/s) |
+| built-in engine, 48 wrong candidates through the real cracker | 338 cand/s | **414 cand/s** |
+| a capture where every EAPOL frame is on air 5x | 5 MIC checks per candidate | **1 verifier**, 419 cand/s |
+| parse + prepare a `.hc22000` hash file | — | **3.2 ms** (63,500 files/s) |
+| expand a mask (`TP-Link?d?d?d?d`) | — | **34 ms per 10k space** → 5.8 M candidates/s |
+| one candidate through the real mask stage | — | **2.47 ms** → 405 cand/s |
 | built-in engine over a 6-capture file workload | 200.6 s | **47.4 s** (4.2x) |
 
 How:
@@ -431,12 +561,22 @@ How:
 * **resumable analysis.** A `.cap` that is still being written is parsed incrementally — the
   handshake hunt polls it once a second and now pays for the appended bytes only. Results are
   cached per file, so the scan/crack/report stages never re-read the same capture.
-* **table-driven AES.** The CMAC behind every MIC check uses folded T-tables, so a MIC costs
-  ~0.2 ms instead of ~3 ms; the readable implementation stays in the file and the two are
-  cross-checked in the tests.
+* **table-driven AES.** The CMAC behind the 802.11w/PMF MIC check uses folded T-tables, so a
+  CMAC costs ~0.18 ms instead of ~3 ms; the readable implementation stays in the file and the
+  two are cross-checked in the tests.  The common case — classic WPA2, whose frames set Key
+  Descriptor Version 2 — is HMAC-SHA1-128, which costs microseconds.
 * **no wasted verifications.** EAPOL frames are parsed down to their flags, key version and
   MIC, and exact retransmissions are counted instead of stored again: a handshake seen five
   times (or relayed by a second AP) costs one MIC check per candidate, not five.
+* **the right MIC for the frame.** The algorithm comes from each frame's Key Descriptor Version —
+  HMAC-SHA1-128 for KDV 2 (classic WPA2/CCMP) and KDV 3's AES-CMAC for 802.11w/PMF and SAE — not
+  from the descriptor type, which is a different question with a different answer. That is a
+  correctness fix first (a CMAC is not what a classic WPA2 frame carries) and a speed win second:
+  2.7 µs against 0.18 ms. It is pinned by hashcat's own published mode 22000 example, whose
+  PMK, PMKID and MIC all reproduce.
+* **a mask is generated, not stored.** `?d?d?d?d` is expanded lazily with `itertools.product`,
+  so a 10k space costs 34 ms of generation (5.8 M candidates/s) and nothing in memory; the
+  expensive part is, as it should be, the 2.4 ms of PBKDF2 per candidate.
 * **one PBKDF2 per candidate.** A capture can hold several handshakes plus a PMKID for the
   same network; the PMK is derived once and shared, and the per-handshake state (EAPOL
   extraction, MIC zeroing) is prepared once instead of per candidate.
@@ -445,10 +585,38 @@ How:
   hit, and the engine reports the candidates it actually derived: a run that stops at candidate
   #48 says 49 candidates at ~340/s, not the full candidate space at an imaginary rate.
 
-Pure Python caps the built-in engine at roughly 2.6 ms per candidate — that is PBKDF2-HMAC-SHA1
-with 4096 rounds, as WPA specifies, and it is the reason the built-in engine is a fallback:
-where a GPU or `hashcat` is available, wifipilot converts the capture to hashcat mode 22000
-and lets it rip.
+At 415 candidates/second the engine is now almost exactly PBKDF2-bound: of the 2.41 ms a
+candidate costs, 2.31 ms is the KDF that WPA specifies (4096 rounds of PBKDF2-HMAC-SHA1) and the
+MIC is microseconds on top. Nothing in Python is going to change that, which is why the built-in
+engine is a fallback: where a GPU or `hashcat` is available, wifipilot writes the capture out in
+hashcat mode 22000 and lets it rip — or hands that file to someone else, and cracks what comes
+back with the same verifiers.
+
+## Offline toolbox (no radio, no root)
+
+Everything the engagement needs *after* the capture, in one place:
+
+```bash
+wifipilot targets --kind home-router --tag in-scope --select   # scope the campaign
+wifipilot note "back-office AP, retest Friday"
+wifipilot vendor d0:12:cb:00:00:01                             # OUI + what that brand does
+wifipilot advice                                               # next steps, no LLM
+
+wifipilot hash merge   a.hc22000 b.hc22000 --out all.hc22000
+wifipilot hash filter  all.hc22000 --kind eapol --verifiable-only
+wifipilot hash split   all.hc22000 --out-dir farm/ --per-file 1000
+wifipilot hash rescue  partial.pcap                            # PMKID in message 1
+wifipilot wordlist stats rockyou.txt
+wifipilot wordlist expand words.txt --out candidates.txt -r best64
+wifipilot potfile export ~/.hashcat/hashcat.potfile --out cracks.csv
+wifipilot loot manifest && wifipilot loot verify                # prove nothing changed
+
+wifipilot benchmark --seconds 5                                 # this machine's rate
+```
+
+`wifipilot benchmark` on the development machine (2 cores, Python 3.11) measures ~430
+candidates/s through the built-in PBKDF2 → PTK → MIC path; the same rate turns a candidate
+space into an ETA, which is why the strategies are ordered cheap-first.
 
 ## Architecture
 
@@ -463,6 +631,7 @@ wifipilot/
 ├── attacks/        one module per primitive; all drive real tools
 ├── crack.py        hashcat / aircrack-ng / built-in engine + rule engine
 ├── crypto.py       AES, CMAC, PBKDF2, PRF, PMKID, MIC (pure stdlib)
+├── masks.py        hashcat-style ?d?l?u masks: expand, derive, budget
 ├── pcap.py         pcap/pcapng + 802.11 + EAPOL parser (pure stdlib)
 ├── synth.py        cryptographically valid capture builder (demo/tests)
 ├── llm.py          provider transports: local Ollama + OpenRouter (stdlib urllib)
@@ -488,7 +657,7 @@ More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ```bash
 pip install -e '.[dev]'
-pytest -q                      # 234 tests, ~4 min (includes full simulated campaigns)
+pytest -q                      # 251 tests, ~4 min (includes full simulated campaigns)
 make bench                     # timing numbers for the hot paths (see Performance)
 ```
 
@@ -497,6 +666,7 @@ The suite is organised by concern rather than by module:
 | file | what it pins down |
 | --- | --- |
 | `test_crypto.py`, `test_crack.py` | published vectors (FIPS-197 AES, RFC 4493 CMAC, IEEE 802.11i PMK) and the cracker |
+| `test_hash22000.py` | hashcat mode 22000 round trips, including hashcat's own published example |
 | `test_pcap.py` | capture parsing: truncated, garbage, pcapng, resumable and cached reads |
 | `test_planner.py` | the heuristic planner and the plan validator (hallucination and safety cases) |
 | `test_openrouter*.py` | the AI layer, with a fake transport and against a local mock of the real API |

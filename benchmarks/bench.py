@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from wifipilot import crypto, pcap, planner, synth
+from wifipilot import crypto, hash22000, masks, pcap, planner, synth
 from wifipilot.pcap import analyze_file                 # noqa: E402
 from wifipilot.config import Config                                # noqa: E402
 from wifipilot.crack import Cracker, smart_candidates              # noqa: E402
@@ -127,8 +127,15 @@ def bench_crypto(candidates: int = 1_000, repeat: int = 3) -> None:
 
     timed("crypto: pmk (PBKDF2 4096)", lambda: crypto.pmk(PSK, SSID), repeat,
           detail="one key derivation", unit="keys/s")
-    timed("crypto: ptk + mic", lambda: crypto.mic_from_ptk(ptk_bytes, eapol, 2), repeat,
-          detail="key expansion + AES-CMAC", unit="ops/s")
+    def mic_loop(kdv: int, count: int = 20_000):
+        for _ in range(count):
+            crypto.mic_from_ptk(ptk_bytes, eapol, kdv)
+        return count
+
+    timed("crypto: ptk + mic", lambda: mic_loop(2), repeat,
+          detail="key expansion + HMAC-SHA1-128 (KDV 2, classic WPA2)", unit="ops/s")
+    timed("crypto: ptk + mic (AES-CMAC)", lambda: mic_loop(3), repeat,
+          detail="the same, for 802.11w/PMF frames (KDV 3)", unit="ops/s")
 
     def chain(count=candidates):
         for index in range(count):
@@ -147,6 +154,42 @@ def bench_crypto(candidates: int = 1_000, repeat: int = 3) -> None:
     timed("crypto: verify a candidate (one-shot API)", one_shot, 1,
           detail="re-parses the frames every call", unit="cand/s")
     Path(path).unlink(missing_ok=True)
+
+
+def bench_hash22000(repeat: int = 3) -> None:
+    """Reading, writing and verifying mode 22000 hash files (no hashcat needed)."""
+    capture = "/tmp/wifipilot-bench-hash.pcap"
+    synth.build_capture(capture, SSID, BSSID, STA, PSK, include_pmkid=True)
+    analysis = analyze_file(capture, use_cache=False)
+    lines = hash22000.lines_from_analysis(analysis)
+    hash_file = hash22000.write_lines(lines, "/tmp/wifipilot-bench.hc22000")
+    text = "\n".join(lines)
+
+    timed("hash: write lines from a capture", lambda: hash22000.lines_from_analysis(analysis),
+          repeat, detail=f"{len(lines)} lines (PMKID + EAPOL)")
+
+    def parse_and_prepare(count=200):
+        for _ in range(count):
+            parsed, _ = hash22000.parse_text(text)
+            hash22000.verifiers(parsed)
+        return count
+
+    timed("hash: parse + prepare verifiers", parse_and_prepare, repeat,
+          detail="200 hash files, PMKID and EAPOL", unit="files/s")
+
+    verifiers = hash22000.verifiers(hash22000.parse_file(hash_file))
+
+    def verify(count=1_000):
+        # the cracker's path: one PBKDF2 per candidate, shared by every verifier
+        for index in range(count):
+            key = crypto.pmk(f"candidate-{index}", SSID)
+            for verifier in verifiers:
+                verifier.check_pmk(key)
+        return count
+
+    timed("hash: verify a candidate", verify, 1,
+          detail=f"{len(verifiers)} verifier(s) from one file", unit="cand/s")
+    Path(capture).unlink(missing_ok=True)
 
 
 def bench_crack(repeat: int = 1) -> None:
@@ -300,10 +343,62 @@ def bench_campaign(budget: float = 20.0) -> None:
     reset()
 
 
+def bench_masks(repeat: int = 3) -> None:
+    """Deriving and expanding mask patterns, and the built-in mask stage."""
+    ap = AccessPoint(bssid=BSSID, essid="Telekom-9F3A", vendor="TP-Link")
+    suggested = masks.suggest_masks(ap.essid, ap.vendor)
+
+    timed("mask: derive patterns for a target", lambda: masks.suggest_masks(ap.essid, ap.vendor),
+          repeat * 10, detail=f"{len(suggested)} patterns, smallest space first")
+
+    pattern = "TP-Link?d?d?d?d"
+
+    def expand(count=20):
+        total = 0
+        for _ in range(count):
+            for _ in masks.expand_mask(pattern):
+                total += 1
+        return total
+
+    timed("mask: expand a 10k space", expand, repeat,
+          detail=f"{pattern} — {masks.mask_space(pattern):,} candidates", unit="cand/s")
+
+    budget = 10_000
+    runnable, skipped = masks.select_masks(suggested, budget)
+
+    timed("mask: select what fits the budget",
+          lambda: masks.select_masks(suggested, budget), repeat * 20,
+          detail=f"{len(runnable)} runnable, {len(skipped)} left to hashcat "
+                 f"({budget:,} candidates)")
+
+    # the real stage: verify candidates from a mask against a prepared handshake
+    capture = "/tmp/wifipilot-bench-mask.pcap"
+    synth.build_capture(capture, "Telekom-9F3A", BSSID, STA, "Telekom2024")
+    analysis = analyze_file(capture, use_cache=False)
+    session = Session(Config(), EventBus(), demo=False)
+    cracker = Cracker(session, session.config, session.bus, demo=False)
+    ap, _ = session.upsert_ap(BSSID, "Telekom-9F3A", publish=False)
+
+    def mask_pass(_ap=ap, _capture=None, _analysis=analysis, _cracker=cracker):
+        from wifipilot.models import Capture as CaptureModel
+        capture_model = CaptureModel(kind="handshake", bssid=BSSID, essid="Telekom-9F3A",
+                                     path=capture, valid=True)
+        found, tested, _pattern = _cracker._mask_pass(
+            _ap, capture_model, _analysis, deadline=time.time() + 3600, base_attempts=0,
+            on_progress=lambda n, d: None)
+        return tested
+
+    timed("mask: verify a candidate through the stage", mask_pass, 1,
+          detail="Telekom?d?d?d?d space, 415-ish candidates/s expected", unit="cand/s")
+    Path(capture).unlink(missing_ok=True)
+
+
 BENCHMARKS = {
     "pcap": bench_pcap,
     "crypto": bench_crypto,
     "crack": bench_crack,
+    "hash": bench_hash22000,
+    "mask": bench_masks,
     "session": bench_session,
     "planner": bench_planner,
     "web": bench_web,
