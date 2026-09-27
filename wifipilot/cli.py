@@ -4,8 +4,9 @@
     wifipilot attack --i-am-authorized    # AI-planned campaign (live)
     wifipilot demo                        # same pipeline, simulated radio
     wifipilot web --open                  # browser UI
-    wifipilot crack loot/handshake-*.cap  # crack an existing capture
+    wifipilot crack loot/handshake-*.cap  # crack a capture or a .hc22000 hash file
     wifipilot analyze capture.pcapng      # what is actually inside that file
+    wifipilot export capture.cap          # turn a capture into hashcat mode 22000
     wifipilot tools                       # dependency + capability report
     wifipilot ai status | models | pull | ask
 
@@ -29,9 +30,12 @@ from .config import Config, find_wordlists
 from .deps import list_interfaces, registry
 from .events import EK, Event, EventBus
 from .llm import LLMError, provider_status
-from .models import ATTACK_NAMES, Capture
-from .util import (C, banner, human_duration, mac_norm, parse_duration,
-                   platform_info, require_linux)
+from .crack import STRATEGIES as _STRATEGIES, apply_strategy, strategy, strategy_names
+from .models import ATTACK_NAMES, Capture, classify_target
+
+STRATEGY_NAMES = tuple(_STRATEGIES)
+from .util import (C, banner, human_bytes, human_duration, mac_norm, oui_vendor,
+                   parse_duration, platform_info, read_json, require_linux, run)
 
 # --------------------------------------------------------------------------- #
 # rich helpers (the CLI still works without rich, just plainer)
@@ -156,14 +160,182 @@ def build_parser() -> argparse.ArgumentParser:
     p_web.add_argument("--open", action="store_true", help="open a browser window")
 
     p_crack = sub.add_parser("crack", parents=[common], help="crack a capture you already have")
-    p_crack.add_argument("capture", nargs="+", help=".cap / .pcap / .pcapng / .hc22000 file(s)")
+    p_crack.add_argument("capture", nargs="*", help=".cap / .pcap / .pcapng / .hc22000 file(s)")
     p_crack.add_argument("-b", "--bssid", default="", help="BSSID (optional, inferred from the file)")
     p_crack.add_argument("-e", "--essid", default="", help="SSID (needed for handshake MIC checks)")
     p_crack.add_argument("--engine", default="", choices=["", "auto", "aircrack", "hashcat"])
-    p_crack.add_argument("--mask", action="store_true", help="also try common mask patterns")
+    p_crack.add_argument("--mask", action="append", nargs="?", const="auto",
+                         default=None, metavar="PATTERN",
+                         help="mask attack: try a hashcat-style pattern such as "
+                              "'Telekom-?d?d?d?d' (repeatable). Bare --mask derives "
+                              "patterns from the target's ESSID/vendor; patterns "
+                              "too big for the built-in engine go to hashcat -a 3")
+    p_crack.add_argument("--mask-candidates", type=int, default=None, metavar="N",
+                         help="how many candidates the built-in engine may spend on "
+                              "masks (default 20000; 0 disables masks)")
+    p_crack.add_argument("--no-masks", action="store_true", help="skip the mask stage")
 
-    p_analyze = sub.add_parser("analyze", parents=[common], help="inspect captures: handshakes, PMKIDs, EAPOL")
-    p_analyze.add_argument("capture", nargs="+", help="capture file(s)")
+    p_crack.add_argument("--strategy", default="",
+                         choices=["", *sorted(STRATEGY_NAMES)],
+                         help="one preset instead of six flags: quick, thorough, "
+                              "mask-only, wordlist-only, ...")
+    p_crack.add_argument("--rule-file", default="",
+                         help="hashcat .rule file (or best64/leet/...) the built-in "
+                              "engine applies too")
+    p_crack.add_argument("--list-strategies", action="store_true",
+                         help="show the strategy presets and what each one does")
+    p_crack.add_argument("--crack-order", default="",
+                         help="stage order, e.g. targeted,masks,builtin "
+                              "(default: targeted,masks,hashcat-masks,external,builtin)")
+
+    p_targets = sub.add_parser("targets", parents=[common],
+                               help="filter and select discovered access points")
+    p_targets.add_argument("--kind", default="", help="home-router | guest | iot | open | ...")
+    p_targets.add_argument("--tag", default="", help="only APs carrying this tag")
+    p_targets.add_argument("--vendor", default="", help="vendor name or dossier key (AVM, TP-Link, ...)")
+    p_targets.add_argument("--cracked", action="store_true", help="only cracked APs")
+    p_targets.add_argument("--loot", action="store_true", help="only APs with a handshake/PMKID")
+    p_targets.add_argument("--encryption", default="", help="substring match (WPA2, WPA3, OPEN)")
+    p_targets.add_argument("--channel", type=int, default=0)
+    p_targets.add_argument("--select", action="store_true",
+                           help="remember the matches as the campaign scope")
+    p_targets.add_argument("--report", default="", help="load a previous JSON export")
+    p_targets.add_argument("--kinds", action="store_true", help="list the target kinds in use")
+
+    p_note = sub.add_parser("note", parents=[common], help="annotate the engagement")
+    p_note.add_argument("text", nargs="?", default="", help="the note")
+    p_note.add_argument("--list", action="store_true", help="show the notes so far")
+    p_note.add_argument("--bssid", default="", help="attach the note to one AP")
+    p_note.add_argument("--state-dir", default="", help="session directory (with --list)")
+    p_note.add_argument("--history", action="store_true",
+                        help="show what happened (attempts, captures, notes)")
+
+    p_tag = sub.add_parser("tag", parents=[common], help="tag access points for scoping")
+    p_tag.add_argument("bssid", nargs="?", default="")
+    p_tag.add_argument("tag", nargs="?", default="")
+    p_tag.add_argument("--remove", action="store_true", help="remove instead of add")
+    p_tag.add_argument("--list", action="store_true", help="show every tag in use")
+    p_tag.add_argument("--state-dir", default="")
+
+    p_vendor = sub.add_parser("vendor", parents=[common],
+                              help="what wifipilot knows about a vendor (OUI + dossier)")
+    p_vendor.add_argument("query", nargs="?", default="", help="a MAC, a vendor name, or an ESSID")
+    p_vendor.add_argument("--bssid", default="", help="resolve a BSSID's vendor")
+    p_vendor.add_argument("--oui-stats", action="store_true", help="show the OUI registry size")
+    p_vendor.add_argument("--import-oui", default="", metavar="FILE",
+                          help="merge an IEEE oui.txt into the registry")
+
+    p_bench = sub.add_parser("benchmark", parents=[common],
+                             help="measure this machine's candidate rate (no radio)")
+    p_bench.add_argument("--seconds", type=float, default=5.0)
+
+    p_advice = sub.add_parser("advice", parents=[common],
+                              help="prioritised next steps, no LLM required")
+    p_advice.add_argument("--report", default="", help="load a previous JSON export")
+    p_advice.add_argument("--state-dir", default="")
+
+    p_wl = sub.add_parser("wordlist", parents=[common], help="wordlist tooling")
+    wl_sub = p_wl.add_subparsers(dest="wordlist_command", metavar="ACTION")
+    p_wl_stats = wl_sub.add_parser("stats", parents=[common], help="shape of a wordlist")
+    p_wl_stats.add_argument("files", nargs="+")
+    p_wl_merge = wl_sub.add_parser("merge", parents=[common], help="merge/dedupe wordlists")
+    p_wl_merge.add_argument("files", nargs="+")
+    p_wl_merge.add_argument("--out", required=True)
+    p_wl_merge.add_argument("--limit", type=int, default=0)
+    p_wl_merge.add_argument("--keep-short", action="store_true",
+                            help="keep words that cannot be WPA passphrases")
+    p_wl_expand = wl_sub.add_parser("expand", parents=[common],
+                                    help="apply rules to every word (hashcat .rule or preset)")
+    p_wl_expand.add_argument("file")
+    p_wl_expand.add_argument("--out", required=True)
+    p_wl_expand.add_argument("-r", "--rule-file", default="best64")
+    p_wl_expand.add_argument("--limit", type=int, default=0)
+    p_wl_masks = wl_sub.add_parser("from-masks", parents=[common],
+                                   help="write the candidates of masks to a wordlist")
+    p_wl_masks.add_argument("masks", nargs="+")
+    p_wl_masks.add_argument("--out", required=True)
+    p_wl_masks.add_argument("--limit", type=int, default=0)
+    p_wl_rules = wl_sub.add_parser("rules-info", parents=[common],
+                                   help="explain a rule file (or a preset)")
+    p_wl_rules.add_argument("spec", nargs="?", default="best64")
+
+    p_hash = sub.add_parser("hash", parents=[common], help="hash-file tooling (mode 22000)")
+    hash_sub = p_hash.add_subparsers(dest="hash_command", metavar="ACTION")
+    p_hash_stats = hash_sub.add_parser("stats", parents=[common], help="what is in a hash file")
+    p_hash_stats.add_argument("files", nargs="+")
+    p_hash_merge = hash_sub.add_parser("merge", parents=[common], help="merge hash files")
+    p_hash_merge.add_argument("files", nargs="+")
+    p_hash_merge.add_argument("--out", default="")
+    p_hash_merge.add_argument("--no-dedupe", action="store_true")
+    p_hash_dedupe = hash_sub.add_parser("dedupe", parents=[common], help="drop duplicate lines")
+    p_hash_dedupe.add_argument("file")
+    p_hash_dedupe.add_argument("--out", default="")
+    p_hash_filter = hash_sub.add_parser("filter", parents=[common], help="keep matching lines only")
+    p_hash_filter.add_argument("file")
+    p_hash_filter.add_argument("--out", default="")
+    p_hash_filter.add_argument("--essid", default="")
+    p_hash_filter.add_argument("--bssid", default="")
+    p_hash_filter.add_argument("--kind", default="", choices=["", "pmkid", "eapol"])
+    p_hash_filter.add_argument("--verifiable-only", action="store_true")
+    p_hash_split = hash_sub.add_parser("split", parents=[common], help="split for a cracking farm")
+    p_hash_split.add_argument("file")
+    p_hash_split.add_argument("--out-dir", required=True)
+    p_hash_split.add_argument("--per-file", type=int, default=1)
+    p_hash_normalize = hash_sub.add_parser("normalize", parents=[common],
+                                           help="rewrite canonically (sorted, lower-case)")
+    p_hash_normalize.add_argument("file")
+    p_hash_normalize.add_argument("--out", default="")
+    p_hash_rescue = hash_sub.add_parser("rescue", parents=[common],
+                                        help="recover hashes a normal converter skips")
+    p_hash_rescue.add_argument("capture")
+    p_hash_rescue.add_argument("--out", default="")
+
+    p_pot = sub.add_parser("potfile", parents=[common], help="import/export hashcat potfiles")
+    pot_sub = p_pot.add_subparsers(dest="potfile_command", metavar="ACTION")
+    p_pot_show = pot_sub.add_parser("show", parents=[common], help="list potfile entries")
+    p_pot_show.add_argument("file", nargs="?", default="")
+    p_pot_show.add_argument("--limit", type=int, default=0)
+    p_pot_export = pot_sub.add_parser("export", parents=[common], help="export to CSV/JSON")
+    p_pot_export.add_argument("file")
+    p_pot_export.add_argument("--out", default="")
+    p_pot_export.add_argument("--format", default="csv", choices=["csv", "json"])
+    p_pot_remove = pot_sub.add_parser("remove", parents=[common], help="delete matching entries")
+    p_pot_remove.add_argument("file")
+    p_pot_remove.add_argument("needle")
+
+    p_loot = sub.add_parser("loot", parents=[common], help="the loot directory: list and verify")
+    loot_sub = p_loot.add_subparsers(dest="loot_command", metavar="ACTION")
+    p_loot_list = loot_sub.add_parser("list", parents=[common], help="list loot files")
+    p_loot_list.add_argument("--dir", default="")
+    p_loot_manifest = loot_sub.add_parser("manifest", parents=[common],
+                                          help="write a sha256 manifest of the loot")
+    p_loot_manifest.add_argument("--dir", default="")
+    p_loot_verify = loot_sub.add_parser("verify", parents=[common],
+                                        help="verify the loot against its manifest")
+    p_loot_verify.add_argument("--dir", default="")
+
+
+    p_analyze = sub.add_parser("analyze", parents=[common],
+                               help="inspect captures: handshakes, PMKIDs, EAPOL")
+    p_analyze.add_argument("capture", nargs="+", help="capture or .hc22000 hash file(s)")
+    p_analyze.add_argument("-b", "--bssid", default="", help="limit the mask report to one BSSID")
+    p_analyze.add_argument("-e", "--essid", default="", help="SSID to derive mask patterns from")
+    p_analyze.add_argument("--masks", action="store_true",
+                           help="also show the mask patterns the cracker would try "
+                                "(ESSID/vendor derived) and where they would run")
+
+    p_export = sub.add_parser("export", parents=[common],
+                              help="convert a capture to hashcat mode 22000 (or JSON/CSV)")
+    p_export.add_argument("capture", nargs="+", help="capture file(s)")
+    p_export.add_argument("--out", default="",
+                          help="output file or directory (default: next to the capture; "
+                               "'-' writes to stdout)")
+    p_export.add_argument("--format", default="22000", choices=["22000", "json", "csv"],
+                          help="output format (default: 22000, the hashcat format)")
+    p_export.add_argument("--pmkid-only", action="store_true", help="only PMKID hashes")
+    p_export.add_argument("--eapol-only", action="store_true", help="only EAPOL (handshake) hashes")
+    p_export.add_argument("--hcxtools", action="store_true",
+                          help="prefer hcxpcapngtool when it is installed")
 
     p_tools = sub.add_parser("tools", parents=[common], help="show tool availability and capabilities")
     p_tools.add_argument("--force", action="store_true", help="re-probe instead of using cache")
@@ -216,6 +388,29 @@ def apply_cli_config(args: argparse.Namespace) -> Config:
     )
     if args.wordlist:
         config.wordlists = [os.path.abspath(os.path.expanduser(w)) for w in args.wordlist]
+    if getattr(args, "strategy", ""):
+        try:
+            preset = apply_strategy(config, args.strategy)
+        except KeyError as error:
+            raise SystemExit(str(error))
+        if not getattr(args, "json", False):
+            print(f"strategy {preset['label']}: {preset['note']}", file=sys.stderr)
+    if getattr(args, "crack_order", ""):
+        config.crack_order = args.crack_order
+    if getattr(args, "rule_file", ""):
+        config.rule_file = args.rule_file
+    if getattr(args, "no_masks", False):
+        config.use_masks = False
+    if getattr(args, "mask_candidates", None) is not None:
+        config.mask_candidates = max(0, int(args.mask_candidates))
+    masks_given = getattr(args, "mask", None)
+    if masks_given:
+        config.use_masks = True
+        config.mask_patterns = [m for m in masks_given if m and m != "auto"]
+    if getattr(args, "engine", ""):
+        # --engine used to be accepted and ignored; subcommands without it
+        # (every command but `crack`) simply have no such attribute
+        config.cracker = args.engine
     if args.timeout:
         budget = parse_duration(args.timeout, config.attack_timeout)
         config.attack_timeout = budget
@@ -640,7 +835,30 @@ def command_web(args, config: Config, console) -> int:
     return 0
 
 
+def _print_strategies(console, as_json: bool = False) -> None:
+    if as_json:
+        print(json.dumps([strategy(name) for name in strategy_names()], indent=2))
+        return
+    table = Table(title="crack strategies", box=None)
+    for column in ("name", "targeted", "masks", "wordlists", "order", "what it does"):
+        table.add_column(column, overflow="fold")
+    for name in strategy_names():
+        preset = strategy(name)
+        table.add_row(name, f"{preset['targeted_candidates']:,}",
+                      f"{preset['mask_candidates']:,}", str(preset["wordlists"]),
+                      str(preset["order"]), str(preset["note"]))
+    console.print(table)
+    console.print("[dim]use one with --strategy NAME (individual flags still win)[/dim]")
+
+
 def command_crack(args, config: Config, console) -> int:
+    if getattr(args, "list_strategies", False):
+        _print_strategies(console, as_json=getattr(args, "json", False))
+        return 0
+    if not args.capture:
+        console.print("[yellow]give at least one capture, or --list-strategies[/yellow]")
+        return 2
+    from . import hash22000
     from .crack import Cracker
     from .pcap import analyze_file
     from .session import Session
@@ -653,6 +871,10 @@ def command_crack(args, config: Config, console) -> int:
         path = os.path.abspath(os.path.expanduser(item))
         if not os.path.exists(path):
             console.print(f"[red]no such file: {path}[/red]")
+            continue
+        if hash22000.is_hash_file(path):
+            exit_code = min(exit_code, _crack_hash_file(path, cracker, session, config,
+                                                        console))
             continue
         analysis = analyze_file(path)
         console.print(Panel(
@@ -730,13 +952,64 @@ def command_crack(args, config: Config, console) -> int:
     return exit_code
 
 
+def _crack_hash_file(path: str, cracker, session, config: Config, console) -> int:
+    """Crack a mode-22000 file: one line, one capture — no pcap required."""
+    from . import hash22000
+
+    lines, problems = hash22000.parse_text(Path(path).read_text(encoding="utf-8",
+                                                                errors="replace"))
+    console.print(Panel(f"[bold]{Path(path).name}[/bold] · hashcat mode 22000 · "
+                        f"{len(lines)} line(s)",
+                        title="hash file", border_style="cyan"))
+    for problem in problems:
+        console.print(f"  [yellow]{problem}[/yellow]")
+    if not lines:
+        console.print("[red]no usable hash lines[/red]")
+        return 1
+    found_any = 0
+    for line in lines:
+        essid = line.essid
+        ap = session.aps.get(line.bssid)
+        if ap is None:
+            ap, _ = session.upsert_ap(line.bssid, essid, publish=False)
+        extra = {"pmkid": line.pmkid} if line.kind == "pmkid" else {}
+        capture = Capture(kind=line.kind, bssid=line.bssid, essid=essid or line.essid,
+                          path=path, hash_path=path, valid=line.verifiable,
+                          extra=extra)
+        if not line.verifiable:
+            console.print(f"  [yellow]{line.label}: not verifiable, skipping[/yellow]")
+            continue
+        result = cracker.crack_capture(ap, capture, wordlists=config.wordlists or None)
+        label = essid or line.bssid
+        if result.cracked:
+            found_any += 1
+            console.print(f"[bold green]PSK found for {label}: {result.password}[/bold green] "
+                          f"(tool: {result.tool}, {result.attempts:,} candidates, "
+                          f"{human_duration(result.seconds)}, "
+                          f"{'verified' if result.verified else 'unverified'})")
+        else:
+            console.print(f"[yellow]not cracked[/yellow] {label}: {result.reason} "
+                          f"({result.attempts:,} candidates, {human_duration(result.seconds)})")
+    return 0 if found_any else 1
+
+
 def command_analyze(args, config: Config, console) -> int:
+    from . import hash22000
     from .pcap import analyze_file
     payload = []
     for item in args.capture:
         path = os.path.abspath(os.path.expanduser(item))
+        if hash22000.is_hash_file(path):
+            payload.append(_analyze_hash_file(path, args, config, console))
+            continue
         analysis = analyze_file(path)
-        payload.append(analysis.to_dict())
+        data = analysis.to_dict()
+        if getattr(args, "masks", False):
+            bssid = args.bssid or next(iter(analysis.essids), "")
+            vendor = oui_vendor(bssid)
+            data["masks"] = _mask_report(config, args.essid or analysis.essids.get(bssid, ""),
+                                         vendor)
+        payload.append(data)
         if args.json:
             continue
         console.print(Panel(
@@ -764,11 +1037,725 @@ def command_analyze(args, config: Config, console) -> int:
             console.print(f"  [green]PMKID[/green] {pmkid.bssid} → {pmkid.pmkid}")
         if analysis.essids:
             console.print(f"  [dim]SSIDs: {', '.join(f'{k}={v}' for k, v in analysis.essids.items())}[/dim]")
+        if getattr(args, "masks", False):
+            _print_masks(console, data.get("masks", []))
         if analysis.error:
             console.print(f"  [red]{analysis.error}[/red]")
     if args.json:
         print(json.dumps(payload, indent=2))
     return 0
+
+
+def _mask_report(config: Config, essid: str, vendor: str = "") -> List[Dict[str, Any]]:
+    """The masks the cracker would try, and which engine would run each one."""
+    from . import masks as masks_module
+    chosen = []
+    for mask in masks_module.suggest_masks(essid, vendor):
+        chosen.append(mask.to_dict())
+    budget = max(0, int(getattr(config, "mask_candidates", 0)))
+    runnable, skipped = masks_module.select_masks(
+        [masks_module.Mask(item["mask"], "") for item in chosen], budget)
+    running = {mask.pattern for mask in runnable}
+    for item in chosen:
+        item["engine"] = ("built-in (fits the budget)" if item["mask"] in running
+                          else "hashcat -a 3")
+    if not getattr(config, "use_masks", True):
+        for item in chosen:
+            item["engine"] = "disabled (--no-masks)"
+    return chosen
+
+
+def _print_masks(console, report: List[Dict[str, Any]]) -> None:
+    if not report:
+        console.print("  [dim]no mask patterns to suggest for this target[/dim]")
+        return
+    console.print("  [dim]mask attacks the cracker would try:[/dim]")
+    for item in report:
+        console.print(f"    [cyan]{item['mask']}[/cyan]  "
+                      f"{item['space']:>15,} candidates  [dim]{item['engine']} · "
+                      f"{item['note']}[/dim]")
+
+
+def _analyze_hash_file(path: str, args, config: Config, console) -> Dict[str, Any]:
+    """Report a mode 22000 hash file: what is in it, and what can be tested."""
+    from . import hash22000
+    lines, problems = hash22000.parse_text(
+        Path(path).read_text(encoding="utf-8", errors="replace"))
+    data = hash22000.summary(lines, problems)
+    data["path"] = path
+    data["format"] = "hc22000"
+    data["detail"] = [line.to_dict() for line in lines]
+    if getattr(args, "masks", False):
+        first = lines[0] if lines else None
+        data["masks"] = _mask_report(config, first.essid if first else "",
+                                     oui_vendor(first.bssid) if first else "")
+    if not args.json:
+        console.print(Panel(
+            f"[bold]{Path(path).name}[/bold]  hashcat mode 22000\n"
+            f"{data['lines']} hash line(s): {data['pmkid']} PMKID, {data['eapol']} EAPOL"
+            f" \u00b7 {data['verifiable']} verifiable\n"
+            f"SSIDs: {', '.join(data['essids']) or '-'}\n"
+            f"APs: {', '.join(data['bssids']) or '-'}",
+            title="hash file", border_style="cyan"))
+        for line in lines:
+            mark = "[green]verifiable[/green]" if line.verifiable else "[yellow]no usable nonce[/yellow]"
+            console.print(f"  {mark} {line.label} \u00b7 {line.bssid} \u2194 {line.station} "
+                          f"\u00b7 MIC {line.mic_algorithm} ({line.mic.hex()[:16]}\u2026)")
+        for problem in data["problems"]:
+            console.print(f"  [yellow]{problem}[/yellow]")
+        if getattr(args, "masks", False):
+            _print_masks(console, data.get("masks", []))
+    return data
+
+
+def _load_session_for(args, config: Config, console) -> Optional[Any]:
+    """Load a previous engagement (JSON export) or the live session, if any."""
+    from .session import Session
+    report = getattr(args, "report", "")
+    if report:
+        path = os.path.abspath(os.path.expanduser(report))
+        data = read_json(path, None)
+        if not isinstance(data, dict) or "access_points" not in data:
+            console.print(f"[red]{path} is not a wifipilot JSON export[/red]")
+            return None
+        session = Session(config, EventBus(), demo=True)
+        for item in data.get("access_points") or []:
+            ap, _ = session.upsert_ap(item.get("bssid", ""), item.get("essid", ""),
+                                      publish=False)
+            for key in ("channel", "signal", "encryption", "cipher", "auth", "vendor",
+                        "target_kind", "wps", "notes", "password", "status", "score"):
+                if item.get(key) not in (None, ""):
+                    setattr(ap, key, item[key])
+            ap.tags = list(item.get("tags") or [])
+        session.notes = list(data.get("notes") or [])
+        return session
+    return None
+
+
+def _session_from_last_run(config: Config, console):
+    """The newest saved session of this config, if there is one."""
+    from .session import Session, load_notes
+
+    root = Path(config.session_dir)
+    if not root.is_dir():
+        return None
+    reports = sorted(root.glob("*/reports/report.json"),
+                     key=lambda item: item.stat().st_mtime, reverse=True)
+    if not reports:
+        return None
+    data = read_json(reports[0], None)
+    if not isinstance(data, dict):
+        return None
+    session = Session(config, EventBus(), demo=True, session_id=reports[0].parent.parent.name)
+    for item in data.get("access_points") or []:
+        ap, _ = session.upsert_ap(item.get("bssid", ""), item.get("essid", ""), publish=False)
+        for key in ("channel", "signal", "encryption", "cipher", "auth", "vendor",
+                    "target_kind", "wps", "notes", "password", "status"):
+            if item.get(key) not in (None, ""):
+                setattr(ap, key, item[key])
+        ap.tags = list(item.get("tags") or [])
+    session.notes = list(data.get("notes") or []) or load_notes(config)
+    console.print(f"[dim]using the saved session {session.id} "
+                  f"({len(session.aps)} access points)[/dim]")
+    return session
+
+
+def command_targets(args, config: Config, console) -> int:
+    """Filter the discovered APs and optionally make them the campaign scope."""
+    from .session import Session
+    from .api import scan as api_scan
+
+    session = _load_session_for(args, config, console)
+    if session is None:
+        session = _session_from_last_run(config, console)
+    if session is None:
+        # scan briefly, so the command is useful on its own
+        console.print("[dim]scanning briefly to build the target list…[/dim]")
+        try:
+            payload = api_scan(duration=config.scan_time)
+        except Exception as error:                     # no radio, no root, no scan
+            console.print(f"[red]cannot scan ({error})[/red]")
+            console.print("[dim]pass --report export.json (or run a session first) to "
+                          "filter a saved engagement instead[/dim]")
+            return 2
+        session = Session(config, EventBus(), demo=getattr(args, "demo", False))
+        for ap in getattr(payload, "aps", []) or []:
+            row, _ = session.upsert_ap(ap.bssid, ap.essid, publish=False)
+            row.enrich()
+    if getattr(args, "kinds", False):
+        kinds: Dict[str, int] = {}
+        for ap in session.aps.values():
+            kind = ap.target_kind or classify_target(ap)
+            kinds[kind] = kinds.get(kind, 0) + 1
+        if args.json:
+            print(json.dumps(kinds, indent=2))
+            return 0
+        table = Table(title="target kinds", box=None)
+        table.add_column("kind"); table.add_column("APs", justify="right")
+        for kind, count in sorted(kinds.items(), key=lambda item: -item[1]):
+            table.add_row(kind, str(count))
+        console.print(table)
+        return 0
+    matched = session.filter_aps(kind=args.kind, tag=args.tag, vendor=args.vendor,
+                                cracked=True if args.cracked else None,
+                                loot=True if args.loot else None,
+                                encryption=args.encryption, channel=args.channel)
+    table = Table(title=f"targets ({len(matched)} of {len(session.aps)})", box=None)
+    for column in ("BSSID", "SSID", "kind", "vendor", "ch", "sig", "tags", "loot"):
+        table.add_column(column, overflow="fold")
+    for ap in matched:
+        loot = "PSK" if ap.password else ("pmkid" if ap.has_pmkid else
+                                          "handshake" if ap.has_handshake else "-")
+        table.add_row(ap.bssid, ap.essid or "(hidden)", ap.target_kind or "-",
+                      ap.vendor or "-", str(ap.channel), str(ap.signal),
+                      ",".join(ap.tags) or "-", loot)
+    if matched:
+        console.print(table)
+    else:
+        console.print("[yellow]no access points match those filters[/yellow]")
+    if getattr(args, "select", False):
+        session.selected_bssids = [ap.bssid for ap in matched]
+        if getattr(args, "json", False):
+            print(json.dumps({"selected": session.selected_bssids,
+                              "count": len(matched)}, indent=2))
+        else:
+            console.print(f"[green]{len(matched)} target(s) selected for the campaign[/green]")
+    elif getattr(args, "json", False):
+        print(json.dumps([ap.to_dict() for ap in matched], indent=2))
+    return 0
+
+
+def command_note(args, config: Config, console) -> int:
+    """Add/list operator notes and show the engagement history."""
+    from .session import Session
+
+    state_dir = _expand(getattr(args, "state_dir", ""))
+    if args.history:
+        session = _load_session_for(args, config, console) or Session(config, EventBus(),
+                                                                     demo=True)
+        history = session.history(limit=40)
+        if args.json:
+            print(json.dumps(history, indent=2))
+            return 0
+        if not history:
+            console.print("[dim]nothing recorded yet[/dim]")
+            return 0
+        table = Table(title="history (newest first)", box=None)
+        for column in ("when", "what", "detail", "bssid"):
+            table.add_column(column, overflow="fold")
+        for entry in history:
+            table.add_row(human_duration(max(0.0, time.time() - (entry.get("ts") or 0)))
+                          + " ago", str(entry.get("kind", "")), str(entry.get("detail", "")),
+                          str(entry.get("bssid", "")))
+        console.print(table)
+        return 0
+    if args.list or not args.text:
+        from .session import load_notes
+        notes = load_notes(config, state_dir)
+        if args.json:
+            print(json.dumps(notes, indent=2))
+            return 0
+        if not notes:
+            console.print("[dim]no notes yet — `wifipilot note \"text\"` writes one[/dim]")
+            return 0
+        for entry in notes:
+            stamp = entry.get("ts", "")
+            where = f" [{entry['bssid']}]" if entry.get("bssid") else ""
+            console.print(f"[dim]{stamp}[/dim]{where} {entry.get('text', '')}")
+        return 0
+    session = Session(config, EventBus(), demo=True)
+    if state_dir:
+        session.state_dir = _expand(state_dir)
+        Path(session.state_dir).mkdir(parents=True, exist_ok=True)
+    entry = session.add_note(args.text, bssid=args.bssid)
+    if args.json:
+        print(json.dumps(entry, indent=2))
+    else:
+        console.print(f"[green]note saved[/green] to {session.state_dir}")
+    return 0
+
+
+def command_tag(args, config: Config, console) -> int:
+    """Tag (or untag) an access point, or list the tags in use."""
+    session = _load_session_for(args, config, console)
+    if args.list or not (args.bssid and args.tag):
+        tags = (session.tags() if session else {})
+        if args.json:
+            print(json.dumps(tags, indent=2))
+            return 0
+        if not tags:
+            console.print("[dim]no tags in use[/dim]")
+            return 0
+        for tag, bssids in sorted(tags.items()):
+            console.print(f"[cyan]{tag}[/cyan] — {len(bssids)}: {', '.join(bssids)}")
+        return 0
+    tags = session.tag_ap(args.bssid, args.tag, add=not args.remove)
+    if args.json:
+        print(json.dumps({"bssid": args.bssid, "tags": tags}, indent=2))
+    else:
+        console.print(f"{args.bssid}: {', '.join(tags) or '(no tags)'}")
+    return 0
+
+
+def command_vendor(args, config: Config, console) -> int:
+    """Vendor lookup: OUI registry, dossier, and what it implies."""
+    from . import vendors
+    from .analytics import identify
+
+    if args.oui_stats:
+        stats = vendors.oui_stats()
+        if args.json:
+            print(json.dumps(stats, indent=2))
+        else:
+            console.print(f"OUI registry: [cyan]{stats['exact']}[/cyan] exact prefixes, "
+                          f"[cyan]{stats['prefix']}[/cyan] 28-bit blocks ({stats['file']})")
+        return 0
+    if args.import_oui:
+        path = os.path.abspath(os.path.expanduser(args.import_oui))
+        if not os.path.exists(path):
+            console.print(f"[red]no such file: {path}[/red]")
+            return 1
+        result = vendors.import_oui_file(path)
+        console.print(f"[green]merged[/green] {result['vendors']:,} vendor prefixes "
+                      f"from {Path(path).name} into {result['path']}")
+        return 0
+    query = args.bssid or args.query
+    if not query:
+        console.print("[yellow]give a MAC, a vendor name, an ESSID, or --oui-stats[/yellow]")
+        return 2
+    mac = mac_norm(query)
+    if mac:
+        vendor, match = vendors.oui_lookup(mac)
+        dossier = vendors.vendor_dossier(vendor or mac)
+        info = identify("", vendor)
+        if args.json:
+            print(json.dumps({"mac": mac, "vendor": vendor, "match": match,
+                              "dossier": dossier, "identification": info}, indent=2))
+            return 0
+        console.print(Panel(f"[bold]{vendor or 'unknown vendor'}[/bold] "
+                            f"({match or 'not in the registry'}) · {mac}",
+                            title="oui", border_style="cyan"))
+        if dossier.get("matched"):
+            console.print(f"  WPS: {dossier.get('wps')}\n"
+                          f"  bands: {dossier.get('bands')}\n"
+                          f"  default key: {dossier.get('default_key')}\n"
+                          f"  notes: {dossier.get('notes')}")
+            console.print(f"  [dim]{dossier.get('disclaimer')}[/dim]")
+        return 0
+    dossier = vendors.vendor_dossier(query)
+    info = identify(query)
+    if args.json:
+        print(json.dumps({"query": query, "dossier": dossier, "identification": info},
+                         indent=2))
+        return 0
+    if dossier.get("matched"):
+        console.print(Panel(f"[bold]{dossier.get('label')}[/bold] — {query}",
+                            title="vendor dossier", border_style="cyan"))
+        for key in ("wps", "bands", "default_key", "notes"):
+            console.print(f"  [cyan]{key}[/cyan]: {dossier.get(key)}")
+        console.print(f"  [dim]{dossier.get('disclaimer')}[/dim]")
+    else:
+        console.print(f"[yellow]no dossier for {query!r}[/yellow] — "
+                      f"treat it like any other AP")
+    if info.get("masks"):
+        console.print("  mask candidates:")
+        for item in info["masks"][:6]:
+            console.print(f"    [cyan]{item['mask']}[/cyan] "
+                          f"{item['space']:>15,} candidates · {item['note']}")
+    return 0
+
+
+def command_benchmark(args, config: Config, console) -> int:
+    """Measure this machine's candidate rate (no radio, no target)."""
+    from .engine import Engine
+    from .session import Session
+
+    session = Session(config, EventBus(), demo=True)
+    engine = Engine(config, session.bus, session=session, demo=True)
+    result = engine.benchmark(seconds=args.seconds)
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return 0
+    console.print(Panel(f"[bold]{result['rate']:,.0f}[/bold] candidates/s "
+                        f"({result['ms_per_candidate']:.2f} ms each)\n"
+                        f"{result['candidates']:,} candidates in {result['seconds']}s",
+                        title="benchmark", border_style="cyan"))
+    table = Table(box=None)
+    table.add_column("candidate space"); table.add_column("seconds", justify="right")
+    for name, estimate in result["estimates"].items():
+        table.add_row(name, estimate["human"])
+    console.print(table)
+    console.print(f"[dim]{result['note']}[/dim]")
+    return 0
+
+
+def command_advice(args, config: Config, console) -> int:
+    """Prioritised next steps from the heuristics (no LLM round trip)."""
+    from .engine import Engine
+    from .session import Session
+
+    session = _load_session_for(args, config, console) or Session(config, EventBus(),
+                                                                 demo=True)
+    engine = Engine(config, session.bus, session=session, demo=True)
+    items = engine.advice()
+    if args.json:
+        print(json.dumps(items, indent=2))
+        return 0
+    if not items:
+        console.print("[dim]nothing to advise: no access points discovered[/dim]")
+        return 0
+    table = Table(title="next steps", box=None)
+    for column in ("#", "action", "target", "why", "confidence"):
+        table.add_column(column, overflow="fold")
+    for item in items:
+        target = item.get("essid") or item.get("bssid") or "engagement"
+        table.add_row(str(item["priority"]), item["action"], target,
+                      item["why"], item["confidence"])
+    console.print(table)
+    return 0
+
+
+def command_wordlist(args, config: Config, console) -> int:
+    """Wordlist tooling: stats, merge, rule expansion, masks -> list."""
+    from . import toolbox
+    action = getattr(args, "wordlist_command", "") or "stats"
+    if action == "stats":
+        result = [toolbox.wordlist_stats(_expand(item)) for item in args.files]
+        if args.json:
+            print(json.dumps(result, indent=2))
+            return 0
+        table = Table(title="wordlists", box=None)
+        for column in ("file", "lines", "unique", "8-63 chars", "min", "max", "avg"):
+            table.add_column(column, overflow="fold")
+        for item in result:
+            table.add_row(Path(item["path"]).name, f"{item['lines']:,}",
+                          f"{item['unique']:,}" if item["unique_exact"] else f"~{item['unique']:,}",
+                          f"{item['wpa_compatible']:,}", str(item["min_length"]),
+                          str(item["max_length"]), str(item["average_length"]))
+        console.print(table)
+        for item in result:
+            classes = ", ".join(f"{k}={v}" for k, v in item["classes"].items() if v)
+            console.print(f"  [dim]{Path(item['path']).name}: {classes}[/dim]")
+            console.print(f"  [dim]built-in engine needs ~"
+                          f"{human_duration(item['estimated_seconds_builtin'])} for the "
+                          f"WPA-shaped words; a CPU hashcat ~"
+                          f"{human_duration(item['estimated_seconds_hashcat_cpu'])}[/dim]")
+        return 0
+    if action == "merge":
+        result = toolbox.merge_wordlists([_expand(i) for i in args.files],
+                                         _expand(args.out),
+                                         min_length=1 if args.keep_short else 8,
+                                         limit=args.limit)
+        console.print(f"[green]{result['written']:,}[/green] words -> {result['path']} "
+                      f"({result['duplicates']:,} duplicates, "
+                      f"{result['rejected']:,} rejected)")
+        if args.json:
+            print(json.dumps(result, indent=2))
+        return 0
+    if action == "expand":
+        result = toolbox.expand_wordlist(_expand(args.file), _expand(args.out),
+                                         args.rule_file, limit=args.limit)
+        console.print(f"[green]{result['written']:,}[/green] candidates from "
+                      f"{result['base_words']:,} words × {result['rules']} rules -> "
+                      f"{result['path']}")
+        if args.json:
+            print(json.dumps(result, indent=2))
+        return 0
+    if action == "from-masks":
+        result = toolbox.wordlist_from_masks(args.masks, _expand(args.out),
+                                             limit=args.limit)
+        console.print(f"[green]{result['written']:,}[/green] of {result['space']:,} "
+                      f"candidates -> {result['path']}")
+        if args.json:
+            print(json.dumps(result, indent=2))
+        return 0
+    if action == "rules-info":
+        from . import rules as rules_module
+        spec = args.spec
+        if os.path.exists(spec):
+            rules = rules_module.parse_file(spec)
+            label = Path(spec).name
+        else:
+            rules = rules_module.preset(spec)
+            label = f"preset {spec}"
+        info = rules_module.describe(rules)
+        if args.json:
+            print(json.dumps(info, indent=2))
+            return 0
+        console.print(Panel(f"[bold]{label}[/bold]\n"
+                            f"{info['rules']} rules · {info['usable']} usable · "
+                            f"{info['skipped']} skipped",
+                            title="rule file", border_style="cyan"))
+        if info["commands"]:
+            console.print("  commands: " + ", ".join(
+                f"{name}×{count}" for name, count in info["commands"].items()))
+        if info["unsupported"]:
+            console.print("  [yellow]unsupported: "
+                          + ", ".join(f"{k!r}×{v}" for k, v in info["unsupported"].items())
+                          + "[/yellow]")
+        for example in info["examples"]:
+            console.print(f"  [dim]{example['rule']!r} → {example['password']!r}[/dim]")
+        return 0
+    console.print(f"[red]unknown wordlist action: {action}[/red]")
+    return 2
+
+
+def command_hash(args, config: Config, console) -> int:
+    """Hash-file tooling: stats, merge, dedupe, filter, split, normalize, rescue."""
+    from . import toolbox
+    action = getattr(args, "hash_command", "") or "stats"
+    if action == "stats":
+        result = [toolbox.hash_stats(_expand(item)) for item in args.files]
+        if args.json:
+            print(json.dumps(result, indent=2))
+            return 0
+        table = Table(title="hash files", box=None)
+        for column in ("file", "lines", "PMKID", "EAPOL", "verifiable", "SSIDs"):
+            table.add_column(column, overflow="fold")
+        for item in result:
+            table.add_row(Path(item["path"]).name, str(item["lines"]), str(item["pmkid"]),
+                          str(item["eapol"]), str(item["verifiable"]),
+                          ", ".join(item["essids"])[:40] or "-")
+        console.print(table)
+        for item in result:
+            for label in item["unverifiable"]:
+                console.print(f"  [yellow]unverifiable[/yellow] {label}")
+        return 0
+    if action == "merge":
+        result = toolbox.merge_hash_files([_expand(i) for i in args.files],
+                                          _expand(args.out) if args.out else "",
+                                          dedupe=not args.no_dedupe)
+        console.print(f"[green]{result['written']}[/green] line(s) -> {result['path']} "
+                      f"({result['duplicates']} duplicate(s) dropped)")
+        if args.json:
+            print(json.dumps(result, indent=2))
+        return 0
+    if action == "dedupe":
+        result = toolbox.dedupe_hash_file(_expand(args.file),
+                                          _expand(args.out) if args.out else "")
+        console.print(f"[green]{result['written']}[/green] unique line(s), "
+                      f"{result['duplicates']} dropped")
+        if args.json:
+            print(json.dumps(result, indent=2))
+        return 0
+    if action == "filter":
+        result = toolbox.filter_hash_file(_expand(args.file),
+                                          _expand(args.out) if args.out else "",
+                                          essid=args.essid, bssid=args.bssid,
+                                          kind=args.kind,
+                                          verifiable_only=args.verifiable_only)
+        console.print(f"[green]{result['written']}[/green] kept, "
+                      f"{result['dropped']} dropped -> {result['path']}")
+        if args.json:
+            print(json.dumps(result, indent=2))
+        return 0
+    if action == "split":
+        result = toolbox.split_hash_file(_expand(args.file), _expand(args.out_dir),
+                                         per_file=args.per_file)
+        console.print(f"[green]{result['files']}[/green] file(s) in {result['path']} "
+                      f"({result['written']} line(s) total)")
+        if args.json:
+            print(json.dumps(result, indent=2))
+        return 0
+    if action == "normalize":
+        result = toolbox.normalize_hash_file(_expand(args.file),
+                                             _expand(args.out) if args.out else "")
+        console.print(f"[green]{result['written']}[/green] line(s) canonicalised "
+                      f"({result['changed']} changed) -> {result['path']}")
+        if args.json:
+            print(json.dumps(result, indent=2))
+        return 0
+    if action == "rescue":
+        result = toolbox.rescue_partial_capture(_expand(args.capture),
+                                                _expand(args.out) if args.out else "")
+        console.print(f"[green]{result['written']}[/green] line(s) -> {result['path']} "
+                      f"({result['note']})")
+        if args.json:
+            print(json.dumps(result, indent=2))
+        return 0
+    console.print(f"[red]unknown hash action: {action}[/red]")
+    return 2
+
+
+def command_potfile(args, config: Config, console) -> int:
+    """Potfile: show, export, remove — so hashcat's loot joins the report."""
+    from . import toolbox
+    action = getattr(args, "potfile_command", "") or "show"
+    path = _expand(args.file) if getattr(args, "file", "") else _default_potfile(config)
+    if action == "show":
+        entries = toolbox.potfile_entries(path, limit=args.limit)
+        if args.json:
+            print(json.dumps(entries, indent=2))
+            return 0
+        if not entries:
+            console.print(f"[dim]no entries in {path}[/dim]")
+            return 0
+        table = Table(title=f"potfile ({len(entries)} entries)", box=None)
+        for column in ("ESSID", "BSSID", "kind", "password"):
+            table.add_column(column, overflow="fold")
+        for entry in entries:
+            table.add_row(entry["essid"] or "-", entry["bssid"] or "-",
+                          entry["kind"] or "-", entry["password"])
+        console.print(table)
+        return 0
+    if action == "export":
+        result = toolbox.potfile_export(path, _expand(args.out) if args.out else "",
+                                        fmt=args.format)
+        if args.out:
+            console.print(f"[green]{result['count']}[/green] entrie(s) -> {result['path']}")
+        if args.json:
+            print(json.dumps({"count": result["count"], "text": result["text"]}, indent=2))
+        elif not args.out:
+            print(result["text"])
+        return 0
+    if action == "remove":
+        result = toolbox.potfile_remove(path, args.needle)
+        console.print(f"[green]{result['removed']}[/green] removed, "
+                      f"{result['kept']} kept in {result['path']}")
+        if args.json:
+            print(json.dumps(result, indent=2))
+        return 0
+    console.print(f"[red]unknown potfile action: {action}[/red]")
+    return 2
+
+
+def command_loot(args, config: Config, console) -> int:
+    """The loot directory: list it, or prove it has not changed."""
+    from . import toolbox
+    action = getattr(args, "loot_command", "") or "list"
+    directory = _expand(args.dir) if getattr(args, "dir", "") else config.output_dir
+    if action == "manifest":
+        result = toolbox.write_manifest(directory)
+        console.print(f"[green]manifest written[/green] for {result['files']} file(s) "
+                      f"({human_bytes(result['bytes'])}) -> {result['path']}")
+        if args.json:
+            print(json.dumps(result, indent=2))
+        return 0
+    if action == "verify":
+        result = toolbox.verify_manifest(directory)
+        if args.json:
+            print(json.dumps(result, indent=2))
+            return 0 if result["ok"] else 1
+        if result["ok"]:
+            console.print(f"[green]loot verified[/green]: {result['checked']} file(s) "
+                          f"unchanged")
+        else:
+            console.print(f"[red]loot changed[/red]: {len(result['missing'])} missing, "
+                          f"{len(result['changed'])} modified, "
+                          f"{len(result['extra'])} extra")
+            for name in result["missing"]:
+                console.print(f"  [red]missing[/red] {name}")
+            for name in result["changed"]:
+                console.print(f"  [red]modified[/red] {name}")
+        return 0
+    files = sorted(Path(directory).rglob("*")) if os.path.isdir(directory) else []
+    entries = [item for item in files if item.is_file() and item.name != toolbox.MANIFEST_NAME]
+    if args.json:
+        print(json.dumps([{"path": str(item), "bytes": item.stat().st_size}
+                          for item in entries], indent=2))
+        return 0
+    if not entries:
+        console.print(f"[dim]nothing in {directory} yet[/dim]")
+        return 0
+    table = Table(title=f"loot: {directory}", box=None)
+    for column in ("file", "size", "age"):
+        table.add_column(column, overflow="fold")
+    for item in entries:
+        table.add_row(str(item.relative_to(directory)), human_bytes(item.stat().st_size),
+                      human_duration(max(0.0, time.time() - item.stat().st_mtime)))
+    console.print(table)
+    return 0
+
+
+def _expand(path: str) -> str:
+    """``~``/relative path -> absolute, expanded (what every file argument wants)."""
+    return os.path.abspath(os.path.expanduser(str(path or "")))
+
+
+def _default_potfile(config: Config) -> str:
+    """Where hashcat's potfile lives for this configuration."""
+    return os.path.join(config.session_dir, "cracks", "hashcat.potfile")
+
+
+def command_export(args, config: Config, console) -> int:
+    """Write a capture out as hashcat mode 22000 (or JSON/CSV)."""
+    from . import hash22000
+    from .pcap import analyze_file
+    include_pmkid = not args.eapol_only
+    include_eapol = not args.pmkid_only
+    exit_code = 0
+    for item in args.capture:
+        path = os.path.abspath(os.path.expanduser(item))
+        if not os.path.exists(path):
+            console.print(f"[red]no such file: {path}[/red]")
+            exit_code = 1
+            continue
+        if hash22000.is_hash_file(path):
+            console.print(f"[yellow]{Path(path).name} is already a hash file[/yellow]")
+            continue
+        analysis = analyze_file(path)
+        if analysis.error:
+            console.print(f"[red]{Path(path).name}: {analysis.error}[/red]")
+            exit_code = 1
+            continue
+        lines = hash22000.lines_from_analysis(analysis, include_pmkid, include_eapol)
+        if args.format == "json":
+            body = json.dumps(analysis.to_dict(), indent=2) + "\n"
+        elif args.format == "csv":
+            body = _capture_csv(analysis)
+        else:
+            converter = registry.path("hcxpcapngtool") if args.hcxtools else ""
+            if converter:
+                target = _export_path(args.out, path, ".hc22000")
+                with contextlib.suppress(Exception):
+                    run([converter, "-o", target, path], timeout=180)
+                if os.path.exists(target) and os.path.getsize(target):
+                    console.print(f"[green]{Path(target).name}[/green] "
+                                  f"({Path(target).stat().st_size} bytes, hcxpcapngtool)")
+                    continue
+                console.print("[yellow]hcxpcapngtool produced nothing; "
+                              "using the built-in writer[/yellow]")
+            body = "".join(line + "\n" for line in lines)
+        if args.out in ("-", "/dev/stdout"):
+            print(body, end="")
+            continue
+        target = _export_path(args.out, path, {"json": ".json", "csv": ".csv"}[args.format]
+                              if args.format != "22000" else ".hc22000")
+        if target:
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            Path(target).write_text(body, encoding="utf-8")
+            console.print(f"[green]{Path(target).name}[/green] \u00b7 {len(lines)} hash line(s) "
+                          f"from {analysis.eapol_messages} EAPOL frame(s) "
+                          f"({analysis.retransmits} retransmits ignored)")
+    return exit_code
+
+
+def _capture_csv(analysis) -> str:
+    """One row per handshake/PMKID: what a spreadsheet or a report wants."""
+    rows = ["bssid,station,essid,kind,message_pair,complete,pmkid,eapol_frames,retransmits,score"]
+    for handshake in analysis.handshakes:
+        essid = analysis.essids.get(handshake.bssid, "")
+        rows.append(",".join([
+            handshake.bssid, handshake.station, essid,
+            "handshake", "M1+M2" if handshake.challenge else "M2+M3" if handshake.authorized else "partial",
+            "yes" if handshake.complete else "no", handshake.pmkid,
+            str(handshake.eapol_count), str(sum(m.retransmits for m in handshake.messages.values())),
+            str(handshake.score),
+        ]))
+    for pmkid in analysis.pmkids:
+        rows.append(",".join([pmkid.bssid, pmkid.station, analysis.essids.get(pmkid.bssid, ""),
+                              "pmkid", "", "no", pmkid.pmkid, "0", "0", "0"]))
+    return "\n".join(rows) + "\n"
+
+
+def _export_path(out: str, capture: str, suffix: str) -> str:
+    if not out:
+        return os.path.splitext(capture)[0] + suffix
+    if out.endswith(suffix):
+        return out
+    if os.path.isdir(out):
+        return os.path.join(out, Path(capture).stem + suffix)
+    return out
 
 
 def command_tools(args, config: Config, console) -> int:
@@ -1117,6 +2104,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "web": command_web,
         "crack": command_crack,
         "analyze": command_analyze,
+        "export": command_export,
+        "targets": command_targets,
+        "note": command_note,
+        "tag": command_tag,
+        "vendor": command_vendor,
+        "benchmark": command_benchmark,
+        "advice": command_advice,
+        "wordlist": command_wordlist,
+        "hash": command_hash,
+        "potfile": command_potfile,
+        "loot": command_loot,
         "tools": command_tools,
         "ai": command_ai,
         "config": command_config,

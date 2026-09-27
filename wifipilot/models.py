@@ -81,6 +81,16 @@ class AccessPoint:
     wps_model: str = ""
     wps_device: str = ""
     wps_manufacturer: str = ""
+    #: free-form operator tags (put in scope, out of scope, retest, ...)
+    tags: List[str] = field(default_factory=list)
+    #: what happened to this AP, oldest first (bounded; see ``remember``)
+    history: List[Dict[str, Any]] = field(default_factory=list)
+    #: a coarse classification, useful for filtering and reporting
+    target_kind: str = ""
+    #: vendor dossier key (see :mod:`wifipilot.vendors`), never a measurement
+    vendor_profile: str = ""
+    #: operator notes / advice attached to this AP
+    notes: str = ""
     pmf: bool = False              # 802.11w management frame protection
     sae: bool = False              # WPA3-SAE
     sai: bool = False              # WPA3 transition mode indicator
@@ -205,6 +215,65 @@ class AccessPoint:
         self.clients[key] = client
         return True
 
+    # -- engagement bookkeeping (see Session.add_note / tag_ap) ---------- #
+    def tag(self, name: str, add: bool = True) -> List[str]:
+        """Add or remove a tag; returns the tags on this AP afterwards."""
+        name = str(name).strip().lower()[:32]
+        if not name:
+            return list(self.tags)
+        if add:
+            if name not in self.tags:
+                self.tags.append(name)
+        else:
+            self.tags = [existing for existing in self.tags if existing != name]
+        return list(self.tags)
+
+    def remember(self, kind: str, detail: str = "", **extra: Any) -> Dict[str, Any]:
+        """Append one line to this AP's history (newest last, bounded at 50)."""
+        entry = {"ts": time.time(), "kind": kind, "detail": detail, **extra}
+        self.history.append(entry)
+        del self.history[:-50]
+        return entry
+
+    @property
+    def vendor_key(self) -> str:
+        """Dossier key for this AP's vendor (``"AVM"``, ``"TP-Link"``, ...)."""
+        from .vendors import _key_for
+        return _key_for(self.vendor or "")
+
+    def enrich(self) -> Dict[str, Any]:
+        """Add everything that can be derived from the OUI and the SSID.
+
+        Idempotent: safe to call on every scan round.  Returns what it added so
+        the caller can log it.
+        """
+        from .analytics import guess_vendor, identify
+        from .vendors import vendor_dossier
+        added: Dict[str, Any] = {}
+        if not self.vendor:
+            guess = guess_vendor(self.essid, self.bssid)
+            if guess:
+                self.vendor = guess
+                added["vendor"] = guess
+        if not self.vendor_key:
+            key = vendor_dossier(self.bssid).get("key", "") if self.bssid else ""
+            if key:
+                added["vendor"] = self.vendor or key
+        if not self.target_kind:
+            self.target_kind = classify_target(self)
+            added["target_kind"] = self.target_kind
+        if not self.vendor_profile:
+            profile = vendor_dossier(self.vendor or self.bssid)
+            if profile.get("matched"):
+                self.vendor_profile = str(profile.get("key", ""))
+                added["vendor_profile"] = self.vendor_profile
+        if not self.notes:
+            info = identify(self.essid, self.vendor or "")
+            if info.get("scheme"):
+                self.notes = str(info.get("advice") or info.get("scheme_note") or "")
+                added["notes"] = self.notes[:80]
+        return added
+
     def touch(self) -> None:
         self.last_seen = time.time()
 
@@ -249,11 +318,43 @@ class AccessPoint:
             "attacks": self.attackable(enabled),
             "captures": [c.to_dict() for c in self.captures],
             "notes": self.notes,
+            "tags": list(self.tags),
+            "target_kind": self.target_kind,
+            "vendor_profile": self.vendor_profile,
         }
         if detail:
             data["clients_list"] = [c.to_dict() for c in self.clients.values()]
             data["attempts"] = [a.to_dict() for a in self.attempts[-25:]]
+            data["history"] = list(self.history)
         return data
+
+
+def classify_target(ap: "AccessPoint") -> str:
+    """A coarse label: what *kind* of network this looks like.
+
+    Used for filtering (``wifipilot targets --kind guest``) and reporting; it is
+    a heuristic over the data already collected, not a measurement.
+    """
+    essid = (ap.essid or "").lower()
+    if not ap.essid:
+        return "hidden"
+    if any(token in essid for token in ("guest", "gast", "visitor", "_vip")):
+        return "guest"
+    if any(token in essid for token in ("iot", "smart", "camera", "cam-", "printer",
+                                        "thermostat", "light", "plug")):
+        return "iot"
+    if "tetra" in essid or "police" in essid or "eduroam" in essid:
+        return "public-safety"
+    if ap.vendor_key in ("AVM", "TP-Link", "Netgear", "D-Link", "ASUS", "Huawei",
+                         "Zyxel", "ARRIS", "Cisco") or ap.encryption in ("WPA2", "WPA", "WPA2/WPA3"):
+        if len(ap.clients) > 8:
+            return "small-business"
+        return "home-router"
+    if ap.encryption == "OPEN":
+        return "open"
+    if ap.encryption == "WPA3":
+        return "wpa3-only"
+    return "wireless"
 
 
 @dataclass
@@ -275,6 +376,10 @@ class Capture:
     crack_attempts: int = 0
     hash_path: str = ""
     extra: Dict[str, Any] = field(default_factory=dict)
+    #: which stage produced this: attack | manual | imported | demo
+    found_in: str = ""
+    #: operator note attached to this capture
+    note: str = ""
 
     @property
     def label(self) -> str:
@@ -286,6 +391,7 @@ class Capture:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "kind": self.kind, "bssid": self.bssid, "essid": self.essid,
+            "found_in": self.found_in, "note": self.note,
             "path": self.path, "hash_path": self.hash_path, "valid": self.valid,
             "tool": self.tool, "created": now_iso(),
             "created_ts": self.created, "eapol": self.eapol, "size": self.size,

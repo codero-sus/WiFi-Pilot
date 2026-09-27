@@ -40,7 +40,12 @@ __all__ = [
     "ALL", "MODES", "WifiPilotError", "PlatformError", "AuthorizationError", "BusyError",
     "TargetError", "Run", "ScanResult", "CampaignResult",
     "configure", "config", "demo", "authorize", "set_provider", "providers",
-    "advisor_status", "scan", "attack", "crack", "analyze", "loot", "report", "status",
+    "advisor_status", "scan", "attack", "crack", "analyze", "export", "suggest_masks",
+    "strategies", "targets", "select", "selected", "note", "notes", "tag", "history",
+    "vendor", "identify", "passwords", "advice", "benchmark", "hash_stats",
+    "merge_hashes", "rescue_capture", "wordlist_stats", "expand_wordlist",
+    "rules_info", "loot_manifest", "verify_loot", "loot", "report",
+    "status",
     "session", "engine", "subscribe", "stop", "reset", "is_running",
 ]
 
@@ -67,8 +72,12 @@ maintenance window and a named authorising party.
 from .api import (  # noqa: E402  (import at the end: api.py imports config/models)
     ALL, MODES, AuthorizationError, BusyError, CampaignResult, PlatformError, Run,
     ScanResult, TargetError, WifiPilotError, advisor_status, analyze, attack, authorize,
-    config, configure, crack, current_run, demo, engine, is_running, loot, providers,
-    report, reset, scan, session, set_provider, status, stop, subscribe,
+    config, configure, crack, current_run, demo, engine, export, is_running, loot,
+    suggest_masks, strategies, targets, select, selected, note, notes, tag, history,
+    vendor, identify, passwords, advice, benchmark, hash_stats, merge_hashes,
+    rescue_capture, wordlist_stats, expand_wordlist, rules_info, loot_manifest,
+    verify_loot,
+    providers, report, reset, scan, session, set_provider, status, stop, subscribe,
 )
 
 # `wp.EK` for event filtering plus the exception tree of the transports, so

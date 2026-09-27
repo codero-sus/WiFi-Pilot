@@ -27,6 +27,7 @@ class EK:
     SESSION_END = "session.end"
     SESSION_INFO = "session.info"
     STATE = "state"                      # full UI snapshot
+    NOTE = "note"
     LOG = "log"
     WARNING = "warning"
     ERROR = "error"

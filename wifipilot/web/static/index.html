@@ -68,13 +68,17 @@
         <thead>
           <tr>
             <th></th><th>SSID</th><th>BSSID</th><th>CH</th><th>Band</th><th>Signal</th>
-            <th>Security</th><th>WPS</th><th>Clients</th><th>Loot</th><th>Score</th><th>Decided by</th><th>Attack</th>
+            <th>Security</th><th>WPS</th><th>Kind</th><th>Tags</th><th>Clients</th><th>Loot</th><th>Score</th><th>Decided by</th><th>Attack</th>
           </tr>
         </thead>
         <tbody></tbody>
       </table>
     </div>
     <div id="detail-panel" class="detail hidden"></div>
+    <div class="card" id="advice-card">
+      <h3>Next steps <span class="dim" style="font-weight:400">— heuristics, no LLM call</span></h3>
+      <div id="advice-list" class="dim">loading…</div>
+    </div>
   </section>
 
   <!-- ---------------------------------------------------------------- -->

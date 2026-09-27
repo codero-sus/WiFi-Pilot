@@ -38,6 +38,7 @@ import builtins
 import json
 import os
 import threading
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
@@ -51,8 +52,13 @@ __all__ = [
     "ALL", "MODES", "WifiPilotError", "PlatformError", "AuthorizationError", "BusyError",
     "TargetError", "CampaignError", "Run", "ScanResult", "CampaignResult",
     "configure", "config", "demo", "authorize", "set_provider", "providers", "advisor_status",
-    "scan", "attack", "crack", "analyze", "loot", "report", "status", "session", "engine",
-    "current_run", "subscribe", "stop", "reset", "is_running",
+    "scan", "attack", "crack", "analyze", "export", "suggest_masks", "loot", "report",
+    "strategies", "targets", "select", "selected", "note", "notes", "tag", "history",
+    "vendor", "identify", "passwords", "advice", "benchmark", "hash_stats",
+    "merge_hashes", "rescue_capture", "wordlist_stats", "expand_wordlist",
+    "rules_info", "loot_manifest", "verify_loot",
+    "status", "session", "engine", "current_run", "subscribe", "stop", "reset",
+    "is_running",
 ]
 
 #: wildcard target: every access point the scan found ("all", "*", None — and the
@@ -297,6 +303,8 @@ class _Context:
         self.config: Optional[Config] = None
         self.engine: Optional[Engine] = None
         self.run: Optional[Run] = None
+        #: a detached session for notes/tags before (or after) a campaign
+        self.session: Optional[Any] = None
         self.lock = threading.RLock()
         self.subscribers: List[Tuple[Callable[[Event], Any], Optional[List[str]]]] = []
         self.quiet = True
@@ -375,7 +383,8 @@ _CONFIG_KEYS = {
     "crack_timeout", "cracker", "handshake_timeout", "pmkid_timeout", "wps_timeout",
     "wep_timeout", "attack_timeout", "ai_provider", "provider", "model", "think_interval",
     "ai_budget", "redact_identifiers", "verbose_tools", "log_level", "rules",
-    "use_rules", "use_masks", "mac_rotate", "randomize_mac", "kill_interfering",
+    "use_rules", "use_masks", "mask_patterns", "mask_candidates", "targeted_candidates",
+    "mac_rotate", "randomize_mac", "kill_interfering",
     "restore_interface", "check_handshakes", "save_session", "ignore_known",
     "config_file", "config", "openrouter_key", "ollama_host", "authorization_note",
     "deauth_count", "deauth_interval", "deauth_burst", "scan_rounds",
@@ -431,6 +440,8 @@ def configure(**kwargs: Any) -> Config:
             "attack_timeout": "attack_timeout",
             "verbose_tools": "verbose_tools", "log_level": "log_level",
             "rules": "rules", "use_rules": "use_rules", "use_masks": "use_masks",
+            "mask_patterns": "mask_patterns", "mask_candidates": "mask_candidates",
+            "targeted_candidates": "targeted_candidates",
             "mac_rotate": "mac_rotate", "randomize_mac": "randomize_mac",
             "kill_interfering": "kill_interfering", "restore_interface": "restore_interface",
             "check_handshakes": "check_handshakes", "save_session": "save_session",
@@ -755,8 +766,10 @@ def attack(target: Any = ALL, mode: str = "force", duration: Union[float, str] =
 
 
 def crack(capture: str, wordlist: Union[str, Sequence[str], None] = None,
-          essid: str = "", bssid: str = "", timeout: Optional[float] = None) -> Any:
-    """Crack a capture you already have (``.cap``/``.pcap``/``.pcapng``/``.hc22000``).
+          essid: str = "", bssid: str = "", timeout: Optional[float] = None,
+          mask: Union[str, Sequence[str], None] = None,
+          masks: bool = True) -> Any:
+    """Crack a capture or a hash file (``.cap``/``.pcap``/``.pcapng``/``.hc22000``).
 
     Returns the cracker's :class:`~wifipilot.crack.CrackResult` — ``.cracked``,
     ``.password``, ``.verified``, ``.tool``, ``.seconds``.
@@ -766,7 +779,12 @@ def crack(capture: str, wordlist: Union[str, Sequence[str], None] = None,
     candidate generation, verified against the handshake MIC or the PMKID) runs
     first, then the supplied ``wordlist``/configured wordlists through
     aircrack-ng or hashcat when they are installed.
+
+    ``mask`` is a hashcat-style mask (``"Telekom-?d?d?d?d"``) or a list of them;
+    ``masks=False`` turns the stage off.  Masks bigger than the built-in engine's
+    budget are handed to hashcat ``-a 3`` instead of being half-swept.
     """
+    from . import hash22000, masks as masks_module
     from .crack import Cracker
     from .models import Capture as CaptureModel
     from .pcap import analyze_file
@@ -774,33 +792,342 @@ def crack(capture: str, wordlist: Union[str, Sequence[str], None] = None,
     from .events import EventBus
 
     config = configure()
+    config.use_masks = bool(masks)
+    patterns: List[str] = []
+    if mask:
+        patterns = [mask] if isinstance(mask, str) else [str(m) for m in mask]
+        for pattern in patterns:
+            masks_module.mask_space(pattern)      # raises MaskError on nonsense
+        config.use_masks = True
     path = str(capture)
     if not os.path.exists(path):
         raise WifiPilotError(f"capture not found: {path}")
-    analysis = analyze_file(path)
-    target_bssid = mac_norm(bssid) or (analysis.bssids[0] if analysis.bssids else "")
-    target_essid = (essid or analysis.essids.get(target_bssid, "")
-                    or next(iter(analysis.essids.values()), ""))
-    kind = ("handshake" if analysis.has_handshake
-            else "pmkid" if analysis.has_pmkid
-            else "wep_ivs" if analysis.wep_data > 5000 else "handshake")
-    ap = AccessPoint(bssid=target_bssid, essid=target_essid)
-    found = CaptureModel(kind=kind, bssid=target_bssid, essid=target_essid, path=path,
-                         valid=bool(analysis.valid), eapol=analysis.eapol_messages)
+    if hash22000.is_hash_file(path):
+        lines = hash22000.parse_file(path)
+        if not lines:
+            raise WifiPilotError(f"no usable hash lines in {path}")
+        first = lines[0]
+        target_bssid = mac_norm(bssid) or first.bssid
+        target_essid = essid or first.essid
+        kind = "pmkid" if all(line.kind == "pmkid" for line in lines) else "handshake"
+        ap = AccessPoint(bssid=target_bssid, essid=target_essid)
+        found = CaptureModel(kind=kind, bssid=target_bssid, essid=target_essid, path=path,
+                             valid=bool(hash22000.verifiers(lines)),
+                             hash_path=path,
+                             extra={"pmkid": next((line.pmkid for line in lines
+                                                   if line.kind == "pmkid"), "")})
+    else:
+        analysis = analyze_file(path)
+        target_bssid = mac_norm(bssid) or (analysis.bssids[0] if analysis.bssids else "")
+        target_essid = (essid or analysis.essids.get(target_bssid, "")
+                        or next(iter(analysis.essids.values()), ""))
+        kind = ("handshake" if analysis.has_handshake
+                else "pmkid" if analysis.has_pmkid
+                else "wep_ivs" if analysis.wep_data > 5000 else "handshake")
+        ap = AccessPoint(bssid=target_bssid, essid=target_essid)
+        found = CaptureModel(kind=kind, bssid=target_bssid, essid=target_essid, path=path,
+                             valid=bool(analysis.valid), eapol=analysis.eapol_messages)
     sess = Session(config, EventBus(), demo=False, authorized=True)
     sess.add_capture(found)
     cracker = Cracker(sess, config, sess.bus, demo=False)
     lists = _as_list(wordlist) or list(config.wordlists)
-    return cracker.crack_capture(ap, found, wordlists=[str(w) for w in lists],
+    return cracker.crack_capture(ap, found, wordlists=[str(w) for w in lists], masks=patterns,
                                  timeout=timeout)
 
 
 def analyze(capture: str) -> Dict[str, Any]:
-    """Inspect a capture file: EAPOL handshakes, PMKIDs, ESSIDs, validity."""
+    """Inspect a capture file, or a hashcat mode 22000 hash file.
+
+    A capture is parsed for EAPOL handshakes, PMKIDs, ESSIDs and validity; a
+    ``.hc22000``/``.22000`` file is read as hashes and reported with what can
+    actually be tested.
+    """
+    from . import hash22000
     from .pcap import analyze_file
-    analysis = analyze_file(str(capture))
+    path = str(capture)
+    if hash22000.is_hash_file(path) and os.path.exists(path):
+        lines, problems = hash22000.parse_text(
+            Path(path).read_text(encoding="utf-8", errors="replace"))
+        data = hash22000.summary(lines, problems)
+        data["path"] = path
+        data["format"] = "hc22000"
+        data["hashes"] = [line.to_dict() for line in lines]
+        return data
+    analysis = analyze_file(path)
     data = analysis.to_dict() if hasattr(analysis, "to_dict") else dict(vars(analysis))
     return data
+
+
+def export(capture: str, path: str = "", fmt: str = "22000",
+           pmkid: bool = True, eapol: bool = True) -> str:
+    """Write a capture out as hashcat mode 22000 (or ``json``/``csv``), return the path.
+
+    The mode 22000 writer is wifipilot's own: no hcxtools, no hashcat, no
+    external converter — a capture in, a hash file anyone can crack out.
+    """
+    from . import hash22000
+    from .pcap import analyze_file
+    source = str(capture)
+    if not os.path.exists(source):
+        raise WifiPilotError(f"capture not found: {source}")
+    target = path or (os.path.splitext(source)[0] + {
+        "json": ".json", "csv": ".csv"}.get(fmt, ".hc22000"))
+    if fmt == "22000":
+        if hash22000.is_hash_file(source):
+            return source                                    # already a hash file
+        analysis = analyze_file(source)
+        return hash22000.write_lines(hash22000.lines_from_analysis(analysis, pmkid, eapol),
+                                     target)
+    analysis = analyze_file(source)
+    if fmt == "json":
+        with open(target, "w", encoding="utf-8") as handle:
+            json.dump(analysis.to_dict(), handle, indent=2)
+        return target
+    raise WifiPilotError(f"unsupported export format {fmt!r} (use 22000, json or csv)")
+
+
+def suggest_masks(essid: str = "", vendor: str = "") -> List[Dict[str, object]]:
+    """Mask patterns worth trying against a target, smallest space first.
+
+    Returns ``[{"mask": "Telekom-?d?d?d?d", "space": 10000, "note": ...}, ...]``
+    — the same list the cracker uses, so a caller can show the operator what is
+    about to be tried (or feed it back into :func:`crack`).
+    """
+    from . import masks
+
+    # ``vendor`` may be given, or resolved from the ESSID's OUI like the scanner does
+    vendor = vendor or ""
+    return [mask.to_dict() for mask in masks.suggest_masks(essid, vendor)]
+
+
+def strategies() -> List[Dict[str, object]]:
+    """The crack strategy presets, with what each one does."""
+    from .crack import STRATEGIES
+    return [dict(preset) for _, preset in sorted(STRATEGIES.items())]
+
+
+def _offline_session() -> Any:
+    """The active session, or a fresh detached one built from the config.
+
+    The notes/tags/targets helpers must work *before* a campaign starts (and
+    after one ends) — they are read-mostly, so a detached Session is enough and
+    writing to its state directory is exactly what we want the notes to do.
+    """
+    if _CTX.session is not None:
+        return _CTX.session
+    existing = session()
+    if existing is not None:
+        return existing
+    from .events import EventBus
+    from .session import Session
+    cfg = config()
+    fresh = Session(cfg, EventBus(), demo=bool(getattr(cfg, "demo", False)),
+                    authorized=bool(getattr(cfg, "authorized", False)))
+    _CTX.session = fresh
+    return fresh
+
+
+def targets(kind: str = "", tag: str = "", vendor: str = "",
+            cracked: Optional[bool] = None, loot: Optional[bool] = None,
+            encryption: str = "", channel: int = 0) -> List[Dict[str, Any]]:
+    """Filter the access points discovered so far.
+
+    Filters compose; ``kind`` is the coarse classification
+    (:func:`~wifipilot.models.classify_target`), ``vendor`` matches the vendor
+    name or its dossier key.  Works with or without a running campaign.
+    """
+    sess = _offline_session()
+    rows: List[Dict[str, Any]] = []
+    for ap in sess.filter_aps(kind=kind, tag=tag, vendor=vendor, cracked=cracked,
+                              loot=loot, encryption=encryption, channel=channel):
+        rows.append(ap.to_dict())
+    return rows
+
+
+def select(bssids: Union[str, Sequence[str], None] = None, **filters: Any) -> List[str]:
+    """Make access points the campaign scope; returns the selected BSSIDs.
+
+    ``wp.select(tag="in-scope")`` or ``wp.select(["aa:bb:..."])``; ``clear=True``
+    empties the selection first.
+    """
+    clear = bool(filters.pop("clear", False))
+    chosen: List[str] = []
+    if bssids:
+        chosen.extend(_as_list(bssids))
+    if filters:
+        chosen.extend(row["bssid"] for row in targets(**filters))
+    sess = _offline_session()
+    selected = sorted(set(chosen) if clear else {*sess.selected_bssids, *chosen})
+    sess.selected_bssids = selected
+    return selected
+
+
+def selected() -> List[Dict[str, Any]]:
+    """The current campaign scope, with each AP's kind and tags."""
+    sess = _offline_session()
+    out: List[Dict[str, Any]] = []
+    for bssid in sess.selected_bssids:
+        ap = sess.ap(bssid)
+        if ap is not None:
+            out.append({"bssid": ap.bssid, "essid": ap.essid,
+                        "kind": ap.target_kind, "tags": list(ap.tags),
+                        "score": round(ap.score, 2)})
+    return out
+
+
+def note(text: str, bssid: str = "") -> Dict[str, Any]:
+    """Record an operator note (engagement-level, or attached to one AP)."""
+    return _offline_session().add_note(text, bssid=bssid)
+
+
+def notes(limit: int = 200) -> List[Dict[str, Any]]:
+    """Every operator note on disk for this configuration (newest first)."""
+    from .session import load_notes
+    return load_notes(config(), limit=limit)
+
+
+def tag(bssid: str, name: str, remove: bool = False) -> List[str]:
+    """Tag (or untag) an access point; returns its tags afterwards."""
+    return _offline_session().tag_ap(bssid, name, add=not remove)
+
+
+def history(bssid: str = "", limit: int = 50) -> List[Dict[str, Any]]:
+    """What happened, newest first — one AP's history or the whole session."""
+    return _offline_session().history(bssid=bssid, limit=limit)
+
+
+def vendor(query: str = "", bssid: str = "") -> Dict[str, Any]:
+    """Vendor dossier + identification for a MAC, vendor name or ESSID.
+
+    Includes ``confidence: "heuristic"``: vendor behaviour is a starting point,
+    never a finding.
+    """
+    from .analytics import identify
+    from .util import mac_norm
+    from .vendors import oui_lookup, vendor_dossier
+
+    target = bssid or query
+    mac = mac_norm(target)
+    if mac:
+        name, match = oui_lookup(mac)
+        return {"query": query or bssid, "mac": mac, "vendor": name, "match": match,
+                "dossier": vendor_dossier(name or mac),
+                "identification": identify("", name)}
+    return {"query": query, "vendor": "", "match": "",
+            "dossier": vendor_dossier(query), "identification": identify(query)}
+
+
+def identify(essid: str = "", bssid: str = "") -> Dict[str, Any]:
+    """What wifipilot can guess about a network name/BSSID: scheme, masks, words."""
+    from .analytics import identify as identify_impl
+    return identify_impl(essid, bssid)
+
+
+def passwords(include_weak: bool = True) -> List[Dict[str, Any]]:
+    """Weakness report for every PSK recovered in this session.
+
+    Each row carries the analyst verdict (pattern family, character classes,
+    score) and the time-to-crack estimates, so a report can say *how bad* a
+    password is rather than just listing it.
+    """
+    from .analytics import password_report
+    rows: List[Dict[str, Any]] = []
+    for ap in _offline_session().sorted_aps():
+        if not ap.password:
+            continue
+        report = password_report(ap.password).to_dict()
+        report.update({"bssid": ap.bssid, "essid": ap.essid})
+        if not include_weak and report["score"] < 60:
+            continue                                     # keep only the strong ones
+        rows.append(report)
+    rows.sort(key=lambda item: item["score"])
+    return rows
+
+
+def advice() -> List[Dict[str, Any]]:
+    """Prioritised next steps from the heuristics, with no LLM round trip."""
+    engine_obj = engine()
+    if engine_obj is None:
+        return heuristic_advice()
+    return engine_obj.advice()
+
+
+def benchmark(seconds: float = 5.0) -> Dict[str, Any]:
+    """Measure this machine's candidate verification rate (no radio needed)."""
+    from .engine import Engine
+    from .events import EventBus
+    from .session import Session
+
+    cfg = config()
+    sess = Session(cfg, EventBus(), demo=True)
+    machine = Engine(cfg, sess.bus, session=sess, demo=True)
+    return machine.benchmark(seconds=seconds)
+
+
+def hash_stats(path: str) -> Dict[str, Any]:
+    """What is in a mode 22000 hash file (lines, verifiable, ESSIDs, pairs)."""
+    from . import toolbox
+    return toolbox.hash_stats(str(path))
+
+
+def merge_hashes(paths: Sequence[str], out: str = "", dedupe: bool = True
+                 ) -> Dict[str, Any]:
+    """Merge hash files into one, by default dropping duplicates."""
+    from . import toolbox
+    return toolbox.merge_hash_files([str(path) for path in paths], out, dedupe=dedupe)
+
+
+def rescue_capture(capture: str, out: str = "") -> Dict[str, Any]:
+    """Recover hashes a normal converter misses (e.g. a PMKID in message 1)."""
+    from . import toolbox
+    return toolbox.rescue_partial_capture(str(capture), out)
+
+
+def wordlist_stats(path: str) -> Dict[str, Any]:
+    """Shape of a wordlist: lengths, uniqueness, WPA-compatible share, ETA."""
+    from . import toolbox
+    return toolbox.wordlist_stats(str(path))
+
+
+def expand_wordlist(path: str, out: str, rules: str = "best64",
+                    limit: int = 0) -> Dict[str, Any]:
+    """Apply a hashcat rule file (or a built-in preset) to a wordlist."""
+    from . import toolbox
+    return toolbox.expand_wordlist(str(path), str(out), rules, limit=limit)
+
+
+def rules_info(spec: str = "best64") -> Dict[str, Any]:
+    """Parse and describe a rule file or preset (counts, commands, examples)."""
+    from . import rules as rules_module
+    loaded = (rules_module.parse_file(spec) if os.path.exists(spec)
+              else rules_module.preset(spec))
+    return rules_module.describe(loaded)
+
+
+def loot_manifest(directory: str = "") -> Dict[str, Any]:
+    """sha256 every file in the loot directory (write ``manifest.sha256``)."""
+    from . import toolbox
+    return toolbox.write_manifest(directory or config().output_dir)
+
+
+def verify_loot(directory: str = "") -> Dict[str, Any]:
+    """Check the loot directory against its manifest."""
+    from . import toolbox
+    return toolbox.verify_manifest(directory or config().output_dir)
+
+
+def heuristic_advice() -> List[Dict[str, Any]]:
+    """Advice without an engine (used when nothing is running)."""
+    from .planner import heuristic_plan
+    sess = _offline_session()
+    if not sess.aps:
+        return [{"priority": 1, "action": "scan",
+                 "why": "nothing discovered yet", "confidence": "certain"}]
+    plan = heuristic_plan(sess)
+    return [{"priority": index + 1, "action": action.attack, "bssid": action.bssid,
+             "essid": getattr(sess.ap(action.bssid), "essid", ""),
+             "why": action.reason, "confidence": "medium"}
+            for index, action in enumerate(plan.actions)]
 
 
 def loot(path: str = "") -> List[Capture]:
@@ -850,9 +1177,16 @@ def status() -> Dict[str, Any]:
 
 
 def session() -> Any:
-    """The active/last :class:`~wifipilot.session.Session` (or ``None``)."""
-    return _CTX.run.session if _CTX.run is not None else (
-        _CTX.engine.session if _CTX.engine is not None else None)
+    """The active/last :class:`~wifipilot.session.Session` (or ``None``).
+
+    Order: the running campaign's session, then the engine's, then the detached
+    one :func:`_offline_session` creates for the notes/tags/targets helpers.
+    """
+    if _CTX.run is not None:
+        return _CTX.run.session
+    if _CTX.engine is not None:
+        return _CTX.engine.session
+    return _CTX.session
 
 
 def current_run() -> Optional[Run]:
@@ -918,3 +1252,4 @@ def reset() -> None:
         _CTX.engine = None
         _CTX.run = None
         _CTX.config = None
+        _CTX.session = None       # drop the detached notes/tags session too

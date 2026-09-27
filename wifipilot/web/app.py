@@ -37,7 +37,7 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from ..config import Config, find_wordlists
 from ..deps import list_interfaces, registry
@@ -172,6 +172,11 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
     # ------------------------------------------------------------------ #
     # read APIs
     # ------------------------------------------------------------------ #
+    def engine_session():
+        """The live session (creating the engine's is fine — it has no radio)."""
+        active = engine_or_404()
+        return active.session
+
     @app.get("/api/state")
     async def api_state(detail: str = Query("", description="BSSID to include in detail")):
         data = snapshot()
@@ -341,7 +346,107 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
         wordlists = payload.get("wordlists") or []
         if isinstance(wordlists, str):
             wordlists = [wordlists]
-        return {"ok": True, "message": engine.request_crack(bssid, wordlists)}
+        masks = payload.get("masks") or []
+        if isinstance(masks, str):
+            masks = [part.strip() for part in masks.split(",") if part.strip()]
+        return {"ok": True, "message": engine.request_crack(bssid, wordlists, masks)}
+
+    @app.get("/api/targets")
+    async def api_targets_query(kind: str = "", tag: str = "", vendor: str = "",
+                                encryption: str = "", channel: int = 0):
+        session = engine_session()
+        rows = [ap.to_dict() for ap in session.filter_aps(
+            kind=kind, tag=tag, vendor=vendor, encryption=encryption, channel=channel)]
+        return {"ok": True, "count": len(rows), "targets": rows}
+
+    @app.post("/api/select")
+    async def api_select(payload: Dict[str, Any] = Body(default={})):
+        """Scope the campaign: explicit BSSIDs and/or the same filters as /api/targets."""
+        session = engine_session()
+        clear = bool(payload.get("clear"))
+        chosen = [mac_norm(b) for b in (payload.get("bssids") or []) if mac_norm(b)]
+        filters = {key: payload.get(key) or "" for key in ("kind", "tag", "vendor",
+                                                           "encryption")}
+        if any(filters.values()) or payload.get("channel"):
+            # only filter when a filter was actually given — otherwise every AP
+            # would match and "select these two" would silently scope the world
+            chosen += [ap.bssid for ap in session.filter_aps(
+                channel=payload.get("channel") or 0, **filters)]
+        selected = sorted(set(chosen) if clear else {*session.selected_bssids, *chosen})
+        session.selected_bssids = selected
+        return {"ok": True, "selected": selected, "count": len(selected)}
+
+    @app.post("/api/tag")
+    async def api_tag(payload: Dict[str, Any] = Body(...)):
+        session = engine_session()
+        bssid = mac_norm(payload.get("bssid", ""))
+        name = str(payload.get("tag") or "").strip()
+        if not bssid or not name:
+            raise HTTPException(status_code=400, detail="bssid and tag are required")
+        tags = session.tag_ap(bssid, name, add=not payload.get("remove"))
+        return {"ok": True, "bssid": bssid, "tags": tags}
+
+    @app.post("/api/note")
+    async def api_note(payload: Dict[str, Any] = Body(...)):
+        session = engine_session()
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text is required")
+        entry = session.add_note(text, bssid=payload.get("bssid") or "")
+        return {"ok": True, "note": entry}
+
+    @app.get("/api/advice")
+    async def api_advice():
+        """Next steps from the heuristics (no LLM round trip, no cost)."""
+        active = engine_or_404()
+        return {"ok": True, "advice": active.advice()}
+
+    @app.get("/api/vendor")
+    async def api_vendor(bssid: str = "", query: str = ""):
+        """Vendor dossier + identification for a BSSID, a MAC or an ESSID."""
+        from ..analytics import identify
+        from ..util import mac_norm as _norm
+        from ..vendors import oui_lookup, vendor_dossier
+
+        target = _norm(bssid) or query
+        if not target:
+            raise HTTPException(status_code=400, detail="bssid or query is required")
+        mac = _norm(target)
+        if mac:
+            name, match = oui_lookup(mac)
+            return {"ok": True, "mac": mac, "vendor": name, "match": match,
+                    "dossier": vendor_dossier(name or mac),
+                    "identification": identify("", name)}
+        return {"ok": True, "vendor": "", "match": "",
+                "dossier": vendor_dossier(target), "identification": identify(target)}
+
+    @app.post("/api/benchmark")
+    async def api_benchmark(payload: Dict[str, Any] = Body(default={})):
+        """How fast this machine verifies candidates — a short, radio-free run."""
+        active = engine_or_404()
+        seconds = float(payload.get("seconds") or 2.0)
+        return {"ok": True, "benchmark": active.benchmark(seconds=min(30.0, max(1.0, seconds)))}
+
+    @app.get("/api/passwords")
+    async def api_passwords():
+        """Recovered PSKs with the weakness verdict and time-to-crack estimates."""
+        from ..analytics import password_report
+        session = engine_session()
+        rows: List[Dict[str, Any]] = []
+        for ap in session.sorted_aps():
+            if not ap.password:
+                continue
+            report = password_report(ap.password).to_dict()
+            report.update({"bssid": ap.bssid, "essid": ap.essid})
+            rows.append(report)
+        rows.sort(key=lambda item: item["score"])
+        return {"ok": True, "passwords": rows}
+
+    @app.get("/api/tags")
+    async def api_tags():
+        session = engine_session()
+        return {"ok": True, "tags": session.tags(),
+                "selected": session.selected_bssids}
 
     @app.post("/api/rescan")
     async def api_rescan(payload: Dict[str, Any] = Body(default={})):
