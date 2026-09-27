@@ -442,16 +442,37 @@ def _parse_eapol(payload: bytes) -> Optional[dict]:
 
 
 def _parse_eapol_body(body: bytes) -> Optional[dict]:
-    """The EAPOL-Key parser, given the bytes at the ethertype (``88 8e``).
-
-    Returns ``None`` for anything that is not an EAPOL-Key; the nonce comes back
-    as bytes because only messages that get stored need the hex form.
-    """
+    """The EAPOL-Key parser, given the bytes at the ethertype (``88 8e``)."""
     if len(body) < 6:
         return None
     if struct.unpack_from(">H", body, 0)[0] != ETHERTYPE_EAPOL:
         return None
-    eapol = body[2:]                     # skip the 2 byte ethertype
+    return parse_eapol_frame(body[2:])     # skip the 2 byte ethertype
+
+
+def parse_eapol_frame(eapol: bytes) -> Optional[dict]:
+    """The EAPOL-Key parser, given a frame starting at the version byte.
+
+    Returns ``None`` for anything that is not an EAPOL-Key; the nonce and the MIC
+    come back as bytes because callers either store the hex form or hand the raw
+    bytes to the crypto.
+
+    The layout (IEEE 802.11i §8.5.2), offsets relative to this frame::
+
+        0   EAPOL version (1 or 2)
+        1   EAPOL type (3 = EAPOL-Key)
+        2   body length
+        4   key descriptor (2 = RSN/AES, 3 = WPA/TKIP)
+        5   key information (flags)
+        7   key length
+        9   replay counter
+        17  nonce (ANonce or SNonce, 32 bytes)
+        49  key IV, 61 RSC, 69 key ID
+        81  MIC (16 bytes)
+        97  key data length, then key data (RSN IE, GTK, PMKID KDE ...)
+    """
+    if len(eapol) < 5:
+        return None
     version, eapol_type, length = eapol[0], eapol[1], struct.unpack_from(">H", eapol, 2)[0]
     eapol_body = eapol[4:4 + length] if length else eapol[4:]
     if eapol_type != 3 or len(eapol_body) < 3:        # 3 = EAPOL-Key

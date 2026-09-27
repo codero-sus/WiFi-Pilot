@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from .crypto import compute_pmkid, mic_from_ptk, pmk, ptk
+from .crypto import KDV_SHA1, compute_pmkid, mic_from_ptk, pmk, ptk
 
 RADIOTAP = bytes([0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00])
 PCAP_HEADER = bytes.fromhex("d4c3b2a1") + struct.pack("<HHiiii", 2, 4, 0, 0, 262144, 105)
@@ -76,17 +76,33 @@ def _mic_offset(eapol_frame: bytes) -> int:
     return MIC_OFFSET
 
 
-def _sign(eapol_frame: bytes, ptk_bytes: bytes) -> bytes:
+def _with_kdv(key_info: int, kdv: int) -> int:
+    """The key information field with a given Key Descriptor Version."""
+    return (key_info & ~0x0007) | (kdv & 0x0007)
+
+
+def _sign(eapol_frame: bytes, ptk_bytes: bytes, kdv: int = KDV_SHA1) -> bytes:
+    """Sign a frame the way a real AP/STA would for that Key Descriptor Version.
+
+    Version 2 (HMAC-SHA1-128) is what classic WPA2/CCMP handshakes carry; 3 is
+    AES-128-CMAC (802.11w/PMF, SAE); 1 is HMAC-MD5 (TKIP).
+    """
     offset = _mic_offset(eapol_frame)
     zeroed = eapol_frame[:offset] + bytes(16) + eapol_frame[offset + 16:]
-    return mic_from_ptk(ptk_bytes, zeroed, 2)
+    return mic_from_ptk(ptk_bytes, zeroed, kdv)
 
 
 def build_handshake_frames(ssid: str, bssid: str, station: str, password: str,
                            seed: Optional[int] = None,
                            include_pmkid: bool = False,
-                           pmkid: str = "") -> Tuple[List[bytes], str]:
-    """Return (frames, pmkid) containing beacon + M1/M2 (+M3/M4) with valid MICs."""
+                           pmkid: str = "",
+                           kdv: int = KDV_SHA1) -> Tuple[List[bytes], str]:
+    """Return (frames, pmkid) containing beacon + M1/M2 (+M3/M4) with valid MICs.
+
+    ``kdv`` picks the Key Descriptor Version (and therefore the MIC algorithm)
+    the frames claim: 2 = classic WPA2/CCMP (HMAC-SHA1-128, the default), 3 =
+    802.11w/PMF or SAE (AES-128-CMAC), 1 = WPA/TKIP (HMAC-MD5).
+    """
     rng = random.Random(seed if seed is not None else int(hashlib.sha256(
         (ssid + bssid + password).encode()).hexdigest()[:8], 16))
     ap, sta = _mac(bssid), _mac(station)
@@ -109,20 +125,20 @@ def build_handshake_frames(ssid: str, bssid: str, station: str, password: str,
 
     pmkid_kde = (b"\xdd\x14\x00\x0f\xac\x04" + bytes.fromhex(computed_pmkid)) if computed_pmkid else b""
     # M1: ANonce, no MIC (key_info 0x008a: pairwise + ack)
-    m1 = _eapol(0x008a, 1, anonce, pmkid_kde)
+    m1 = _eapol(_with_kdv(0x008a, kdv), 1, anonce, pmkid_kde)
     frames.append(_data_header(ap, sta, ap, 1, to_ds=False) + _llc_eapol(m1))
     # M2: SNonce + MIC (0x010a)
-    m2 = _eapol(0x010a, 1, snonce)
-    m2 = m2[:_mic_offset(m2)] + _sign(m2, ptk_bytes) + m2[_mic_offset(m2) + 16:]
+    m2 = _eapol(_with_kdv(0x010a, kdv), 1, snonce)
+    m2 = m2[:_mic_offset(m2)] + _sign(m2, ptk_bytes, kdv) + m2[_mic_offset(m2) + 16:]
     frames.append(_data_header(sta, ap, ap, 2) + _llc_eapol(m2))
     # M3: ANonce + MIC + install + secure + GTK (0x13ca)
     gtk_kde = b"\xdd\x16\x00\x0f\xac\x01" + bytes(4) + bytes(16)
-    m3 = _eapol(0x13ca, 2, anonce, gtk_kde)
-    m3 = m3[:_mic_offset(m3)] + _sign(m3, ptk_bytes) + m3[_mic_offset(m3) + 16:]
+    m3 = _eapol(_with_kdv(0x13ca, kdv), 2, anonce, gtk_kde)
+    m3 = m3[:_mic_offset(m3)] + _sign(m3, ptk_bytes, kdv) + m3[_mic_offset(m3) + 16:]
     frames.append(_data_header(ap, sta, ap, 3, to_ds=False) + _llc_eapol(m3))
     # M4: MIC only (0x030a)
-    m4 = _eapol(0x030a, 2, bytes(32))
-    m4 = m4[:_mic_offset(m4)] + _sign(m4, ptk_bytes) + m4[_mic_offset(m4) + 16:]
+    m4 = _eapol(_with_kdv(0x030a, kdv), 2, bytes(32))
+    m4 = m4[:_mic_offset(m4)] + _sign(m4, ptk_bytes, kdv) + m4[_mic_offset(m4) + 16:]
     frames.append(_data_header(sta, ap, ap, 4) + _llc_eapol(m4))
     return frames, computed_pmkid
 
@@ -200,13 +216,18 @@ def build_scene(path: str, aps: int = 6, clients: int = 10, rounds: int = 400,
 
 def build_capture(path: str, ssid: str, bssid: str, station: str, password: str,
                   seed: Optional[int] = None, include_pmkid: bool = True,
-                  include_handshake: bool = True) -> Tuple[str, str]:
-    """Write a valid capture. Returns (path, pmkid)."""
+                  include_handshake: bool = True,
+                  kdv: int = KDV_SHA1) -> Tuple[str, str]:
+    """Write a valid capture. Returns (path, pmkid).
+
+    ``kdv`` is the Key Descriptor Version the frames claim (see
+    :func:`build_handshake_frames`)."""
     frames: List[bytes] = []
     pmkid = ""
     if include_handshake:
         frames, pmkid = build_handshake_frames(ssid, bssid, station, password, seed,
-                                               include_pmkid=include_pmkid)
+                                               include_pmkid=include_pmkid,
+                                               kdv=kdv)
     elif include_pmkid:
         pmk_bytes = pmk(password, ssid)
         pmkid = compute_pmkid(pmk_bytes, _mac(bssid), _mac(station))

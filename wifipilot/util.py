@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Union
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Union
 
 # --------------------------------------------------------------------------- #
 # terminal
@@ -295,30 +295,46 @@ def mac_random(locally_administered: bool = True) -> str:
     return ":".join(f"{b:02x}" for b in raw)
 
 
-def oui_vendor(mac: str) -> str:
-    """Offline-ish vendor guess from the OUI (no network lookups)."""
-    prefix = mac_norm(mac)[:8]
-    known = {
-        "00:1a:2b": "Ayecom", "00:0c:29": "VMware", "00:50:56": "VMware",
-        "b8:27:eb": "Raspberry Pi", "dc:a6:32": "Raspberry Pi",
-        "00:1c:df": "Belkin", "00:11:22": "Cimsys", "f8:1a:67": "TP-Link",
-        "3c:84:6a": "TP-Link", "50:c7:bf": "TP-Link", "ec:08:6b": "TP-Link",
-        "00:24:b2": "Netgear", "2c:30:33": "Netgear", "a0:40:a0": "Netgear",
-        "00:18:e7": "Cameo", "f4:f2:6d": "TP-Link", "1c:5f:2b": "D-Link",
-        "00:1e:58": "D-Link", "cc:b2:55": "D-Link", "ac:22:0b": "ASUS",
-        "00:0f:66": "Cisco-Linksys", "c8:d7:19": "Cisco", "00:26:cb": "Cisco",
-        "e8:bd:d1": "Huawei", "88:3f:d3": "Huawei", "00:e0:fc": "Huawei",
-        "e0:24:7f": "Huawei", "58:8e:81": "Silicon Labs",
-        "b0:be:76": "TP-Link", "bc:0f:9a": "D-Link", "00:23:69": "Cisco-Linksys",
-        "c4:41:1e": "Belkin", "08:86:3b": "Belkin", "84:16:f9": "TP-Link",
-        "d8:47:32": "TP-Link", "e8:de:27": "TP-Link", "b4:75:0e": "Huawei",
-        "24:a4:3c": "Ubiquiti", "78:8a:20": "Ubiquiti", "fc:ec:da": "Ubiquiti",
-        "44:d9:e7": "Ubiquiti", "00:1c:10": "Cisco-Linksys", "20:4e:7f": "Netgear",
-        "9c:3d:cf": "Netgear", "3c:37:86": "Netgear", "cc:40:d0": "Netgear",
-        "00:25:9c": "Cisco-Linksys", "68:7f:74": "Cisco-Linksys",
-        "48:f8:b3": "Cisco-Linksys", "00:14:bf": "Cisco-Linksys",
-    }
-    return known.get(prefix, "")
+def oui_vendor(mac: str, strict: bool = False) -> str:
+    """Vendor guess from the OUI, offline.
+
+    The registry lives in ``wifipilot/data/oui-wifi.json`` (see
+    :mod:`wifipilot.vendors`); this wrapper keeps the historical call sites
+    working and falls back to a small inline table if the data file is missing.
+    """
+    key = mac_norm(mac)
+    if not key:
+        return ""
+    try:
+        from .vendors import oui_vendor as registry_lookup
+    except Exception:                                  # pragma: no cover - import cycle
+        registry_lookup = None
+    if registry_lookup is not None:
+        vendor = registry_lookup(key, strict=strict)
+        if vendor:
+            return vendor
+    prefix = key[:8]
+    if prefix in _OUI_FALLBACK:
+        return _OUI_FALLBACK[prefix]
+    return "" if strict else _OUI_FALLBACK_PREFIX.get(key[:7], "")
+
+
+#: last-resort table (used only when the bundled registry cannot be read)
+_OUI_FALLBACK = {
+    "00:0c:29": "VMware", "00:50:56": "VMware", "b8:27:eb": "Raspberry Pi",
+    "dc:a6:32": "Raspberry Pi", "f8:1a:67": "TP-Link", "3c:84:6a": "TP-Link",
+    "50:c7:bf": "TP-Link", "ec:08:6b": "TP-Link", "f4:f2:6d": "TP-Link",
+    "b0:be:76": "TP-Link", "84:16:f9": "TP-Link", "d8:47:32": "TP-Link",
+    "00:24:b2": "Netgear", "2c:30:33": "Netgear", "a0:40:a0": "Netgear",
+    "1c:5f:2b": "D-Link", "00:1e:58": "D-Link", "cc:b2:55": "D-Link",
+    "ac:22:0b": "ASUS", "00:0f:66": "Cisco-Linksys", "c8:d7:19": "Cisco",
+    "e8:bd:d1": "Huawei", "88:3f:d3": "Huawei", "00:e0:fc": "Huawei",
+    "24:a4:3c": "Ubiquiti", "78:8a:20": "Ubiquiti", "fc:ec:da": "Ubiquiti",
+    "d0:9e:12": "AVM", "38:10:d5": "AVM", "00:1a:2b": "Ayecom",
+    "00:11:22": "Cimsys", "00:1c:df": "Belkin", "c4:41:1e": "Belkin",
+}
+_OUI_FALLBACK_PREFIX = {"d0:9e:1": "AVM", "9c:c7:a": "AVM", "e8:df:7": "AVM",
+                        "50:c7:b": "TP-Link", "20:4e:7": "Netgear"}
 
 
 # --------------------------------------------------------------------------- #
@@ -616,10 +632,39 @@ class ProcessManager:
         with self._lock:
             return [p for p in self._procs if p.running]
 
-    def stop_all(self) -> None:
+    def stop_all(self) -> int:
+        """Stop every running child; returns how many were stopped."""
+        stopped = 0
         for proc in self.running:
             with contextlib.suppress(Exception):
                 proc.stop()
+                stopped += 1
+        return stopped
+
+    def stop_matching(self, needle: str) -> int:
+        """Stop the children whose command line contains ``needle``."""
+        needle = (needle or "").lower()
+        stopped = 0
+        for proc in self.running:
+            command = " ".join(getattr(proc, "cmd", []) or []).lower()
+            if needle and needle in command:
+                with contextlib.suppress(Exception):
+                    proc.stop()
+                    stopped += 1
+        return stopped
+
+    def pids(self) -> List[int]:
+        """PIDs of the running children (for the UI's tool view)."""
+        return [getattr(proc, "pid", 0) for proc in self.running if getattr(proc, "pid", 0)]
+
+    def describe(self) -> List[Dict[str, Any]]:
+        """A small table of the running children, for `wifipilot tools --running`."""
+        out: List[Dict[str, Any]] = []
+        for proc in self.running:
+            out.append({"pid": getattr(proc, "pid", 0),
+                        "command": " ".join(getattr(proc, "cmd", []) or [])[:200],
+                        "name": getattr(proc, "name", "")})
+        return out
 
     def prune(self, keep: int = 40) -> None:
         with self._lock:

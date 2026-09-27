@@ -10,6 +10,7 @@ JSONL journal of everything that happened, and can render two views of itself:
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import shutil
 import time
@@ -25,6 +26,40 @@ from .events import EK, EventBus
 from .models import (STATUS_FAILED, STATUS_RUNNING, STATUS_SUCCESS, AccessPoint,
                      Attempt, Capture, Client, Finding, SessionStats, loot_filename)
 from .util import append_jsonl, human_duration, mac_norm, now_iso, read_json, safe_int, slugify, write_json
+
+
+def note_files(config: Config, state_dir: str = "") -> List[Path]:
+    """Every ``notes.jsonl`` wifipilot has written, newest engagement first."""
+    root = Path(state_dir) if state_dir else Path(config.session_dir)
+    if root.name and (root / "notes.jsonl").exists():
+        return [root / "notes.jsonl"]
+    try:
+        candidates = [item / "notes.jsonl" for item in root.iterdir() if item.is_dir()]
+    except OSError:
+        return []
+    return sorted((item for item in candidates if item.exists()), reverse=True)
+
+
+def load_notes(config: Config, state_dir: str = "", limit: int = 200) -> List[Dict[str, Any]]:
+    """Read the operator notes back from disk (survives a crash or a reboot)."""
+    notes: List[Dict[str, Any]] = []
+    for path in note_files(config, state_dir):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        notes.append(json.loads(line))
+                    except ValueError:
+                        continue
+        except OSError:
+            continue
+        if len(notes) >= limit:
+            break
+    notes.sort(key=lambda entry: str(entry.get("ts", "")), reverse=True)
+    return notes[:limit]
 
 
 @dataclass
@@ -202,7 +237,14 @@ class Session:
             ap, _ = self.upsert_ap(cap.bssid, cap.essid)
         if not cap.essid and ap.essid:
             cap.essid = ap.essid
+        if not cap.found_in:
+            # who produced it: an attack run, the operator, a simulator, an import
+            cap.found_in = ("demo" if self.demo else
+                            "imported" if getattr(cap, "extra", {}).get("imported") else
+                            "attack")
         ap.captures.append(cap)
+        ap.remember("capture", f"{cap.kind} via {cap.tool or 'unknown'}",
+                    path=cap.path, password=bool(cap.password))
         if cap.kind == "handshake":
             ap.handshake_ts = time.time()
             self.stats.handshakes += 1
@@ -287,6 +329,96 @@ class Session:
         append_jsonl(Path(self.state_dir) / "reports" / "timeline.jsonl",
                      {"kind": kind, "ts": now_iso(), **payload})
 
+    # ------------------------------------------------------------------ #
+    # operator notes, tags, history
+    # ------------------------------------------------------------------ #
+    def add_note(self, text: str, bssid: str = "", kind: str = "note") -> Dict[str, Any]:
+        """Record an operator note (engagement-level, or attached to one AP).
+
+        Notes are journaled (so they survive a crash), kept on the session, and
+        attached to the AP's history when a BSSID is given.  They also go into
+        the situation report, so the AI advisor can see what the operator knows.
+        """
+        text = str(text).strip()
+        entry: Dict[str, Any] = {"ts": now_iso(), "kind": kind, "text": text,
+                                 "bssid": mac_norm(bssid) or ""}
+        if text:
+            self.notes.append(text)
+        if entry["bssid"]:
+            ap = self.aps.get(entry["bssid"])
+            if ap is not None:
+                ap.remember(kind, text, operator=True)
+        append_jsonl(Path(self.state_dir) / "notes.jsonl",
+                     {"kind": kind, "bssid": entry["bssid"], "text": text})
+        self.bus.publish(EK.NOTE, entry)
+        return entry
+
+    def tag_ap(self, bssid: str, tag: str, add: bool = True) -> List[str]:
+        """Tag (or untag) an access point; returns its tags."""
+        ap = self.aps.get(mac_norm(bssid) or bssid)
+        if ap is None:
+            return []
+        tags = ap.tag(tag, add=add)
+        # scoping decisions are an audit trail, not a UI detail: keep them
+        ap.remember("tag", f"{'+' if add else '-'}{tag}", tags=list(tags))
+        self.bus.log(f"{ap.display_name}: {'tagged' if add else 'untagged'} "
+                     f"{tag!r} ({len(tags)} tag(s))", level="debug")
+        return tags
+
+    def tags(self) -> Dict[str, List[str]]:
+        """Every tag in use, with the BSSIDs carrying it."""
+        out: Dict[str, List[str]] = {}
+        for ap in self.aps.values():
+            for tag in ap.tags:
+                out.setdefault(tag, []).append(ap.bssid)
+        return out
+
+    def history(self, bssid: str = "", limit: int = 50) -> List[Dict[str, Any]]:
+        """What happened, newest first: one AP's history or the whole session."""
+        if bssid:
+            ap = self.aps.get(mac_norm(bssid) or bssid)
+            return list(reversed(ap.history[-limit:])) if ap else []
+        entries: List[Dict[str, Any]] = []
+        for ap in self.aps.values():
+            for entry in ap.history:
+                entries.append({**entry, "bssid": ap.bssid, "essid": ap.essid})
+        for attempt in self.attempts:
+            entries.append({"ts": attempt.started, "kind": "attempt",
+                            "detail": f"{attempt.attack} -> {attempt.status}",
+                            "bssid": attempt.bssid})
+        entries.sort(key=lambda item: item.get("ts") or 0, reverse=True)
+        return entries[:limit]
+
+    def filter_aps(self, kind: str = "", tag: str = "", vendor: str = "",
+                   cracked: Optional[bool] = None, loot: Optional[bool] = None,
+                   encryption: str = "", channel: int = 0) -> List[AccessPoint]:
+        """Filter discovered APs — the basis of ``wifipilot targets``.
+
+        ``kind`` matches ``target_kind``, ``vendor`` matches the vendor string
+        or its dossier key, and every other argument is an exact comparison.
+        """
+        out: List[AccessPoint] = []
+        for ap in self.sorted_aps():
+            if kind and ap.target_kind != kind.lower():
+                continue
+            if tag and tag.lower() not in ap.tags:
+                continue
+            if vendor:
+                needle = vendor.lower()
+                haystack = f"{ap.vendor} {ap.vendor_key}".lower()
+                if needle not in haystack:
+                    continue
+            if cracked is not None and ap.cracked != cracked:
+                continue
+            if loot is not None and (ap.has_handshake or ap.has_pmkid) != loot:
+                continue
+            if encryption and encryption.upper() not in ap.encryption.upper():
+                continue
+            if channel and ap.channel != channel:
+                continue
+            out.append(ap)
+        return out
+
     def all_captures(self) -> List[Capture]:
         """Every capture held by any access point, newest first."""
         return sorted((cap for ap in self.aps.values() for cap in ap.captures),
@@ -304,6 +436,16 @@ class Session:
         target = Path(path or Path(self.state_dir) / "reports" / "report.json")
         write_json(target, self.export())
         return str(target)
+
+    def manifest(self, directory: str = "", write: bool = True) -> Dict[str, Any]:
+        """Prove the loot has not changed: sha256 every file, optionally write it."""
+        from . import toolbox
+        root = directory or self.output_dir
+        if write:
+            return toolbox.write_manifest(root)
+        result = toolbox.verify_manifest(root)
+        result["files"] = result.get("checked", 0)
+        return result
 
     def write_markdown_report(self, path: Optional[str] = None) -> str:
         target = Path(path or Path(self.output_dir) / f"wifipilot-{self.id}.md")
@@ -369,6 +511,8 @@ class Session:
             "findings": [f.to_dict() for f in self.findings],
             "loot": [c.to_dict() for c in self.loot()],
             "notes": self.notes,
+            "tags": self.tags(),
+            "history": self.history(limit=100),
         }
 
     # ------------------------------------------------------------------ #

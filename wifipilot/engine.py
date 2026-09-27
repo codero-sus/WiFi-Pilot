@@ -17,6 +17,7 @@ adapter, and stopping is always clean.
 from __future__ import annotations
 
 import contextlib
+import os
 import queue
 import threading
 import time
@@ -35,7 +36,7 @@ from .models import STATUS_FAILED, STATUS_RUNNING, AccessPoint, Attempt, Capture
 from .planner import Plan, heuristic_plan, preferred_attacks, should_replan
 from .scanner import Scanner
 from .session import Session
-from .util import ProcessManager, is_root, mac_norm, platform_info
+from .util import ProcessManager, human_duration, is_root, mac_norm, platform_info
 
 
 class _StopFlag:
@@ -248,6 +249,178 @@ class Engine:
         self.stop_scan()
 
     # ------------------------------------------------------------------ #
+    # operator conveniences (targets, vendor dossiers, benchmark, advice)
+    # ------------------------------------------------------------------ #
+    def select_targets(self, bssids: Sequence[str] = (), tag: str = "",
+                       kind: str = "", vendor: str = "",
+                       cracked: Optional[bool] = None, loot: Optional[bool] = None,
+                       clear: bool = False) -> List[str]:
+        """Choose what the campaign is allowed to touch, and return the selection.
+
+        Filters compose (``tag="in-scope"`` plus ``kind="guest"``), and the
+        result lands in ``session.selected_bssids`` so the UI, the planner and
+        the report all agree on the scope.
+        """
+        if clear:
+            self.session.selected_bssids = []
+        chosen: List[str] = []
+        if bssids:
+            for bssid in bssids:
+                ap = self.session.ap(bssid)
+                if ap is not None:
+                    chosen.append(ap.bssid)
+        matched = self.session.filter_aps(kind=kind, tag=tag, vendor=vendor,
+                                          cracked=cracked, loot=loot)
+        chosen.extend(ap.bssid for ap in matched)
+        selected = sorted({*self.session.selected_bssids, *chosen})
+        self.session.selected_bssids = selected
+        self.bus.log(f"scope: {len(selected)} target(s) selected", level="info")
+        return selected
+
+    def selected(self) -> List[Dict[str, object]]:
+        """The current selection, as plain dicts (for the UI and the report)."""
+        out: List[Dict[str, object]] = []
+        for bssid in self.session.selected_bssids:
+            ap = self.session.ap(bssid)
+            if ap is not None:
+                out.append({"bssid": ap.bssid, "essid": ap.essid,
+                            "kind": ap.target_kind, "tags": list(ap.tags),
+                            "score": round(ap.score, 2)})
+        return out
+
+    def vendor_info(self, bssid: str) -> Dict[str, Any]:
+        """What the vendor dossier plus the SSID say about one AP."""
+        from .analytics import identify
+        from .vendors import vendor_dossier
+        ap = self.session.ap(bssid)
+        if ap is None:
+            return {}
+        dossier = vendor_dossier(ap.vendor or ap.bssid)
+        info = identify(ap.essid, ap.vendor or ap.bssid)
+        return {"bssid": ap.bssid, "essid": ap.essid, "vendor": ap.vendor,
+                "dossier": dossier, "identification": info,
+                "disclaimer": "vendor behaviour is a heuristic, not a finding"}
+
+    def benchmark(self, seconds: float = 5.0, candidates: int = 0) -> Dict[str, Any]:
+        """Measure how fast *this* machine verifies candidates, and estimate.
+
+        Read-only and radio-free: it verifies wrong candidates against a
+        synthetic handshake, so the number is a rate, never a claim about a
+        real network.  The estimate it returns is labelled ``estimate``.
+        """
+        from . import analytics
+        from .synth import build_capture
+        from .crack import Cracker as _Cracker
+        from .crypto import HandshakeVerifier
+        from .models import Capture as _Capture
+        from .pcap import analyze_file
+        import tempfile
+
+        path = os.path.join(tempfile.gettempdir(), "wifipilot-benchmark.pcap")
+        build_capture(path, "wifipilot-benchmark", "aa:bb:cc:11:22:33",
+                      "02:00:00:00:00:0b", "benchmark-passphrase")
+        analysis = analyze_file(path)
+        started = time.time()
+        verified = 0
+        cracker = self.cracker
+        ap = AccessPoint(bssid="aa:bb:cc:11:22:33", essid="wifipilot-benchmark")
+        capture = _Capture(kind="handshake", bssid=ap.bssid, essid=ap.essid,
+                           path=path, valid=True)
+        try:
+            while time.time() - started < max(1.0, seconds):
+                if candidates and verified >= candidates:
+                    break
+                verified += 1
+                cracker._verify(ap, capture, analysis, f"wrong-{verified}")
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+        elapsed = max(0.001, time.time() - started)
+        rate = verified / elapsed
+        per_candidate = elapsed / max(1, verified)
+        estimates = {
+            name: {"seconds": (space / rate), "human": human_duration(space / rate)}
+            for name, space in (("8 digits", 10 ** 8), ("10 digits", 10 ** 10),
+                                ("rockyou-sized (14M)", 14_000_000))
+        }
+        result = {
+            "candidates": verified, "seconds": round(elapsed, 3),
+            "rate": round(rate, 1), "ms_per_candidate": round(per_candidate * 1000, 3),
+            "estimates": estimates,
+            "note": ("measured on a synthetic handshake; estimates are this machine's "
+                     "rate applied to a candidate space, not a promise"),
+        }
+        self.bus.log(f"benchmark: {rate:,.0f} candidates/s "
+                     f"({per_candidate * 1000:.2f} ms each) on this machine",
+                     level="info")
+        return result
+
+    def advice(self) -> List[Dict[str, Any]]:
+        """Prioritised, plain-language next steps (no LLM needed).
+
+        Each item says what to do, why, and how confident the rule behind it is;
+        the heuristic planner already had the logic — this exposes it directly.
+        """
+        items: List[Dict[str, Any]] = []
+        aps = self.session.sorted_aps()
+        not_looted = [ap for ap in aps if not (ap.has_handshake or ap.has_pmkid)]
+        if not aps:
+            items.append({"priority": 1, "action": "scan",
+                          "why": "nothing discovered yet",
+                          "confidence": "certain"})
+        for ap in aps[:5]:
+            if ap.password:
+                continue
+            if ap.has_pmkid:
+                items.append({"priority": 1, "action": "crack",
+                              "bssid": ap.bssid, "essid": ap.essid,
+                              "why": "PMKID captured: cracking needs no radio time",
+                              "confidence": "certain"})
+            elif ap.has_handshake:
+                items.append({"priority": 2, "action": "crack",
+                              "bssid": ap.bssid, "essid": ap.essid,
+                              "why": "handshake captured: crack it before deauthing again",
+                              "confidence": "certain"})
+            elif ap.wps_open:
+                items.append({"priority": 2, "action": "wps_pixie",
+                              "bssid": ap.bssid, "essid": ap.essid,
+                              "why": "WPS reports unlocked: Pixie-Dust is offline and fast",
+                              "confidence": "high"})
+            elif ap.clients:
+                items.append({"priority": 3, "action": "handshake",
+                              "bssid": ap.bssid, "essid": ap.essid,
+                              "why": f"{len(ap.clients)} client(s) present: deauth has targets",
+                              "confidence": "medium"})
+            else:
+                items.append({"priority": 4, "action": "pmkid",
+                              "bssid": ap.bssid, "essid": ap.essid,
+                              "why": "clientless: PMKID first, it is silent",
+                              "confidence": "medium"})
+        if not_looted and not any(item.get("action") == "crack" for item in items):
+            items.append({"priority": 3, "action": "passive",
+                          "why": "loot is thin; a passive dwell often beats more deauth",
+                          "confidence": "medium"})
+        if self.session.stats.crack_attempts > 20 and not self.session.stats.passwords:
+            items.append({"priority": 2, "action": "strategy",
+                          "why": "many candidates verified, no hit: try "
+                                 "--strategy thorough or --mask 'vendor-?d?d?d?d'",
+                          "confidence": "high"})
+        items.sort(key=lambda item: item["priority"])
+        return items
+
+    def kill_tool(self, name: str = "") -> Dict[str, Any]:
+        """Stop the external tool(s) we started — hashcat/aircrack, or all."""
+        stopped_before = self.processes.pids() if hasattr(self.processes, "pids") else []
+        if name:
+            killed = self.processes.stop_matching(name) if hasattr(
+                self.processes, "stop_matching") else 0
+        else:
+            killed = self.processes.stop_all()
+        message = (f"stopped {killed} process(es)" + (f" matching {name!r}" if name else ""))
+        self.bus.log(message, level="warning")
+        return {"stopped": killed, "name": name or "<all>", "before": len(stopped_before)}
+
+    # ------------------------------------------------------------------ #
     # thinking
     # ------------------------------------------------------------------ #
     def think(self, force: bool = False) -> Plan:
@@ -370,11 +543,13 @@ class Engine:
         return ""
 
     def crack_capture(self, ap: AccessPoint, capture: Capture, quick: bool = False,
-                      wordlists: Optional[Sequence[str]] = None) -> Optional[str]:
+                      wordlists: Optional[Sequence[str]] = None,
+                      masks: Optional[Sequence[str]] = None) -> Optional[str]:
         self.status.phase = "cracking"
         self.status.detail = f"cracking {ap.display_name}"
         timeout = min(self.config.crack_timeout, 180) if quick else self.config.crack_timeout
-        result = self.cracker.crack_capture(ap, capture, wordlists=wordlists, timeout=timeout)
+        result = self.cracker.crack_capture(ap, capture, wordlists=wordlists,
+                                            timeout=timeout, masks=masks)
         self.status.phase = "idle"
         if result.cracked:
             self.bus.log(f"✔ PSK for {ap.display_name}: {result.password} "
@@ -383,7 +558,8 @@ class Engine:
                          level="success")
         return result.password or None
 
-    def crack_target(self, bssid: str, wordlists: Optional[Sequence[str]] = None) -> Optional[str]:
+    def crack_target(self, bssid: str, wordlists: Optional[Sequence[str]] = None,
+                     masks: Optional[Sequence[str]] = None) -> Optional[str]:
         ap = self.session.ap(bssid)
         if ap is None:
             return None
@@ -395,7 +571,7 @@ class Engine:
         if not self.demo and not self.authorized:
             self.bus.error("refusing to crack: confirm authorisation first")
             return None
-        return self.crack_capture(ap, capture, wordlists=wordlists)
+        return self.crack_capture(ap, capture, wordlists=wordlists, masks=masks)
 
     # ------------------------------------------------------------------ #
     # campaign
@@ -605,10 +781,12 @@ class Engine:
         self.add_job(f"attack:{attack}", lambda: self.run_attack(bssid, attack, reason or "", "operator"))
         return f"queued {attack} against {ap.display_name}"
 
-    def request_crack(self, bssid: str, wordlists: Sequence[str] = ()) -> str:
+    def request_crack(self, bssid: str, wordlists: Sequence[str] = (),
+                      masks: Sequence[str] = ()) -> str:
         self.start_worker()
-        self.add_job(f"crack:{bssid}", lambda: self.crack_target(bssid, wordlists))
-        return f"queued crack for {bssid}"
+        self.add_job(f"crack:{bssid}", lambda: self.crack_target(bssid, wordlists, masks))
+        return (f"queued crack for {bssid}"
+                + (f" with {len(list(masks))} mask(s)" if masks else ""))
 
     def request_rescan(self, seconds: float = 20.0) -> str:
         self.start_worker()

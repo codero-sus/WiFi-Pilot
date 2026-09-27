@@ -227,6 +227,8 @@ function renderTargets(state) {
       <td class="sig ${sigClass(ap.signal)}">${ap.signal} dBm</td>
       <td>${securityTag(ap)}</td>
       <td>${wps}</td>
+      <td>${ap.target_kind ? `<span class="tag">${escapeHtml(ap.target_kind)}</span>` : '<span class="dim">—</span>'}</td>
+      <td>${(ap.tags || []).map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join('') || '<span class="dim">—</span>'}</td>
       <td>${ap.clients}</td>
       <td>${lootTags(ap)}</td>
       <td title="${escapeHtml(ap.pick_reason || '')}">${(ap.score || 0).toFixed(1)}</td>
@@ -235,6 +237,9 @@ function renderTargets(state) {
         <select data-attack-select="${ap.bssid}">${options}</select>
         <button class="chip" data-attack="${ap.bssid}">▶ run</button>
         <button class="chip" data-crack="${ap.bssid}">🔓 crack</button>
+        <button class="chip" data-crack-mask="${ap.bssid}"
+          title="mask attack: type a pattern such as Telekom-?d?d?d?d">🎭 mask</button>
+        <button class="chip" data-tag="${ap.bssid}" title="tag this AP for scoping">🏷 tag</button>
       </td>
     </tr>`;
   }).join('') || '<tr><td colspan="13" class="dim">No access points yet — start a campaign or a rescan.</td></tr>';
@@ -255,7 +260,9 @@ function renderLoot(state) {
         ${cap.password ? `<b>PSK</b><span class="pw">${escapeHtml(cap.password)}</span>` : ''}
       </div>
       <div class="row">
-        ${cap.password ? '' : `<button class="chip" data-crack="${cap.bssid}">🔓 crack now</button>`}
+        ${cap.password ? '' : `<button class="chip" data-crack="${cap.bssid}">🔓 crack now</button>
+        <button class="chip" data-crack-mask="${cap.bssid}"
+          title="mask attack: type a pattern such as Telekom-?d?d?d?d">🎭 mask</button>`}
         ${cap.path ? `<a class="chip" href="/api/file?path=${encodeURIComponent(cap.path)}" target="_blank" rel="noopener">⤓ download</a>` : ''}
       </div>
     </div>`).join('') || '<div class="card dim">Nothing captured yet. Handshakes, PMKIDs and cracked PSKs appear here as soon as they land.</div>';
@@ -451,6 +458,24 @@ function renderSettings(state) {
     || '<span class="dim">no wordlists found</span>';
 }
 
+async function refreshAdvice() {
+  const box = $('#advice-list');
+  if (!box) return;
+  try {
+    const data = await api('/api/advice', null, 'GET');
+    const items = (data && data.advice) || [];
+    box.innerHTML = items.slice(0, 6).map((item) => `
+      <div class="row" style="margin:2px 0">
+        <span class="tag">${item.priority}</span>
+        <b>${escapeHtml(item.action)}</b>
+        <span>${escapeHtml(item.essid || item.bssid || '')}</span>
+        <span class="dim">${escapeHtml(item.why || '')} · ${escapeHtml(item.confidence || '')}</span>
+      </div>`).join('') || '<span class="dim">nothing to advise yet</span>';
+  } catch (err) {
+    box.textContent = 'advice unavailable';
+  }
+}
+
 /* ---------------------------------------------------------------- chat */
 function appendChat(role, message, triage) {
   const log = $('#chat-log');
@@ -533,13 +558,24 @@ function wire() {
   $('#inp-filter').oninput = () => SNAPSHOT && renderTargets(SNAPSHOT);
 
   document.body.addEventListener('click', (event) => {
-    const target = event.target.closest('[data-attack],[data-crack],[data-detail],[data-toggle-attack]');
+    const target = event.target.closest('[data-attack],[data-crack],[data-crack-mask],[data-detail],[data-toggle-attack],[data-tag]');
     if (!target) return;
     if (target.dataset.attack) {
       const select = document.querySelector(`select[data-attack-select="${target.dataset.attack}"]`);
       api('/api/attack', { bssid: target.dataset.attack, attack: select ? select.value : '' });
     } else if (target.dataset.crack) {
       api('/api/crack', { bssid: target.dataset.crack });
+    } else if (target.dataset.crackMask) {
+      const answer = prompt('mask attack (comma-separated, hashcat syntax)\n' +
+        'e.g. Telekom-?d?d?d?d, ?d?d?d?d?d?d?d?d\n\n' +
+        'Leave empty to derive patterns from the target.', '');
+      if (answer === null) return;
+      const masks = answer.split(',').map((m) => m.trim()).filter(Boolean);
+      api('/api/crack', { bssid: target.dataset.crackMask, masks });
+    } else if (target.dataset.tag) {
+      const name = prompt('tag this access point (e.g. in-scope, guest, retest)', 'in-scope');
+      if (!name) return;
+      api('/api/tag', { bssid: target.dataset.tag, tag: name });
     } else if (target.dataset.detail) {
       showDetail(target.dataset.detail);
     } else if (target.dataset.toggleAttack) {
@@ -549,6 +585,8 @@ function wire() {
 
   connect();
   setInterval(() => ws && ws.readyState === 1 && !SNAPSHOT && api('/api/state', null, 'GET'), 5000);
+  refreshAdvice();
+  setInterval(refreshAdvice, 30000);
 }
 
 function switchMode(demo) {

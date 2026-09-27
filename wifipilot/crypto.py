@@ -19,7 +19,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
 # --------------------------------------------------------------------------- #
 # AES (FIPS-197)
@@ -376,18 +376,34 @@ WPA_PMK_BITS = 4096
 PTK_BITS = 512
 
 
-def pmk(passphrase: str, ssid: str) -> bytes:
+def ssid_bytes(ssid) -> bytes:
+    """The SSID as the bytes WPA salts with.
+
+    Callers that read an SSID from a *capture* have raw bytes; callers that got
+    a name from a user have text.  Both must produce the same PBKDF2 salt, so
+    bytes pass through untouched and text is UTF-8 encoded (which is what
+    ``str.encode`` did before this existed).
+    """
+    if isinstance(ssid, (bytes, bytearray, memoryview)):
+        return bytes(ssid)
+    if isinstance(ssid, str):
+        return ssid.encode("utf-8")
+    return b""
+
+
+def pmk(passphrase: str, ssid) -> bytes:
     """PSK = PBKDF2-HMAC-SHA1(passphrase, ssid, 4096, 32) — the WPA PMK.
 
     WPA passphrases are 8-63 printable characters; anything else cannot be a
-    valid PSK, so we reject it instead of producing a meaningless hash.
+    valid PSK, so we reject it instead of producing a meaningless hash.  ``ssid``
+    may be text or the raw bytes from a capture (or a hash file).
     """
     if not isinstance(passphrase, str) or not 8 <= len(passphrase) <= 63:
         raise ValueError("WPA passphrase must be 8-63 characters")
-    if not isinstance(ssid, str) or not 1 <= len(ssid.encode("utf-8")) <= 32:
+    salt = ssid_bytes(ssid)
+    if not 1 <= len(salt) <= 32:
         raise ValueError("SSID must be 1-32 bytes")
-    return hashlib.pbkdf2_hmac("sha1", passphrase.encode("utf-8"),
-                               ssid.encode("utf-8"), WPA_PMK_BITS, 32)
+    return hashlib.pbkdf2_hmac("sha1", passphrase.encode("utf-8"), salt, WPA_PMK_BITS, 32)
 
 
 def prf512(key: bytes, label: bytes, data: bytes) -> bytes:
@@ -409,12 +425,54 @@ def compute_pmkid(pmk_bytes: bytes, ap: bytes, station: bytes) -> str:
     return hmac.new(pmk_bytes, PMKID_LABEL + ap + station, hashlib.sha1).digest()[:16].hex()
 
 
-def mic_from_ptk(ptk_bytes: bytes, eapol_frame: bytes, key_descriptor: int) -> bytes:
-    """MIC of an EAPOL-Key frame: AES-CMAC (CCMP/AES) or HMAC-MD5 (TKIP)."""
+#: Key Descriptor Version -> MIC algorithm (IEEE 802.11-2024 §12.7.2, Table 12-11)
+KDV_MD5, KDV_SHA1, KDV_CMAC = 1, 2, 3
+
+MIC_ALGORITHMS = {KDV_MD5: ("md5",), KDV_SHA1: ("sha1",), KDV_CMAC: ("cmac",)}
+
+
+def key_descriptor_version(eapol_frame: bytes) -> int:
+    """The Key Descriptor Version an EAPOL-Key frame asks for (bits 0-2).
+
+    This — not the descriptor *type* — decides the MIC algorithm: version 1 is
+    HMAC-MD5, 2 is HMAC-SHA1-128 (classic WPA2/CCMP), 3 is AES-128-CMAC
+    (802.11w/PMF, SAE and the SHA-256 AKMs), and 0 means "whatever the
+    negotiated AKM says", which in practice is CMAC for WPA3 and SHA1 for the
+    older ones.
+    """
+    if len(eapol_frame) < 7:
+        return 0
+    return int.from_bytes(eapol_frame[5:7], "big") & 0x0007
+
+
+def mic_algorithms(kdv: int) -> Tuple[str, ...]:
+    """The MIC algorithm(s) a Key Descriptor Version allows, best guess first."""
+    return MIC_ALGORITHMS.get(kdv, ("cmac", "sha1"))
+
+
+def mic_candidates(ptk_bytes: bytes, eapol_frame: bytes, kdv: int = 0) -> Iterator[bytes]:
+    """Every MIC this frame could carry, in the order its version allows."""
     kck = ptk_bytes[:16]
-    if key_descriptor == 2:                       # RSN / AES
-        return aes_cmac(kck, eapol_frame)[:16]
-    return hmac.new(kck, eapol_frame, hashlib.md5).digest()[:16]   # WPA / TKIP
+    for algorithm in mic_algorithms(kdv):
+        if algorithm == "cmac":
+            yield aes_cmac(kck, eapol_frame)[:16]
+        elif algorithm == "sha1":
+            yield hmac.new(kck, eapol_frame, hashlib.sha1).digest()[:16]
+        else:
+            yield hmac.new(kck, eapol_frame, hashlib.md5).digest()[:16]
+
+
+def mic_from_ptk(ptk_bytes: bytes, eapol_frame: bytes, kdv: int = 0) -> bytes:
+    """The MIC of an EAPOL-Key frame for a known Key Descriptor Version.
+
+    ``kdv`` 0 (or anything unrecognised) resolves to the frame's own version,
+    falling back to AES-CMAC — the modern default.  Use
+    :func:`mic_candidates` when the version itself is uncertain and every
+    algorithm has to be tried.
+    """
+    if not kdv:
+        kdv = key_descriptor_version(eapol_frame)
+    return next(mic_candidates(ptk_bytes, eapol_frame, kdv))
 
 
 # --------------------------------------------------------------------------- #
@@ -470,9 +528,9 @@ class PmkidVerifier:
 
     __slots__ = ("pmkid", "ssid", "ap_mac", "station_mac", "ap", "station")
 
-    def __init__(self, pmkid_hex: str, ssid: str, ap_mac: str, station_mac: str):
+    def __init__(self, pmkid_hex: str, ssid, ap_mac: str, station_mac: str):
         self.pmkid = (pmkid_hex or "").strip().lower()
-        self.ssid = ssid or ""
+        self.ssid = ssid if ssid else b""
         self.ap_mac = ap_mac or ""
         self.station_mac = station_mac or ""
         try:
@@ -515,10 +573,11 @@ class HandshakeVerifier:
     __slots__ = ("ssid", "ap", "station", "anonce", "snonce", "key_descriptor",
                  "targets")
 
-    def __init__(self, frames: Dict[int, bytes], ssid: str, ap_mac: str,
+    def __init__(self, frames: Dict[int, bytes], ssid, ap_mac: str,
                  station_mac: str, anonce: bytes, snonce: bytes,
-                 key_descriptor: int = 2):
-        self.ssid = ssid or ""
+                 key_descriptor: int = 0, eapol_frames: Sequence[bytes] = (),
+                 mic: bytes = b""):
+        self.ssid = ssid if ssid else b""
         self.anonce = _nonce_bytes(anonce)
         self.snonce = _nonce_bytes(snonce)
         self.key_descriptor = key_descriptor
@@ -528,6 +587,11 @@ class HandshakeVerifier:
         except ValueError:
             self.ap = self.station = b""
         targets = []
+        for frame in eapol_frames:               # already an EAPOL-Key frame
+            if len(frame) < 97:
+                continue
+            expected = mic if len(mic) == 16 else frame[81:97]
+            targets.append((expected, _zero_mic(frame), key_descriptor_version(frame)))
         for number in (2, 4):
             frame = frames.get(number)
             if not frame:
@@ -535,8 +599,17 @@ class HandshakeVerifier:
             eapol = _eapol_frame_from_bytes(frame)
             if len(eapol) < 97:
                 continue
-            targets.append((eapol[81:97], _zero_mic(eapol)))
+            targets.append((eapol[81:97], _zero_mic(eapol), key_descriptor_version(eapol)))
         self.targets = tuple(targets)
+
+    @classmethod
+    def from_eapol(cls, eapol: bytes, ssid, ap_mac: str, station_mac: str,
+                   anonce: bytes, snonce: bytes, mic: bytes = b"",
+                   key_descriptor: int = 0) -> "HandshakeVerifier":
+        """Build one from an EAPOL-Key frame (hashcat mode 22000 lines carry
+        exactly this, with the MIC in its own field and zeroed in the frame)."""
+        return cls({}, ssid, ap_mac, station_mac, anonce, snonce, key_descriptor,
+                   eapol_frames=[eapol], mic=mic)
 
     @classmethod
     def from_analysis(cls, handshake, ssid: str,
@@ -567,15 +640,22 @@ class HandshakeVerifier:
             return False
         ptk_bytes = ptk(pmk_bytes, self.ap, self.station, self.anonce, self.snonce)
         kck = ptk_bytes[:16]
-        if self.key_descriptor == 2:                 # RSN/AES: one CMAC instance
-            engine = _Cmac(kck)
-            for mic, eapol in self.targets:
-                if hmac.compare_digest(mic, engine.digest(eapol)):
+        engines: Dict[str, "_Cmac"] = {}
+        for expected_mic, eapol, kdv in self.targets:
+            # every frame says which MIC it carries; a version of 0 is the only
+            # case that needs more than one algorithm tried
+            for algorithm in mic_algorithms(kdv or self.key_descriptor):
+                if algorithm == "cmac":
+                    engine = engines.get("cmac")
+                    if engine is None:
+                        engine = engines["cmac"] = _Cmac(kck)
+                    digest = engine.digest(eapol)
+                elif algorithm == "sha1":
+                    digest = hmac.new(kck, eapol, hashlib.sha1).digest()[:16]
+                else:
+                    digest = hmac.new(kck, eapol, hashlib.md5).digest()[:16]
+                if hmac.compare_digest(expected_mic, digest):
                     return True
-            return False
-        for mic, eapol in self.targets:              # WPA/TKIP: HMAC-MD5
-            if hmac.compare_digest(mic, hmac.new(kck, eapol, hashlib.md5).digest()[:16]):
-                return True
         return False
 
 
@@ -587,7 +667,7 @@ def verify_pmkid(pmkid_hex: str, ssid: str, ap_mac: str, station_mac: str,
 
 def verify_handshake(frames: Dict[int, bytes], ssid: str, ap_mac: str,
                      station_mac: str, anonce: bytes, snonce: bytes,
-                     password: str, key_descriptor: int = 2) -> bool:
+                     password: str, key_descriptor: int = 0) -> bool:
     """Recompute the MIC of message 2/4 and compare it with what is on air."""
     verifier = HandshakeVerifier(frames, ssid, ap_mac, station_mac, anonce, snonce,
                                  key_descriptor)
