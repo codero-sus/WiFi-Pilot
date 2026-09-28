@@ -47,6 +47,10 @@ class DemoAP:
     wps_model: str = ""
     wps_manufacturer: str = ""
     hidden: bool = False
+    hidden_name: str = ""      # the name a client reveals for a hidden network
+    eap_method: str = ""       # 802.1X only
+    eap_identity: str = ""
+    eap_certificate: str = ""
     client_count: int = 0
     psk: str = ""              # set -> the demo will hand it over when cracked
     pmkid_vulnerable: bool = True
@@ -83,8 +87,11 @@ def build_neighbourhood(seed: Optional[int] = None) -> List[DemoAP]:
             essid=essid, channel=channel, signal=signal, vendor=vendor,
             encryption=encryption,
             privacy={"WPA2": "WPA2", "WPA3": "WPA3", "WPA2/WPA3": "WPA2 WPA3",
-                     "WEP": "WEP", "OPEN": "OPN", "WPA": "WPA"}[encryption],
-            cipher="CCMP" if encryption.startswith("WPA") else ("TKIP" if encryption == "WPA" else "WEP"),
+                     "WEP": "WEP", "OPEN": "OPN", "WPA": "WPA",
+                     "ENTERPRISE": "WPA2"}[encryption],
+            cipher=("TKIP" if encryption == "WPA" else
+                    "WEP" if encryption == "WEP" else
+                    "OPN" if encryption == "OPEN" else "CCMP"),
             auth="SAE" if encryption == "WPA3" else ("MGT" if encryption == "ENTERPRISE" else "PSK"),
             beacon_count=kw.pop("beacon_count", rng.randint(40, 400)),
             data_count=kw.pop("data_count", rng.randint(0, 5000)),
@@ -107,9 +114,13 @@ def build_neighbourhood(seed: Optional[int] = None) -> List[DemoAP]:
         wps_locked="locked", client_count=1, psk="kabelbox123")
     # open guest network
     add("Gastzugang-Cafe", 1, "OPEN", -58, "unknown", client_count=4)
-    # hidden SSID, no WPS
+    # hidden SSID, no WPS — a client knows the name even when the AP hides it
     add("", 9, "WPA2", -72, "Netgear", hidden=True, client_count=1,
-        psk="hunter2hunter2")
+        hidden_name="NETGEAR-Home-9F", psk="hunter2hunter2")
+    # 802.1X: the finding is the server certificate, not a PSK
+    add("CorpNet-8021X", 36, "ENTERPRISE", -64, "Cisco", client_count=3,
+        eap_method="PEAP", eap_identity="jdoe@corp.example",
+        eap_certificate="self-signed certificate")
     # the weak old thing: WEP
     add("PRINTER-4F", 3, "WEP", -70, "D-Link", psk="12345ABCDE",
         data_count=180000, client_count=1)
@@ -179,17 +190,26 @@ class DemoRadio:
                     "wps_manufacturer": ap.wps_manufacturer,
                 })
         # clients trickle in; after a deauth they "reconnect" all at once
+        names = [item.essid for item in self.aps if item.essid]
         for ap in self.aps:
             want = ap.client_count
             need_new = len(ap.clients) < want
             reconnect = ap.bssid in self.captured_handshakes and self.rng.random() < 0.25
             if need_new or reconnect:
                 if len(ap.clients) < max(want, 6):
+                    # a real station remembers several networks, not only the one it
+                    # is talking to — that list is what the tracker reads
+                    probes = [ap.essid] if ap.essid else []
+                    for _ in range(self.rng.randint(1, 3)):
+                        other = self.rng.choice(names) if names else ""
+                        if other and other != ap.essid and other not in probes:
+                            probes.append(other)
                     client = ClientRecord(
                         mac=_demo_mac(self.rng, locally_administered=True),
                         bssid=ap.bssid,
                         signal=int(ap.signal + self.rng.randint(2, 12)),
                         packets=self.rng.randint(20, 900),
+                        probes=probes,
                     )
                     ap.clients.append(client)
         for ap in self.aps:

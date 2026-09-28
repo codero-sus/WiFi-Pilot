@@ -513,6 +513,10 @@ class Engine:
         self.session.attacking = False
         self.status.phase = "idle"
         attempt = self.debug_last_attempt()
+        if outcome is not None and outcome.extra and attempt is not None:
+            # structured results (a survey's twins, a PIN plan) belong on the
+            # attempt record, not only in the log line
+            attempt.extra.update(outcome.extra)
         if attempt is not None and attempt.status == STATUS_FAILED:
             self._failures_since_plan += 1
             diagnosis = self._triage(attempt)

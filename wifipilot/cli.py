@@ -91,6 +91,11 @@ def _global_arguments(parser: argparse.ArgumentParser, suppress: bool = False) -
                         help=f"comma separated attack list (from: {', '.join(ATTACK_NAMES)})")
     add(parser, "--wps-pin", action="store_true",
                         help="enable the online WPS PIN attack (slow, disruptive, off by default)")
+    add(parser, "--reveal-with-probe", action="store_true",
+                        help="let hidden-SSID discovery ask for the name with a directed "
+                             "probe (the only part of it that transmits)")
+    add(parser, "--no-pmk-cache", action="store_true",
+                        help="do not reuse PMKs learned earlier for the same ESSID")
     add(parser, "-w", "--wordlist", action="append", default=[],
                         help="wordlist to crack with (repeatable)")
     add(parser, "-o", "--output", default="", help="loot directory (default: loot/)")
@@ -151,6 +156,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_attack.add_argument("-t", "--time", default="", help="discovery phase length (default 30s)")
     p_attack.add_argument("-d", "--duration", default="", help="total campaign budget, e.g. 45m")
     p_attack.add_argument("--no-scan", action="store_true", help="skip the discovery phase")
+    p_attack.add_argument("--client", default="",
+                          help="deauthenticate this station only (handshake attack)")
     p_attack.add_argument("--skip-crack", action="store_true",
                           help="capture only, do not run the cracker")
 
@@ -315,6 +322,56 @@ def build_parser() -> argparse.ArgumentParser:
     p_loot_verify.add_argument("--dir", default="")
 
 
+    p_survey = sub.add_parser("survey", parents=[common],
+                              help="read-only intelligence: probe requests, deauths, twins")
+    p_survey.add_argument("capture", nargs="?", default="",
+                          help="capture to read (optional: the session's own captures are "
+                               "used when omitted)")
+    p_survey.add_argument("--limit", type=int, default=40,
+                          help="how many probing clients to report (default 40)")
+
+    p_eap = sub.add_parser("eap", parents=[common],
+                           help="decode an 802.1X exchange: method, identity, certificate")
+    p_eap.add_argument("capture", help="capture containing the EAP exchange")
+    p_eap.add_argument("--limit", type=int, default=4,
+                       help="how many certificates to decode (default 4)")
+
+    p_reveal = sub.add_parser("reveal", parents=[common],
+                              help="name the hidden networks in a capture (read-only)")
+    p_reveal.add_argument("capture", nargs="?", default="",
+                          help="capture to read (optional: the session's own captures are "
+                               "used when omitted)")
+
+    p_pins = sub.add_parser("pins", parents=[common],
+                            help="WPS PIN candidates and an attempt plan (offline arithmetic)")
+    p_pins.add_argument("bssid", nargs="?", default="", help="target BSSID (vendor pins)")
+    p_pins.add_argument("-e", "--essid", default="", help="SSID (for the ESSID-derived pins)")
+    p_pins.add_argument("--vendor", default="", help="vendor override when the OUI is unknown")
+    p_pins.add_argument("--first-half", default="",
+                        help="a known first half (4 digits) -> plan its 1,000 completions")
+    p_pins.add_argument("--limit", type=int, default=24, help="how many candidates to show")
+
+    p_pmk = sub.add_parser("pmk", parents=[common],
+                           help="PMK tooling: verify a PSK, write mode 22001, browse the cache")
+    pmk_sub = p_pmk.add_subparsers(dest="pmk_command", metavar="ACTION")
+    p_pmk_verify = pmk_sub.add_parser("verify", parents=[common],
+                                      help="check a PSK against a capture or hash file")
+    p_pmk_verify.add_argument("capture", nargs="+")
+    p_pmk_verify.add_argument("-p", "--psk", default="", help="the PSK to check")
+    p_pmk_verify.add_argument("-e", "--essid", default="", help="ESSID (auto-detected)")
+    p_pmk_convert = pmk_sub.add_parser("convert", parents=[common],
+                                       help="write mode 22001 (raw-PMK candidates) for a "
+                                            "capture whose PSK you know")
+    p_pmk_convert.add_argument("capture", nargs="+")
+    p_pmk_convert.add_argument("-p", "--psk", default="", help="the known PSK")
+    p_pmk_convert.add_argument("-e", "--essid", default="")
+    p_pmk_convert.add_argument("--out", default="")
+    p_pmk_show = pmk_sub.add_parser("show", parents=[common],
+                                    help="read a mode 22001 (or potfile-style) PMK file")
+    p_pmk_show.add_argument("file")
+    pmk_sub.add_parser("cache", parents=[common],
+                       help="what this engagement has already learned")
+
     p_analyze = sub.add_parser("analyze", parents=[common],
                                help="inspect captures: handshakes, PMKIDs, EAPOL")
     p_analyze.add_argument("capture", nargs="+", help="capture or .hc22000 hash file(s)")
@@ -425,6 +482,12 @@ def apply_cli_config(args: argparse.Namespace) -> Config:
     elif args.wps_pin:
         if "wps_pin" not in config.attacks:
             config.attacks = [*config.attacks, "wps_pin"]
+    if getattr(args, "reveal_with_probe", False):
+        config.reveal_with_probe = True
+    if getattr(args, "no_pmk_cache", False):
+        config.pmk_cache = False
+    if getattr(args, "client", ""):
+        config.client_mac = mac_norm(args.client) or ""
     if config.attacks and "wps_pin" in config.attacks and not args.wps_pin:
         # only when the operator asked for it explicitly (or via the config file)
         pass
@@ -991,6 +1054,298 @@ def _crack_hash_file(path: str, cracker, session, config: Config, console) -> in
             console.print(f"[yellow]not cracked[/yellow] {label}: {result.reason} "
                           f"({result.attempts:,} candidates, {human_duration(result.seconds)})")
     return 0 if found_any else 1
+
+
+def command_survey(args, config: Config, console) -> int:
+    """Read-only intelligence from a capture and/or the session: probes, deauths, twins."""
+    from .session import Session
+    from .sniff import passive_report
+
+    path = _expand(args.capture) if args.capture else ""
+    if path and not os.path.exists(path):
+        console.print(f"[red]no such file: {path}[/red]")
+        return 1
+    session = _load_session_for(args, config, console) or Session(config, EventBus(),
+                                                                 demo=True)
+    if not path:
+        # no capture given: use the newest capture the session already has
+        captures = [capture for capture in session.all_captures()
+                    if capture.path and os.path.exists(capture.path)]
+        if captures:
+            path = captures[-1].path
+    aps = [ap.to_dict() for ap in session.aps.values()]
+    report = passive_report(path, aps, limit=max(1, int(args.limit)))
+    if args.json:
+        print(json.dumps(report, indent=2))
+        return 0
+    console.print(f"[bold]passive survey[/bold] "
+                  f"[dim]({Path(path).name if path else 'no capture'}, "
+                  f"{len(aps)} AP(s) known)[/dim]")
+    attacks = report.get("attacks") or {}
+    console.print(f"  deauth/disassoc frames: [yellow]{attacks.get('total', 0)}[/yellow] "
+                  f"({attacks.get('deauth', 0)} deauth, {attacks.get('disassoc', 0)} "
+                  f"disassoc, {attacks.get('broadcast', 0)} broadcast)"
+                  + ("  [red]flood[/red]" if attacks.get("flood") else ""))
+    probes = report.get("probes") or []
+    if probes:
+        table = Table(title=f"probing clients ({len(probes)})", box=None)
+        for column in ("client", "vendor", "probes", "networks it asked for"):
+            table.add_column(column, overflow="fold")
+        for entry in probes:
+            table.add_row(entry["mac"], entry.get("vendor") or "-",
+                          f"{entry['directed']}+{entry['broadcast']}",
+                          ", ".join(entry["ssids"][:6]) or "(wildcard only)")
+        console.print(table)
+    wanted = report.get("wanted_networks") or []
+    if wanted:
+        console.print("  networks clients want but that are not on air: "
+                      + ", ".join(item["essid"] for item in wanted[:10]))
+    rogue = report.get("rogue") or []
+    for twin in rogue:
+        console.print(f"  [red]twin pattern[/red] {twin['essid']!r}: "
+                      f"{len(twin['bssids'])} BSSIDs, vendors "
+                      f"{', '.join(twin['vendors']) or 'unknown'}, "
+                      f"{twin['signal_spread_db']} dB spread [dim]({twin['confidence']})[/dim]")
+    if not probes and not rogue and not attacks.get("total"):
+        console.print("[dim]nothing to report: no probes, no deauths, no twins[/dim]")
+    console.print("[dim]read-only: nothing was transmitted[/dim]")
+    return 0
+
+
+def command_eap(args, config: Config, console) -> int:
+    """Decode an 802.1X exchange offline: EAP methods, identities, certificates."""
+    from .sniff import eap_exchange
+
+    path = _expand(args.capture)
+    if not path or not os.path.exists(path):
+        console.print(f"[red]no such file: {args.capture}[/red]")
+        return 1
+    report = eap_exchange(path, limit_certs=max(1, int(args.limit)))
+    if args.json:
+        print(json.dumps(report, indent=2))
+        return 0 if report["eapol"] else 1
+    console.print(f"[bold]802.1X[/bold] [dim]({Path(path).name}, "
+                  f"{report['eapol']} EAPOL frame(s))[/dim]")
+    if not report["eapol"]:
+        console.print("[yellow]no EAPOL frames in this capture: not an 802.1X network, "
+                      "or the exchange was not captured[/yellow]")
+        return 1
+    console.print(f"  EAP method(s): {', '.join(report['methods']) or 'unknown'}")
+    for identity in report["identities"]:
+        leak = "" if identity.lower().startswith("anonymous") else \
+            "  [yellow](outer identity leaks the realm)[/yellow]"
+        console.print(f"  identity: {identity}{leak}")
+    for facts in report["certificates"]:
+        line = f"  certificate: {facts['subject'] or 'undecodable'}"
+        if facts["self_signed"]:
+            line += "  [red](self-signed: impersonable)[/red]"
+        console.print(line + (f"  [dim]serial {facts['serial']}[/dim]"
+                              if facts.get("serial") else ""))
+        if facts.get("issuer") and facts["issuer"] != facts["subject"]:
+            console.print(f"    issued by: {facts['issuer']}")
+    console.print("[dim]decoded offline: the EAP method, the outer identity and the "
+                  "server certificate are all in the clear on air[/dim]")
+    return 0
+
+
+def command_reveal(args, config: Config, console) -> int:
+    """Name hidden networks from a capture — the offline half of hidden_ssid."""
+    from .pcap import analyze_file
+    from .session import Session
+
+    path = _expand(args.capture) if args.capture else ""
+    if path and not os.path.exists(path):
+        console.print(f"[red]no such file: {path}[/red]")
+        return 1
+    session = _load_session_for(args, config, console) or Session(config, EventBus(),
+                                                                 demo=True)
+    if not path:
+        captures = [capture for capture in session.all_captures()
+                    if capture.path and os.path.exists(capture.path)]
+        if captures:
+            path = captures[-1].path
+    if not path or not os.path.exists(path):
+        console.print("[yellow]no capture to read: pass one, or run a campaign "
+                      "first[/yellow]")
+        return 1
+    analysis = analyze_file(path)
+    rows = []
+    for bssid, essid in sorted(analysis.essids.items()):
+        if not essid:
+            continue
+        mac = mac_norm(bssid)
+        ap = session.ap(mac)
+        revealed = bool(ap is not None and (ap.hidden or not ap.essid))
+        if revealed:
+            ap.essid = essid
+            ap.hidden = False
+            ap.remember("revealed", f"SSID {essid!r} learned from {Path(path).name}")
+            session.stats.hidden_revealed += 1
+        rows.append({"bssid": mac, "essid": essid, "known_target": ap is not None,
+                     "revealed": revealed})
+    if args.json:
+        print(json.dumps({"capture": path, "named": rows,
+                          "revealed": sum(1 for row in rows if row["revealed"])},
+                         indent=2))
+        return 0
+    revealed = [row for row in rows if row["revealed"]]
+    console.print(f"[bold]hidden networks[/bold] [dim]({Path(path).name})[/dim]")
+    if not rows:
+        console.print("[dim]this capture names no network: beacons without an SSID are "
+                      "only revealed by probe responses, associations or the handshake"
+                      "[/dim]")
+        return 1
+    table = Table(box=None)
+    for column in ("BSSID", "SSID", "was", "now"):
+        table.add_column(column)
+    for row in rows:
+        table.add_row(row["bssid"], row["essid"],
+                      "hidden" if row["revealed"] else
+                      ("known target" if row["known_target"] else "unknown"),
+                      "named" if row["revealed"] else "-")
+    console.print(table)
+    console.print(f"  {len(revealed)} name(s) recovered, {len(rows)} BSSID(s) with a name "
+                  f"[dim](read-only: nothing was transmitted)[/dim]")
+    return 0
+
+
+def command_pins(args, config: Config, console) -> int:
+    """WPS PIN candidates and the attempt plan — arithmetic, no radio."""
+    from . import wps
+
+    bssid = mac_norm(args.bssid)
+    if args.bssid and not bssid:
+        console.print(f"[red]not a MAC address: {args.bssid}[/red]")
+        return 2
+    vendor = args.vendor or oui_vendor(bssid) if bssid else args.vendor
+    candidates = wps.candidate_pins(bssid=bssid, essid=args.essid, vendor=vendor)
+    order = list(wps.pin_attempt_order([pin.pin for pin in candidates if pin.pin],
+                                       first_half=args.first_half))
+    shown = order[:max(1, int(args.limit))]
+    plan = wps.attempt_plan(bssid=bssid, essid=args.essid, vendor=vendor)
+    if args.json:
+        print(json.dumps({"bssid": bssid, "essid": args.essid, "vendor": vendor,
+                          "candidates": [pin.to_dict() for pin in candidates],
+                          "order": shown, "plan": plan}, indent=2))
+        return 0
+    console.print(f"[bold]WPS[/bold] {bssid or '(no BSSID)'} "
+                  f"{args.essid or ''} [dim]{vendor or 'unknown vendor'}[/dim]")
+    table = Table(title="candidate PINs (best first)", box=None)
+    for column in ("PIN", "source", "confidence", "why"):
+        table.add_column(column, overflow="fold")
+    for pin in candidates[:max(1, int(args.limit))]:
+        table.add_row(pin.pin, pin.source, pin.confidence, pin.note or "-")
+    console.print(table)
+    console.print(f"  attempt order starts: {', '.join(shown[:8])}"
+                  + (" …" if len(order) > 8 else ""))
+    spaces = plan["spaces"]
+    console.print(f"  every 8-digit value: {spaces['every 8-digit value']:,}  ·  "
+                  f"checksum-valid: {spaces['checksum-valid PINs']:,}  ·  "
+                  f"two-half sweep: {spaces['two-half sweep (the documented attack)']:,}"
+                  f"  ·  candidates above: {spaces['candidates above']}")
+    for key, seconds in plan["seconds"].items():
+        console.print(f"  [dim]{key}: {human_duration(float(seconds))} at "
+                      f"{plan['seconds_per_attempt']}s/attempt[/dim]")
+    console.print(f"  [dim]{plan['note']}[/dim]")
+    console.print("[dim]information only: nothing was transmitted. The online PIN attack "
+                  "(--wps-pin) is what talks to the AP.[/dim]")
+    return 0
+
+
+def command_pmk(args, config: Config, console) -> int:
+    """PMK tooling: verify a PSK, write mode 22001, read a PMK file, browse the cache."""
+    from . import pmk
+
+    action = getattr(args, "pmk_command", "") or ""
+    if action == "cache":
+        directory = _expand(args.session_dir) if args.session_dir else ""
+        cache = pmk.PMKCache(directory=directory).load() if directory else \
+            _pmk_cache_for(config)
+        entries = cache.entries() if cache else []
+        if args.json:
+            print(json.dumps([entry.to_dict() for entry in entries], indent=2))
+            return 0
+        if not entries:
+            console.print("[dim]the PMK cache is empty (nothing cracked yet)[/dim]")
+            return 0
+        table = Table(title=f"PMK cache: {cache.path}", box=None)
+        for column in ("ESSID", "PSK", "learned from", "age"):
+            table.add_column(column, overflow="fold")
+        for entry in entries:
+            table.add_row(entry.essid, entry.psk, entry.source or "-",
+                          human_duration(max(0.0, time.time() - entry.created)))
+        console.print(table)
+        console.print("[dim]ESSID-keyed: a second capture of the same network is verified "
+                      "against the cache, never cracked twice[/dim]")
+        return 0
+
+    if action == "show":
+        path = _expand(args.file)
+        if not os.path.exists(path):
+            console.print(f"[red]no such file: {path}[/red]")
+            return 1
+        rows = pmk.read_pmk_file(path)
+        if args.json:
+            print(json.dumps(rows, indent=2))
+            return 0
+        if not rows:
+            console.print("[yellow]no readable PMK entries[/yellow] "
+                          "[dim](mode 22001 lines, or 'PMK<TAB>ESSID' pairs)[/dim]")
+            return 0
+        table = Table(title=f"{Path(path).name}: {len(rows)} entry(ies)", box=None)
+        for column in ("ESSID", "BSSID", "kind", "PMK"):
+            table.add_column(column, overflow="fold")
+        for row in rows:
+            table.add_row(row.get("essid", ""), row.get("bssid", ""), row.get("kind", ""),
+                          (row.get("pmk", "")[:24] + "…") if row.get("pmk") else "")
+        console.print(table)
+        return 0
+
+    if not getattr(args, "psk", ""):
+        console.print("[red]--psk is required for verify/convert[/red]")
+        return 2
+    exit_code = 0
+    for item in args.capture:
+        path = _expand(item)
+        if not os.path.exists(path):
+            console.print(f"[red]no such file: {path}[/red]")
+            exit_code = 1
+            continue
+        if action == "verify":
+            result = pmk.verify_psk_against(args.psk, path, args.essid)
+            mark = "[green]verified[/green]" if result["ok"] else "[red]not this PSK[/red]"
+            if args.json:
+                print(json.dumps({"path": path, **result}, indent=2))
+            else:
+                console.print(f"{Path(path).name}: {mark} "
+                              f"[dim]({result['lines']} line(s) for "
+                              f"{', '.join(result['essids']) or 'unknown ESSID'})[/dim]")
+            if not result["ok"]:
+                exit_code = 1
+            continue
+        out = _expand(args.out) if args.out else ""
+        written = pmk.convert_to_22001(path, out=out, psk=args.psk, essid=args.essid)
+        if args.json:
+            print(json.dumps(written, indent=2))
+            continue
+        if not written.get("lines"):
+            console.print(f"[yellow]{Path(path).name}: nothing verifiable "
+                          f"({written.get('note', 'no usable handshake')})[/yellow]")
+            exit_code = 1
+            continue
+        console.print(f"[green]{Path(path).name}[/green] -> "
+                      f"[green]{written['path']}[/green] "
+                      f"({written['lines']} PMK line(s), mode 22001)")
+    return exit_code
+
+
+def _pmk_cache_for(config: Config):
+    """The engagement's PMK cache (or ``None`` when the cache is switched off)."""
+    from . import pmk
+    if not config.pmk_cache:
+        return None
+    path = config.pmk_cache_path or os.path.join(config.session_dir, pmk.PMK_CACHE_NAME)
+    return pmk.PMKCache(path=path).load()
 
 
 def command_analyze(args, config: Config, console) -> int:
@@ -2105,6 +2460,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "crack": command_crack,
         "analyze": command_analyze,
         "export": command_export,
+        "survey": command_survey,
+        "eap": command_eap,
+        "reveal": command_reveal,
+        "pins": command_pins,
+        "pmk": command_pmk,
         "targets": command_targets,
         "note": command_note,
         "tag": command_tag,

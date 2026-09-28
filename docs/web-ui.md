@@ -102,6 +102,8 @@ POST /api/ai/pull             POST /api/ai/toggle
 GET  /api/ai/models           POST /api/ai/provider   POST /api/ai/key
 GET  /api/report              GET  /api/export     GET  /api/file
 GET  /api/events              WS   /ws
+GET  /api/survey              GET  /api/pins        GET  /api/pmk/cache
+POST /api/pmk/verify          GET  /api/eap
 ```
 
 Example — run a campaign from a script and stream events:

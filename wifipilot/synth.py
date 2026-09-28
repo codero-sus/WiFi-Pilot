@@ -178,6 +178,130 @@ def build_beacon(ssid: str, bssid: str, channel: int = 6, include_rsn: bool = Tr
     return body
 
 
+def build_probe_request(station: str, ssid: str = "", bssid: str = "ff:ff:ff:ff:ff:ff"
+                        ) -> bytes:
+    """A probe request: ``ssid=""`` is the wildcard ("is anything out there?").
+
+    Clients send these in the clear, including on WPA3 networks, which is why a
+    passive capture can map a client's preferred network list without any
+    injection at all.
+    """
+    sta = _mac(station)
+    body = (b"\x00" * 8                       # timestamp
+            + b"\x64\x00"                    # beacon interval
+            + b"\x04\x01")                   # capability: privacy
+    ssid_bytes = ssid.encode()[:32]
+    body += b"\x00" + bytes([len(ssid_bytes)]) + ssid_bytes
+    body += b"\x01\x04\x82\x84\x8b\x96"     # rates
+    return b"\x40\x00\x00\x00" + b"\xff" * 6 + sta + _mac(bssid) + b"\x00\x00" + body
+
+
+def build_deauth(bssid: str, station: str = "ff:ff:ff:ff:ff:ff", reason: int = 7
+                 ) -> bytes:
+    """A deauthentication frame (subtype 12), the frame an attack is made of."""
+    return (b"\xc0\x00\x00\x00" + _mac(station) + _mac(bssid) + _mac(bssid)
+            + b"\x00\x00" + bytes([reason, 0]))
+
+
+def build_deauth_flood(bssid: str, rounds: int = 40, broadcast: bool = True) -> List[bytes]:
+    """A burst of deauth frames — enough of them for ``sniff.attack_frames``."""
+    frames: List[bytes] = []
+    for _ in range(max(1, rounds)):
+        frames.append(build_deauth(bssid, "ff:ff:ff:ff:ff:ff" if broadcast
+                                   else random_mac(locally_administered=True)))
+    return frames
+
+
+def self_signed_certificate(common_name: str = "radius.lab.local",
+                            organization: str = "wifipilot lab",
+                            country: str = "IN",
+                            issuer_cn: str = "", issuer_org: str = "") -> bytes:
+    """A minimal but *parseable* X.509 certificate (DER).
+
+    Real enough for the part that matters in an assessment: with no ``issuer_cn``
+    the subject and the issuer are the same Name, which is exactly what
+    ``sniff.x509_name`` reports as ``self_signed`` — the finding that matters,
+    because a client that accepts it will accept anybody's.  A different issuer is
+    used to test the *other* case (a properly issued certificate).  This is not a
+    valid signature chain and does not claim to be.
+    """
+    def tlv(tag: int, body: bytes) -> bytes:
+        if len(body) < 0x80:
+            return bytes([tag, len(body)]) + body
+        return bytes([tag, 0x82]) + struct.pack(">H", len(body)) + body
+
+    def oid(dotted: str) -> bytes:
+        parts = [int(part) for part in dotted.split(".")]
+        out = bytes([parts[0] * 40 + parts[1]])
+        for part in parts[2:]:
+            chunk: List[int] = []
+            while True:
+                chunk.insert(0, part & 0x7F)
+                part >>= 7
+                if not part:
+                    break
+            out += bytes([byte | 0x80 for byte in chunk[:-1]] + [chunk[-1]])
+        return tlv(0x06, out)
+
+    def rdn(dotted: str, value: str) -> bytes:
+        return tlv(0x31, tlv(0x30, oid(dotted) + tlv(0x0C, value.encode())))
+
+    subject = (rdn("2.5.4.3", common_name) + rdn("2.5.4.10", organization)
+               + rdn("2.5.4.6", country))
+    if issuer_cn or issuer_org:
+        issuer = (rdn("2.5.4.3", issuer_cn or "Corp Issuing CA")
+                  + rdn("2.5.4.10", issuer_org or organization))
+    else:
+        issuer = subject                            # self-signed
+    tbs = (tlv(0xA0, tlv(0x02, b"\x02"))                    # version 3
+           + tlv(0x02, b"\x01\x02\x03\x04")                 # serial
+           + tlv(0x30, oid("1.2.840.113549.1.1.11"))       # sha256WithRSAEncryption
+           + tlv(0x30, issuer)
+           + tlv(0x30, tlv(0x17, b"250101000000Z") + tlv(0x17, b"350101000000Z"))
+           + tlv(0x30, subject))
+    return tlv(0x30, tlv(0x30, tbs))
+
+
+def build_eap_response_identity(station: str, bssid: str, identity: str) -> bytes:
+    """An EAP-Response/Identity frame — the clear-text username carrier."""
+    body = identity.encode()[:253]
+    eap = bytes([2, 1]) + struct.pack(">H", 5 + len(body)) + bytes([1]) + body
+    eapol = bytes([2, 0]) + struct.pack(">H", len(eap)) + eap
+    return (_data_header(_mac(station), _mac(bssid), _mac(bssid), 0) + _llc_eapol(eapol))
+
+
+def build_eap_tls_certificate(station: str, bssid: str, certificate: bytes,
+                              method: int = 25) -> bytes:
+    """An EAP-Response carrying a TLS Certificate message (PEAP/TTLS/EAP-TLS).
+
+    This is the frame that lets an *offline* survey prove a server presents a
+    self-signed certificate, without transmitting anything.
+    """
+    handshake = (bytes([0x0B]) + struct.pack(">I", 6 + len(certificate))[1:]
+                 + struct.pack(">I", 3 + len(certificate))[1:]
+                 + struct.pack(">I", len(certificate))[1:] + certificate)
+    record = bytes([0x16, 0x03, 0x03]) + struct.pack(">H", len(handshake)) + handshake
+    flags = b"\x00" if method == 25 else b"\x20"          # PEAP: no start bit needed
+    eap_body = flags + record
+    eap = bytes([2, 2]) + struct.pack(">H", 5 + len(eap_body)) + bytes([method]) + eap_body
+    eapol = bytes([2, 0]) + struct.pack(">H", len(eap)) + eap
+    return (_data_header(_mac(station), _mac(bssid), _mac(bssid), 0) + _llc_eapol(eapol))
+
+
+def build_enterprise_capture(path: str, essid: str = "CorpNet-8021X",
+                             bssid: str = "34:c9:27:19:79:89",
+                             station: str = "02:00:00:00:00:21",
+                             identity: str = "jdoe@corp.example",
+                             certificate: Optional[bytes] = None) -> Tuple[str, List[bytes]]:
+    """A beacon plus an 802.1X exchange: identity response and server certificate."""
+    frames = [build_beacon(essid, bssid),
+              build_eap_response_identity(station, bssid, identity),
+              build_eap_tls_certificate(station, bssid,
+                                        certificate or self_signed_certificate())]
+    write_pcap(path, frames, spacing=0.01)
+    return str(path), frames
+
+
 def build_data_frame(bssid: str, station: str, payload: bytes = b"") -> bytes:
     """A plain 802.11 data frame (ARP/DHCP-like background traffic)."""
     body = payload or (b"\xaa\xaa\x03\x00\x00\x00\x08\x06" + bytes(28))

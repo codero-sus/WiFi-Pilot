@@ -71,11 +71,19 @@ def test_campaign_ran_attacks_and_produced_loot(campaign_result):
 
 def test_no_duplicate_attacks_on_solved_targets(campaign_result):
     """A target with a confirmed PSK must not be attacked again."""
+    checked = 0
     for ap in campaign_result.session.aps.values():
         if not ap.cracked:
             continue
-        later_attempts = [a for a in ap.attempts if a.started > ap.captures[0].created]
-        assert not later_attempts, f"{ap.display_name} was attacked after being cracked"
+        cracked_at = next((entry["ts"] for entry in ap.history
+                           if entry.get("kind") == "cracked"), 0.0)
+        if not cracked_at:
+            continue                    # cracked before the history entry existed
+        checked += 1
+        later_attempts = [a for a in ap.attempts if a.started > cracked_at]
+        assert not later_attempts, (f"{ap.display_name} was attacked after being "
+                                    f"cracked: {[a.attack for a in later_attempts]}")
+    assert checked >= 1, "the campaign should have cracked at least one target"
 
 
 def test_captures_are_real_and_verifiable(campaign_result):

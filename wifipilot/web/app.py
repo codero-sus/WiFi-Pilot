@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -441,6 +442,80 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
             rows.append(report)
         rows.sort(key=lambda item: item["score"])
         return {"ok": True, "passwords": rows}
+
+    @app.get("/api/survey")
+    async def api_survey(capture: str = "", limit: int = 40):
+        """Read-only intelligence: probe requests, deauths, rogue twins."""
+        from ..sniff import passive_report
+        session = engine_session()
+        path = capture or ""
+        if not path:
+            captures = [item for item in session.all_captures()
+                        if item.path and os.path.exists(item.path)]
+            path = captures[-1].path if captures else ""
+        aps = [ap.to_dict() for ap in session.aps.values()]
+        return {"ok": True, "survey": passive_report(path, aps,
+                                                     limit=max(1, min(200, limit)))}
+
+    @app.get("/api/eap")
+    async def api_eap(capture: str = "", limit: int = 4):
+        """Decode an 802.1X exchange: EAP method, outer identity, server certificate."""
+        from ..sniff import eap_exchange
+        path = capture or ""
+        if path and not os.path.exists(path):
+            raise HTTPException(status_code=400, detail="no such capture")
+        if not path:
+            session = engine_session()
+            captures = [item for item in session.all_captures()
+                        if item.path and os.path.exists(item.path)]
+            path = captures[-1].path if captures else ""
+        if not path:
+            raise HTTPException(status_code=400,
+                                detail="pass ?capture=..., or capture something first")
+        return {"ok": True, "path": path,
+                "eap": eap_exchange(path, limit_certs=max(1, min(8, limit)))}
+
+    @app.get("/api/pins")
+    async def api_pins(bssid: str = "", essid: str = "", vendor: str = "",
+                       first_half: str = "", limit: int = 24):
+        """WPS PIN candidates (with provenance) and the attempt plan — offline."""
+        from .. import wps as wps_module
+        from ..util import oui_vendor
+        mac = mac_norm(bssid) if bssid else ""
+        if bssid and not mac:
+            raise HTTPException(status_code=400, detail="not a MAC address")
+        vendor = vendor or (oui_vendor(mac) if mac else "")
+        candidates = wps_module.candidate_pins(bssid=mac, essid=essid, vendor=vendor)
+        order = list(wps_module.pin_attempt_order(
+            [item.pin for item in candidates if item.pin], first_half=first_half))
+        return {"ok": True, "bssid": mac, "essid": essid, "vendor": vendor,
+                "candidates": [item.to_dict() for item in candidates],
+                "order": order[:max(1, min(200, limit))],
+                "plan": wps_module.attempt_plan(bssid=mac, essid=essid, vendor=vendor)}
+
+    @app.get("/api/pmk/cache")
+    async def api_pmk_cache():
+        """The ESSID-keyed PMK cache: what a second capture of the same network costs."""
+        from .. import pmk as pmk_module
+        active = engine_or_404()
+        cache = active.cracker.pmk_cache() if hasattr(active, "cracker") else None
+        if cache is None:
+            path = config.pmk_cache_path or os.path.join(
+                config.session_dir, pmk_module.PMK_CACHE_NAME)
+            cache = pmk_module.PMKCache(path=path).load()
+        return {"ok": True, "path": cache.path,
+                "entries": [entry.to_dict() for entry in cache.entries()]}
+
+    @app.post("/api/pmk/verify")
+    async def api_pmk_verify(payload: Dict[str, Any] = Body(...)):
+        """Verify a candidate PSK against a capture (never trust an unverified one)."""
+        from .. import pmk as pmk_module
+        psk = str(payload.get("psk") or "")
+        capture = str(payload.get("capture") or "")
+        if not psk or not capture or not os.path.exists(capture):
+            raise HTTPException(status_code=400, detail="psk and an existing capture are required")
+        return {"ok": True, "result": pmk_module.verify_psk_against(
+            psk, capture, str(payload.get("essid") or ""))}
 
     @app.get("/api/tags")
     async def api_tags():

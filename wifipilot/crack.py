@@ -33,6 +33,7 @@ from .config import Config, default_wordlist, find_wordlists
 from .crypto import (HandshakeVerifier, PmkidVerifier, pmk, verify_handshake,
                      verify_pmkid)
 from . import analytics, hash22000, masks, rules as rules_module
+from .pmk import PMK_CACHE_NAME, PMKCache
 from .deps import registry
 from .events import EK
 from .models import AccessPoint, Capture
@@ -245,6 +246,11 @@ def strategy(label: str) -> Dict[str, object]:
     return dict(STRATEGIES.get(label.strip().lower(), {}))
 
 
+#: the preset lookup under a second name: ``crack_capture`` takes a ``strategy``
+#: argument that would otherwise shadow the function itself
+preset_for = strategy
+
+
 def apply_strategy(config: Config, label: str) -> Dict[str, object]:
     """Stamp a preset onto a config.  Unknown names raise :class:`KeyError`."""
     if label not in STRATEGIES:
@@ -358,8 +364,103 @@ class Cracker:
         self._call_masks: List[str] = []
         #: strategy for *this* call only (``--strategy`` on the CLI, ``strategy=`` in the API)
         self._strategy: str = ""
+        #: config values a per-call strategy overrode, restored afterwards
+        self._strategy_snapshot: Dict[str, object] = {}
         #: candidates verified by the stage that just ran (see _crack_real)
         self._stage_attempts: int = 0
+        #: ESSID-keyed PMK cache (built lazily; see pmk_cache)
+        self._pmk_cache: Optional[PMKCache] = None
+
+    # -- PMK cache --------------------------------------------------------- #
+    def pmk_cache(self) -> Optional[PMKCache]:
+        """The engagement's ESSID -> PMK cache, or ``None`` when disabled.
+
+        A PSK is a property of the *network* and the PMK follows from the ESSID and
+        the passphrase, so once wifipilot has cracked one capture of an SSID every
+        later capture of the same SSID is one HMAC away from being "cracked" too.
+        That pays off on a mesh, in a roaming environment, and on a lab bench where
+        the same network gets captured a dozen times.
+        """
+        if not getattr(self.config, "pmk_cache", True):
+            return None
+        if self._pmk_cache is None:
+            path = getattr(self.config, "pmk_cache_path", "") or ""
+            if not path:
+                directory = getattr(self.config, "state_dir", "") or self.session.state_dir
+                path = os.path.join(directory, PMK_CACHE_NAME) if directory else ""
+            self._pmk_cache = PMKCache(path=path).load()
+        return self._pmk_cache
+
+    def _pmk_lines(self, path: str) -> List[object]:
+        """Mode 22000 lines for a capture or hash file ('' when unreadable)."""
+        try:
+            if hash22000.is_hash_file(path):
+                return hash22000.parse_file(path)
+            analysis = analyze_file(path, max_packets=60000)
+            text = "\n".join(hash22000.lines_from_analysis(analysis))
+            return hash22000.parse_text(text)[0]
+        except Exception:                    # a broken capture must not stop a crack
+            return []
+
+    def _pmk_lookup(self, ap: AccessPoint, capture: Capture, path: str):
+        """A cached PMK for this capture's ESSID, *verified* against the capture."""
+        cache = self.pmk_cache()
+        essid = (ap.essid or capture.essid or "").strip()
+        if cache is None or not essid or essid not in cache:
+            return None
+        for line in self._pmk_lines(path):
+            if (line.essid or "").strip() and (line.essid or "").strip() != essid:
+                continue
+            hit = cache.lookup(essid, line)
+            if hit is not None:
+                return hit
+        return None
+
+    def _cached_result(self, ap: AccessPoint, capture: Capture, path: str,
+                       lists: List[str]) -> Optional[CrackResult]:
+        """A ``CrackResult`` for a cache hit, or ``None``.
+
+        A hit goes through the same reporting path as a crack: the capture gets its
+        password, the AP counts as solved, the event is published.  "We already know
+        this network" is a result, not a shortcut that silently skips the bookkeeping.
+        """
+        hit = self._pmk_lookup(ap, capture, path)
+        if hit is None:
+            return None
+        self.session.stats.pmk_hits += 1
+        self.bus.log(f"PMK cache hit for {ap.essid or ap.bssid}: the passphrase was "
+                     f"learned earlier in this engagement (still verified against this "
+                     f"capture)", level="ok")
+        return CrackResult(cracked=True, password=hit.psk, tool="pmk-cache",
+                           verified=True, attempts=0, seconds=0.0,
+                           reason="ESSID-keyed PMK cache (verification only)",
+                           tried_wordlists=lists)
+
+    def _pmk_remember(self, ap: AccessPoint, password: str, source: str) -> None:
+        cache = self.pmk_cache()
+        essid = (ap.essid or "").strip()
+        if cache is not None and essid and password:
+            cache.remember(essid, password, source=source)
+
+    #: config fields a named strategy may stamp (mirrors apply_strategy)
+    _STRATEGY_FIELDS = ("targeted_candidates", "mask_candidates", "use_rules",
+                        "use_masks", "crack_timeout", "crack_order", "rule_file",
+                        "wordlist_limit", "crack_strategy")
+
+    def _apply_call_strategy(self, label: str):
+        """Stamp a preset onto the config for exactly one call.
+
+        ``strategy=`` is a per-call setting (the web UI's dropdown), so the values
+        it overrides are returned for the caller to restore in its ``finally``
+        block: a one-off "insane" run must not reconfigure every later crack of the
+        engagement.
+        """
+        snapshot = {name: getattr(self.config, name) for name in self._STRATEGY_FIELDS}
+        try:
+            preset = apply_strategy(self.config, label)
+        except KeyError as error:
+            return {}, {}, str(error)
+        return preset, snapshot, ""
 
     # -- public API --------------------------------------------------------
     def crack_capture(self, ap: AccessPoint, capture: Capture,
@@ -372,8 +473,16 @@ class Cracker:
                                verified=True, reason="already cracked")
         if not capture.path and not capture.hash_path:
             return CrackResult(reason="capture has no file on disk")
-        timeout = timeout or self.config.crack_timeout
         path = capture.path or capture.hash_path
+        self._strategy = strategy or ""
+        snapshot: Dict[str, object] = {}
+        if self._strategy:
+            preset, snapshot, error = self._apply_call_strategy(self._strategy)
+            if error:
+                self._strategy = ""
+                return CrackResult(reason=error, tried_wordlists=list(wordlists or []))
+            self.bus.log(f"crack strategy {preset['label']}: {preset['note']}", level="info")
+        timeout = timeout or self.config.crack_timeout
         is_hash = hash22000.is_hash_file(path)
         analysis = (CaptureAnalysis(path=path) if is_hash or not os.path.exists(path)
                     else analyze_file(path))
@@ -395,18 +504,13 @@ class Cracker:
         self.session.set_progress(f"cracking {ap.display_name}", kind="crack",
                                   bssid=ap.bssid, detail="preparing engines")
 
-        result = CrackResult(reason="no engine available", tried_wordlists=lists)
+        result = (self._cached_result(ap, capture, path, lists) or
+                  CrackResult(reason="no engine available", tried_wordlists=lists))
         self._call_masks = [str(m) for m in (masks or [])]
-        self._strategy = strategy or ""
-        if self._strategy:
-            try:
-                preset = strategy(self._strategy)
-            except KeyError as error:
-                return CrackResult(reason=str(error), tried_wordlists=lists)
-            self.bus.log(f"crack strategy {preset['label']}: {preset['note']}", level="info")
-            lists = lists[:int(preset["wordlists"])] if int(preset["wordlists"]) else []
         try:
-            if self.demo:
+            if result.password:
+                pass                     # already verified from the ESSID-keyed cache
+            elif self.demo:
                 result = self._crack_demo(ap, capture, timeout)
             else:
                 result = self._crack_real(ap, capture, path, analysis, lists, timeout)
@@ -425,6 +529,11 @@ class Cracker:
                     "tool": result.tool, "seconds": round(result.seconds, 2),
                     "verified": result.verified,
                 })
+                self._pmk_remember(ap, result.password, result.tool)
+                # the AP's own history is what the timeline view and the "don't
+                # attack a solved target" rule are read from
+                ap.remember("cracked", f"{result.password} via {result.tool}",
+                            tool=result.tool, seconds=round(result.seconds, 2))
                 from .models import Finding
                 self.session.add_finding(Finding(
                     kind="loot", severity="critical", bssid=ap.bssid,
@@ -442,6 +551,8 @@ class Cracker:
             self.session.clear_progress()
             self._call_masks = []
             self._strategy = ""
+            for name, value in snapshot.items():
+                setattr(self.config, name, value)
         return result
 
     # -- demo --------------------------------------------------------------

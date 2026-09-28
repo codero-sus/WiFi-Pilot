@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, asdict, fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .util import parse_duration, read_json, write_json
+from .util import read_json, write_json
 
 CONFIG_NAME = "wifipilot.json"
 CONFIG_ENV = "WIFIPILOT_CONFIG"
@@ -182,9 +182,21 @@ class Config:
     # -- attack enable/disable (wifite-compatible spirit) ------------------
     #: wps_pin is deliberately NOT here: online PIN brute force is opt-in
     #: (CLI: --wps-pin / --attacks wps_pin, UI: attack toggles)
+    #: hidden_ssid is here because it only listens (a hidden network is not a
+    #: target until it has a name); rogue_ap and enterprise are situational and
+    #: stay opt-in.
     attacks: List[str] = field(default_factory=lambda: [
-        "pmkid", "handshake", "wps_pixie", "wep_ivs",
+        "pmkid", "handshake", "wps_pixie", "wep_ivs", "hidden_ssid", "tracker",
     ])
+    #: follow one station only (``tracker``; empty means "pick the best one")
+    client_mac: str = ""
+    #: ask the AP for the name of a hidden network with a directed probe (the
+    #: only part of hidden-SSID discovery that transmits)
+    reveal_with_probe: bool = False
+    #: where recovered PMKs are cached, so a second capture on the same network
+    #: costs nothing to "crack" again (mode 22001)
+    pmk_cache: bool = True
+    pmk_cache_path: str = ""
     skip_crack: bool = False
     crack_timeout: float = 600.0
     cracker: str = "auto"              # auto | aircrack | hashcat
@@ -252,6 +264,16 @@ class Config:
             "wps_pixie": self.wps_timeout,
             "wps_pin": max(self.wps_timeout, 600.0),
             "wep_ivs": self.wep_timeout,
+            # the three surveys: hidden-SSID discovery waits for a client to say the
+            # name, the 802.1X survey waits for one to authenticate, and the rogue
+            # survey only reads what is already on disk
+            "hidden_ssid": max(self.scan_time, 20.0),
+            "enterprise": max(self.scan_time, 30.0),
+            "rogue_ap": max(self.scan_time, 15.0),
+            # a rogue RADIUS is a conversation with a client, not a capture window
+            "rogue_radius": max(self.scan_time * 4, 120.0),
+            # following a device that walks away needs more than a scan window
+            "tracker": max(self.scan_time * 2, 45.0),
             "passive": self.scan_time,
         }.get(attack, self.attack_timeout or 60.0)
 

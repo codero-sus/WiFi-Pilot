@@ -32,7 +32,10 @@ PCAPNG_MAGIC = b"\x0a\x0d\x0d\x0a"
 
 # 802.11 frame types
 TYPE_MGMT, TYPE_CTRL, TYPE_DATA = 0, 1, 2
-SUBTYPE_BEACON, SUBTYPE_PROBE_REQ, SUBTYPE_PROBE_RESP, SUBTYPE_AUTH = 8, 4, 5, 11
+SUBTYPE_ASSOC_REQ, SUBTYPE_ASSOC_RESP, SUBTYPE_REASSOC_REQ, SUBTYPE_REASSOC_RESP = 0, 1, 2, 3
+SUBTYPE_PROBE_REQ, SUBTYPE_PROBE_RESP = 4, 5
+SUBTYPE_BEACON, SUBTYPE_ATIM, SUBTYPE_DISASSOC, SUBTYPE_AUTH, SUBTYPE_DEAUTH = 8, 9, 10, 11, 12
+SUBTYPE_ACTION = 13
 
 ETHERTYPE_EAPOL = 0x888E
 KDE_PMKID = b"\x00\x0f\xac\x04"
@@ -415,6 +418,21 @@ def essid_from_beacon(payload: bytes) -> str:
     return ""
 
 
+def probe_request_essid(buf, start: int, length: int) -> str:
+    """The SSID a probe *request* asks for (``""`` for a wildcard probe).
+
+    A probe request body is fixed fields (timestamp 8, beacon interval 2,
+    capability 2) followed by information elements, so the SSID element starts at
+    offset 24 + 12.  Wildcard probes carry a zero-length SSID element — that is
+    still a signal (the client is looking for *anything*), which is why the
+    caller distinguishes it from "no request at all".
+    """
+    body_start = start + 24 + 12
+    if length <= 36:
+        return ""
+    return essid_from_beacon(bytes(buf[body_start:start + length]))
+
+
 def _read_essid(buf, start: int, length: int, payload_at: int, bssid: str,
                 essids: Dict[str, str]) -> None:
     """Record ``essids[bssid]`` from a beacon, once per BSSID."""
@@ -645,6 +663,54 @@ def analyze_file(path: str, max_packets: int = 400_000,
     finally:
         buf.close()
         handle.close()
+
+
+def iter_frames(path: str, max_packets: int = 400_000):
+    """Yield ``(timestamp, buffer, start, length)`` for every frame in a capture.
+
+    Read-only, no state, no cache: the modules in :mod:`wifipilot.sniff` need to
+    walk a capture themselves (probe requests, deauths) and they must not disturb
+    the incremental analysis cache the attack cycle depends on.  The buffer is
+    whatever the caller provided — an ``mmap`` slices fine, and slicing *offsets*
+    keeps this allocation-free per packet.
+    """
+    file_path = Path(path)
+    try:
+        size = file_path.stat().st_size
+    except OSError:
+        return
+    if not size:
+        return
+    with open(file_path, "rb") as handle:
+        try:
+            import mmap
+            with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as buf:
+                yield from _iter_frames_buffer(buf, size, max_packets)
+        except (OSError, ValueError):                 # pragma: no cover - exotic FS
+            data = handle.read()
+            yield from _iter_frames_buffer(data, len(data), max_packets)
+
+
+def _iter_frames_buffer(buf, size: int, max_packets: int):
+    if not size:
+        return
+    if buf[:4] == PCAPNG_MAGIC:
+        rows = _PcapngReader().rows(buf, 0)
+    elif buf[:4] in PCAP_MAGIC:
+        rows = _iter_pcap(buf, 0)
+    else:
+        return
+    count = 0
+    for timestamp, start, length, _next_offset in rows:
+        if count >= max_packets:
+            return
+        count += 1
+        header = _radiotap_length(buf, start, length)
+        start += header
+        length -= header
+        if length < 24:
+            continue
+        yield timestamp, buf, start, length
 
 
 def _analyze_buffer(buf, state: _AnalysisState, max_packets: int,

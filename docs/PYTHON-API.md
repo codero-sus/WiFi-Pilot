@@ -293,6 +293,39 @@ wp.verify_loot()                                 # {"ok": True, "checked": 12, .
 `from wifipilot.crack import STRATEGIES, apply_strategy` when you want the
 presets programmatically (the package attribute is the function, by design).
 
+## Passive intelligence, WPS plans and PMKs
+
+Read-only questions, all of them answerable with no radio and no authorisation:
+
+```python
+wp.survey("capture.pcap")             # probes, deauth counts, rogue-twin patterns
+wp.probes("capture.pcap")             # [{"mac", "vendor", "ssids", "directed", ...}]
+wp.reveal("capture.pcap")             # name hidden networks; updates the session's APs
+wp.eap("capture.pcap")                # 802.1X: methods, identities, certificates
+
+wp.pins(bssid="d0:12:cb:00:00:01", essid="FRITZ!Box 7590 QY")
+# {"candidates": [{pin, source, confidence, note}], "order": [...], "plan": {...}}
+wp.pins(bssid="a8:90:91:0e:2b:40", first_half="1234")   # an M7 leak: 1,000 attempts
+
+wp.pmk_verify("hashcat!", "capture.hc22000")   # {"ok": True, "matched": {...}}
+wp.pmk_convert("capture.hc22000", psk="hashcat!", out="out.hc22001")
+wp.pmk_cache()                                 # ESSID -> PSK learned this engagement
+```
+
+`wp.eap` decodes the EAP conversation in a capture and reports, per certificate, the
+subject, the issuer, `self_signed` and the serial. A client that trusts a self-signed
+server certificate is impersonable; that is the finding, and it comes out of an
+offline file, not a radio.
+
+`wp.survey` and `wp.probes` work off a capture, the current session, or both; a
+survey's raw payload also lands on the attack record (`attempt.extra`), so a UI can
+render the twins and the competing BSSIDs without re-reading the pcap.
+
+`wp.pmk_verify` is the function to call after *any* wordlist run reports a plaintext:
+a candidate that was never verified against the capture is a candidate, not a
+password. The cache behind `crack()` uses the same check, so a second capture of an
+ESSID already solved in this engagement costs one HMAC instead of a wordlist sweep.
+
 ## Mask attacks
 
 `wp.crack(..., mask=...)` takes a hashcat-style mask (`?d ?l ?u ?s ?a`, `??` for a literal `?`)
