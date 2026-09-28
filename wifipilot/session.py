@@ -18,14 +18,14 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .config import Config, ensure_dirs, find_wordlists
 from .deps import registry
 from .events import EK, EventBus
-from .models import (STATUS_FAILED, STATUS_RUNNING, STATUS_SUCCESS, AccessPoint,
-                     Attempt, Capture, Client, Finding, SessionStats, loot_filename)
-from .util import append_jsonl, human_duration, mac_norm, now_iso, read_json, safe_int, slugify, write_json
+from .models import (STATUS_FAILED, STATUS_RUNNING, AccessPoint, Attempt, Capture,
+                     Client, Finding, SessionStats)
+from .util import append_jsonl, human_duration, mac_norm, now_iso, safe_int, slugify, write_json
 
 
 def note_files(config: Config, state_dir: str = "") -> List[Path]:
@@ -191,7 +191,19 @@ class Session:
         client = Client(mac=mac, bssid=bssid,
                         signal=safe_int(fields.get("signal"), -100),
                         packets=safe_int(fields.get("packets"), 0))
+        for probe in fields.get("probes") or []:
+            if probe and probe not in client.probes:
+                client.probes.append(str(probe))
+        client.remember_signal(client.signal)
+        existing = ap.clients.get(client.mac)
+        had_probes = bool(existing.probes) if existing is not None else False
         is_new = ap.add_client(client)
+        if not is_new and existing is not None:
+            # the station was already known: this reading belongs to the same client
+            # record the tracker is reading the trend from
+            existing.remember_signal(client.signal)
+        if client.probes and not had_probes:
+            self.stats.probing_clients += 1
         if is_new:
             self.stats.clients_seen += 1
             self.bus.publish(EK.CLIENT_NEW, {"bssid": bssid, "mac": mac, **client.to_dict()})
@@ -199,6 +211,16 @@ class Session:
 
     def ap(self, bssid: str) -> Optional[AccessPoint]:
         return self.aps.get(mac_norm(bssid) or bssid)
+
+    def station(self, mac: str) -> Optional[Client]:
+        """One station, wherever in the session it is (the tracker's entry point)."""
+        mac = mac_norm(mac)
+        if not mac:
+            return None
+        for ap in self.aps.values():
+            if mac in ap.clients:
+                return ap.clients[mac]
+        return None
 
     def sorted_aps(self, key: str = "score") -> List[AccessPoint]:
         aps = list(self.aps.values())
@@ -283,12 +305,15 @@ class Session:
         return attempt
 
     def end_attempt(self, attempt: Attempt, status: str, result: str = "",
-                    detail: str = "", capture: Optional[Capture] = None) -> Attempt:
+                    detail: str = "", capture: Optional[Capture] = None,
+                    extra: Optional[Dict[str, Any]] = None) -> Attempt:
         attempt.status = status
         attempt.result = result
         attempt.detail = detail
         attempt.ended = time.time()
         attempt.capture = capture
+        if extra:
+            attempt.extra.update(extra)
         if status == STATUS_FAILED:
             self.stats.attacks_failed += 1
         ap = self.ap(attempt.bssid)

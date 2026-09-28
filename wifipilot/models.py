@@ -24,6 +24,11 @@ ATTACK_NAMES = (
     "wps_pixie",      # offline Pixie-Dust against WPS
     "wps_pin",        # online PIN brute force / default-PIN replay
     "wep_ivs",        # ARP-replay IV harvesting
+    "hidden_ssid",    # name a hidden network from probe responses/associations
+    "rogue_ap",       # read-only twin/attacker-infrastructure survey
+    "enterprise",     # 802.1X survey: method, identity, server certificate
+    "rogue_radius",   # impersonate the AP: will a client trust any certificate?
+    "tracker",        # follow one station: its real PNL, its signal trend
     "passive",        # listen only, never transmit
 )
 
@@ -48,11 +53,21 @@ class Client:
     first_seen: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
     handshake: bool = False
+    #: recent signal readings, oldest first (bounded): the tracker reads the trend
+    signal_history: List[int] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.mac = mac_norm(self.mac) or self.mac
         if not self.vendor:
             self.vendor = oui_vendor(self.mac)
+
+    def remember_signal(self, signal: int, keep: int = 60) -> None:
+        """Record one signal reading, keeping the list bounded."""
+        if not signal:
+            return
+        self.signal_history.append(int(signal))
+        if len(self.signal_history) > keep:
+            del self.signal_history[:-keep]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -418,6 +433,8 @@ class Attempt:
     detail: str = ""
     chosen_by: str = "heuristic"
     reason: str = ""
+    #: structured payload the attack produced (survey findings, PIN candidates...)
+    extra: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def duration(self) -> float:
@@ -435,6 +452,7 @@ class Attempt:
             "command": self.command, "detail": self.detail,
             "chosen_by": self.chosen_by, "reason": self.reason,
             "capture": self.capture.to_dict() if self.capture else None,
+            "extra": self.extra,
         }
 
 
@@ -472,6 +490,15 @@ class SessionStats:
     attacks_failed: int = 0
     deauths: int = 0
     crack_attempts: int = 0
+    # -- intelligence gathered without a single injection ------------------
+    hidden_revealed: int = 0           # SSIDs learned from hidden networks
+    probes_seen: int = 0               # probe requests from clients (PNL)
+    rogue_twins: int = 0               # twin/rogue patterns reported
+    enterprise_surveys: int = 0        # 802.1X exchanges captured
+    rogue_radius: int = 0              # rogue-RADIUS attempts that reached a client
+    stations_tracked: int = 0          # stations followed for a signal trend
+    probing_clients: int = 0           # clients whose PNL was read out of a capture
+    pmk_hits: int = 0                  # captures "cracked" from the PMK cache
     llm_calls: int = 0
     llm_tokens: int = 0
     llm_errors: int = 0

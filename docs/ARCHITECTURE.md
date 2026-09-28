@@ -260,7 +260,78 @@ feature works on a machine with no hcxtools installed.  Reading a hash file
 needs nothing but the file: the built-in engine verifies candidates directly
 against the PMKID or the EAPOL MIC.
 
-## 15. Performance
+## 15. Non-transmitting intelligence (and the PMK cache)
+
+Four of wifipilot's attacks never touch the radio in a way anyone can complain
+about, and they share one idea: *the information is already on air or already on
+disk, and reading it changes what the engagement knows*.  (The rogue RADIUS in the
+next section is the deliberate exception: it is the one that asks the question the
+read-only tools can only imply.)
+
+* **`hidden_ssid`** (`attacks/hidden.py`) — a hidden AP omits its SSID from beacons,
+  not from probe responses, association requests or the handshake. The attack watches
+  those frames (and, only with `--reveal-with-probe`, asks for the name directly) and
+  writes the result onto the `AccessPoint`, which is what the planner, the vendor
+  dossier and the mask generator were missing.
+* **`rogue_ap`** (`attacks/rogue.py`, `sniff.py`) — compares every ESSID against its
+  BSSIDs, vendors and signal spread, and against the names clients are probing for. It
+  reports a *pattern* with its evidence attached and labels it ``heuristic``; a tool
+  that prints "EVIL TWIN" without proof is worse than no tool.
+* **`enterprise`** (`attacks/enterprise.py`, `sniff.eap_exchange`) — an 802.1X network
+  has no PSK, so the honest deliverable is the survey: EAP method, outer identity, and
+  the server certificate decoded out of the TLS message. The high-severity finding is
+  a missing or self-signed certificate, because that is what lets a rogue RADIUS
+  impersonate the real one.
+* **`tracker`** (`attacks/tracker.py`, or `--client MAC` to name one) — one station, followed: the SSIDs it probes for
+  (its real preferred network list), the BSSIDs it uses, and its signal trend, with the
+  raw samples written to loot. It answers "which name is worth impersonating" before
+  anything transmits.
+
+`pcap.iter_frames()` was added for these readers: a stateless, cache-free walk that
+yields 802.11 frames with the radiotap header already skipped, so the analysis modules
+can parse a capture themselves without disturbing the incremental cache the attack
+cycle depends on.
+
+**The PMK cache** (`pmk.py`, consulted by `crack.py`) is the other half of that idea.
+A PSK is a property of the *network*: the PMK is `PBKDF2-SHA1(psk, essid, 4096)`, so it
+does not mention the BSSID at all. The cache is therefore keyed by ESSID, stores
+``ESSID -> (psk, pmk)`` in the engagement's state directory, and every lookup is
+verified against the capture it is claimed for before the passphrase is reported. One
+HMAC per capture is the difference between "crack the mesh again" and "verify and move
+on", and a corrupted or stale entry costs microseconds instead of a wrong password in a
+client report. Mode 22001 is the same format as 22000 with the PMK in place of the
+MIC/PMKID, which is why a converted file can be handed to hashcat unchanged.
+
+WPS PIN arithmetic (`wps.py`) follows the same rule: every candidate is checksum-valid
+(or says in its note why it is kept anyway), carries the reason it was suggested, and
+the plan states what the alternatives cost — 11,000 attempts for the documented
+two-half attack against 10⁷ for a blind sweep.
+
+## 16. The radio is a last resort
+
+Two of the attacks added after the first release make the same point from opposite
+ends: `enterprise` reads the certificate, `rogue_radius` tests whether anybody checks
+it. Both are 802.1X, and both exist because "we captured an enterprise handshake" says
+nothing about whether the network is impersonable.
+
+The matching decoder lives in `sniff.py` (`eap_exchange`, `x509_name`) and works on
+any capture: EAP type codes, the clear-text outer identity, and a small DER walker
+that pulls the X.509 subject and issuer out of the TLS certificate message. Identical
+subject and issuer is a self-signed certificate, and *that* is the finding — reported
+as a certificate subject, never as a signature verification this tool does not do.
+
+`rogue_radius` is the only attack here that is deliberately opt-in *and* transmits:
+it starts eaphammer (or hostapd-mana/wpe with a generated config), watches the tool's
+output for a credential, and stops the process group in a `finally` block whatever
+happens. Nothing about a rogue AP is improved by leaving it running.
+
+`tracker` is the read-only counterpart: one station, followed for as long as the
+operator walks, with the signal *trend* reported next to the value it started from
+(because a single number is not a measurement) and the raw samples written to loot as
+JSON. It is scheduled before the noisy attacks because the client's preferred network
+list decides which name is worth impersonating — the answer is usually already on air.
+
+## 17. Performance
 
 The hot paths are capture parsing and WPA key derivation, so that is where the
 work went — nothing else was allowed to get slower:

@@ -43,13 +43,14 @@ are sent. See [docs/AI-PROVIDERS.md](docs/AI-PROVIDERS.md).
 - [Real engagement](#real-engagement)
 - [The web UI](#the-web-ui)
 - [The AI advisor (Ollama or OpenRouter)](#the-ai-advisor-ollama-or-openrouter)
-- [Attacks](#attacks)
+- [Attacks](#attacks) — [reference for every attack](docs/ATTACKS.md)
 - [Cracking](#cracking)
 - [CLI reference](#cli-reference)
 - [Hash files (hashcat mode 22000)](#hash-files-hashcat-mode-22000)
 - [Configuration](#configuration)
 - [Performance](#performance)
 - [Offline toolbox (no radio, no root)](#offline-toolbox-no-radio-no-root)
+- [Passive intelligence and PMKs](#passive-intelligence-and-pmks)
 - [Architecture](#architecture)
 - [Testing](#testing)
 - [FAQ / troubleshooting](#faq--troubleshooting)
@@ -149,6 +150,30 @@ aircrack-ng suite properly) and rebuilds everything around it:
 **Reporting**
 - JSON session export, Markdown engagement report, JSONL event journal, loot directory
 - web UI: live target table, loot cards, plan viewer, chat, tool diagnostics
+
+### New ways in (added on top of the classic attacks)
+
+- **Hidden-SSID discovery** — a hidden AP is a `?` only until a client says its name;
+  probe responses, association requests and the handshake all carry it in the clear.
+- **Rogue-AP / evil-twin survey** — one ESSID served by two vendors, or the same name
+  at a wildly different signal, is what a twin looks like from outside. Reported as a
+  heuristic pattern with the evidence attached (BSSIDs, vendors, dB spread).
+- **802.1X survey** — EAP method, outer identity and the server certificate. The
+  actionable finding is usually a self-signed certificate, because that is what makes
+  a rogue RADIUS trivial; "WPA-Enterprise cracked" is almost always a misreading.
+- **WPS PIN arithmetic** — checksum-valid candidates with provenance (vendor defaults,
+  both published ComputePIN variants, BSSID junk), plus the attempt plan: 11,000
+  attempts for the two-half attack versus 10⁷ for a blind sweep, stated in hours.
+- **EAP decoding, offline** — `wifipilot eap capture.pcap` prints the EAP method, the
+  outer identity (a username, unless it is `anonymous@…`) and the server certificate,
+  including whether the subject and issuer are the same Name, which is what
+  "self-signed, therefore impersonable" looks like in a capture.
+- **Rogue RADIUS** — the test that survey implies: impersonate the AP for one
+  association attempt and see whether the client hands over a credential. Any output
+  is reported verbatim, nothing is guessed, and the tool is stopped either way.
+- **Station tracking** — point wifipilot at one device and it reports the networks the
+  device actually probes for (its real PNL), the APs it associates with, and its
+  signal trend as you move. Read-only, and scheduled before anything noisy.
 
 ## Install
 
@@ -350,6 +375,9 @@ Details, including the full failure matrix and model recommendations:
 
 ## Attacks
 
+The full reference — what each attack answers, what it costs, and how to read a
+failure — is in [docs/ATTACKS.md](docs/ATTACKS.md). The short version:
+
 | Attack | Tool | Disruptive? | Notes |
 |---|---|---|---|
 | `pmkid` | hcxdumptool / own sniffer | no | client-less, first choice for WPA2 |
@@ -357,7 +385,18 @@ Details, including the full failure matrix and model recommendations:
 | `wps_pixie` | reaver `-K 1` / bully `--pixiewps` | mildly | usually <60 s on vulnerable chipsets |
 | `wps_pin` | reaver / bully | **yes, slow** | opt-in only; can lock WPS permanently |
 | `wep_ivs` | airodump-ng + aireplay `--arpreplay` | yes | legacy networks |
+| `hidden_ssid` | airodump-ng | **no** | names a hidden network from probe responses, associations or the handshake; `--reveal-with-probe` sends the one directed probe |
+| `rogue_ap` | wifipilot (offline) | **no** | compares every ESSID against its BSSIDs, vendors and signal spread, and against the names clients are probing for — reports twins as a *pattern*, never as an accusation |
+| `enterprise` | airodump-ng | no | 802.1X survey: EAP method, outer identity, server certificate — all decoded offline; identical subject/issuer means self-signed, i.e. impersonable. There is no PSK to crack |
+| `rogue_radius` | eaphammer / hostapd-mana / hostapd-wpe | **yes** (impersonation) | The test the survey implies: impersonate the AP for one association attempt and see whether the client hands over a credential or "only" its identity. Output reported verbatim; the rogue service is always stopped |
+| `tracker` | airodump-ng (listen-only) | no | Follow one station: the SSIDs it really probes for, the BSSIDs it associates with, and its signal trend as you walk. Decides which name is worth impersonating, before anything transmits |
 | `passive` | airodump-ng | no | listen-only; harvests what is on air |
+
+Only `hidden_ssid --reveal-with-probe`, `rogue_radius` and the classic attacks
+transmit anything; `rogue_ap`, `enterprise` and `tracker` are pure analysis and need
+no authorisation for the part that listens. `rogue_radius` is the opposite end of the
+same idea as `enterprise`: one reads the certificate, the other tests whether anybody
+checks it.
 
 ## Cracking
 
@@ -436,12 +475,20 @@ unbreakable): it is reported as "no usable nonce" rather than counted as a failu
 ```
 wifipilot scan   [-t 30] [--band 2.4GHz|5GHz|both] [--save out.json]
 wifipilot attack [-b BSSID] [--time 30s] [-d 45m] [--no-scan] [--skip-crack]
+                 [--client MAC]        # handshake: deauth that station only; tracker: follow it
 wifipilot demo
 wifipilot web    [--host 0.0.0.0] [--port 8787] [--open]
 wifipilot crack  FILE [FILE…] [-b BSSID] [-e ESSID] [--engine auto|aircrack|hashcat]
                  [--strategy NAME|--list-strategies] [--rule-file FILE]
                  [--mask PATTERN] [--mask-candidates N] [--no-masks]
 wifipilot analyze FILE [FILE…] [--masks [-b BSSID] [-e ESSID]]
+wifipilot survey [CAPTURE] [--limit N]     # probes, deauths, twins — read-only
+wifipilot eap    FILE [--limit N]          # 802.1X: method, identity, certificate
+wifipilot pins   [BSSID] [-e ESSID] [--vendor NAME] [--first-half 1234] [--limit N]
+wifipilot pmk    verify  FILE… --psk PSK [-e ESSID]
+wifipilot pmk    convert FILE… --psk PSK [--out out.hc22001]
+wifipilot pmk    show    FILE            # read a mode-22001 (PMK) file
+wifipilot pmk    cache   [--session-dir DIR]
 
 wifipilot targets [--kind home-router] [--tag in-scope] [--vendor AVM] [--cracked|--loot]
                   [--encryption WPA2] [--channel N] [--select] [--kinds] [--report export.json]
@@ -480,7 +527,8 @@ wifipilot ai     status|models|providers|use MODEL|pull MODEL|ask "…"
 wifipilot config [--write FILE] [--init]
 
 global:  -c/--config  -i/--interface  -m/--monitor  --demo  -y/--i-am-authorized
-         --stealth  --attacks a,b,c  --wps-pin  -w/--wordlist  -o/--output
+         --stealth  --attacks a,b,c  --wps-pin  --reveal-with-probe  --no-pmk-cache
+         -w/--wordlist  -o/--output
          --session-dir  --timeout 5m  -v/--verbose  --json  --no-color
 ai:      --provider auto|ollama|openrouter|none  --model NAME  --ollama-host URL
          --openrouter-key KEY  --openrouter-base-url URL
@@ -618,6 +666,42 @@ wifipilot benchmark --seconds 5                                 # this machine's
 candidates/s through the built-in PBKDF2 → PTK → MIC path; the same rate turns a candidate
 space into an ETA, which is why the strategies are ordered cheap-first.
 
+### Passive intelligence and PMKs
+
+Three more things work with no radio at all:
+
+```bash
+# who is looking for what, and is anyone being deauthenticated?
+wifipilot survey capture.pcap --json
+
+# hidden networks are in probe responses, associations and the handshake
+wifipilot survey capture.pcap | grep twin
+wifipilot --demo attack --attacks hidden_ssid      # live: names a hidden AP
+
+# WPS PIN arithmetic: which candidates, why, and what a sweep would cost
+wifipilot pins d0:12:cb:00:00:01 -e 'FRITZ!Box 7590 QY'
+wifipilot pins a8:90:91:0e:2b:40 --first-half 1234   # M7 leak -> 1,000 attempts
+
+# who is this client, which networks does it trust, and is it walking towards me?
+wifipilot --json survey capture.pcap | jq '.probes'
+wifipilot --demo attack --attacks tracker          # live: follows the best station
+
+# an 802.1X exchange, decoded with no radio at all
+wifipilot eap corp-8021x.pcap                      # method, identity, certificate
+wifipilot eap corp-8021x.pcap --json               # subject/issuer/self_signed
+
+# the PMK cache: a passphrase learned once is verified, not re-cracked, later
+wifipilot pmk verify  capture.hc22000 --psk 'hashcat!'
+wifipilot pmk convert capture.hc22000 --psk 'hashcat!'   # -> mode 22001
+wifipilot pmk cache                                      # ESSID -> PSK, this engagement
+```
+
+The cache is keyed by **ESSID**, because the PMK depends on the network name and the
+passphrase, not on the BSSID: a mesh, a renaming AP or the same lab network captured
+five times all hit the same entry. Every hit is re-verified against the capture it is
+claimed for (one HMAC), so a stale cache entry costs microseconds and never produces a
+wrong password in a report. Disable it with `--no-pmk-cache` or `"pmk_cache": false`.
+
 ## Architecture
 
 ```
@@ -721,7 +805,8 @@ and stops rather than burning hours; `wps_pin` is off by default for exactly thi
 ## Roadmap
 
 - [ ] WPA3-SAE dictionary/transition-mode attacks where legitimate tooling exists
-- [ ] Enterprise (802.1X) capture + identity harvesting (passive only)
+- [x] Enterprise (802.1X) capture + identity harvesting (passive survey — see `attacks/enterprise.py`)
+- [ ] Rogue RADIUS/hostapd-mana driven credential capture for authorised 802.1X engagements
 - [ ] Multi-adapter support (dedicated deauth + capture radios)
 - [ ] Attack scheduling by time window, and a "resume session" flag
 - [ ] Landscape/PDF report templates for client deliverables

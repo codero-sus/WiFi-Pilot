@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .config import Config
 from .deps import registry
@@ -174,6 +174,11 @@ def rank_targets(session: Session, config: Optional[Config] = None,
     return ranked[:limit]
 
 
+def attackable_hidden(ap: AccessPoint) -> bool:
+    """Is this AP a hidden network whose name we could still learn?"""
+    return not ap.cracked and not (ap.essid or "").strip()
+
+
 def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
     """Which attack should this AP get, best first, given its current state?"""
     enabled = [a for a in config.attacks if a in PLANNER_ACTIONS]
@@ -196,13 +201,44 @@ def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
             return False
         if name == "wep_ivs" and not caps.get("airodump"):
             return False
-        return True
+        if name == "hidden_ssid" and not caps.get("airodump"):
+            return False
+        if name == "enterprise" and not caps.get("airodump"):
+            return False
+        if name == "tracker" and not caps.get("airodump"):
+            return False
+        if name == "rogue_radius":
+            # a rogue RADIUS needs one of the impersonation tools; without them the
+            # read-only enterprise survey is what is left
+            if not any(registry.path(binary) for binary in
+                       ("eaphammer", "hostapd-mana", "hostapd-wpe")):
+                return False
+            if not caps.get("monitor") or not caps.get("airodump"):
+                return False
+        return True                       # rogue_ap is pure analysis: no radio
 
     if ap.cracked:
         return []
     # already have loot -> crack it
     if (ap.has_handshake or ap.has_pmkid) and not config.skip_crack:
         out.append("crack")
+    # read-only surveys change what we know, so they run before anything noisy
+    if attackable_hidden(ap) and allow("hidden_ssid"):
+        out.append("hidden_ssid")
+    # following a station is read-only and decides which name is worth impersonating,
+    # so it comes before anything that transmits
+    if ap.clients and allow("tracker"):
+        out.append("tracker")
+    enterprise = (ap.encryption in ("WPA-ENTERPRISE", "WPA2-ENTERPRISE", "ENTERPRISE")
+                  or (ap.auth or "").upper() in ("MGT", "802.1X", "ENTERPRISE"))
+    if enterprise:
+        if allow("enterprise") and not ap.has_handshake:
+            out.append("enterprise")
+        # only after the survey says the certificate is checkable-or-not: impersonating
+        # a network whose clients do validate certificates wastes radio time
+        if allow("rogue_radius") and not config.stealth:
+            out.append("rogue_radius")
+        return _prune(out, ap)      # there is no PSK here to grab or crack
     if ap.encryption == "WEP" and allow("wep_ivs"):
         out.append("wep_ivs")
     if ap.wps and ap.wps_open:
@@ -220,7 +256,11 @@ def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
     if config.stealth and allow("passive") and not ap.has_handshake and not ap.has_pmkid:
         out.append("passive")
 
-    # never repeat an attack that already succeeded, or failed twice, on this target
+    return _prune(out, ap)
+
+
+def _prune(out: List[str], ap: AccessPoint) -> List[str]:
+    """Never repeat an attack that succeeded, or failed twice, on one target."""
     failures: Dict[str, int] = {}
     succeeded: set = set()
     for attempt in ap.attempts:

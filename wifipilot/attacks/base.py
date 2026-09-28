@@ -20,6 +20,18 @@ from ..util import Process, clamp, mac_norm, run, safe_int
 # --------------------------------------------------------------------------- #
 
 
+def _payload(extra: Optional[Dict[str, Any]], more: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge a payload dict with keyword extras into one flat dictionary.
+
+    Both spellings are used in the attack modules (``extra={...}`` for a survey
+    result, keyword extras for a single value), and nesting one inside the other
+    would surprise every reader of an event, so they are flattened here.
+    """
+    payload: Dict[str, Any] = dict(extra or {})
+    payload.update(more)
+    return payload
+
+
 @dataclass
 class AttackOutcome:
     status: str
@@ -35,12 +47,16 @@ class AttackOutcome:
 
     @classmethod
     def success(cls, result: str, capture: Optional[Capture] = None, detail: str = "",
-                deauths: int = 0, **extra) -> "AttackOutcome":
-        return cls(STATUS_SUCCESS, result, detail, capture, deauths, extra)
+                deauths: int = 0, extra: Optional[Dict[str, Any]] = None,
+                **more) -> "AttackOutcome":
+        return cls(STATUS_SUCCESS, result, detail, capture, deauths,
+                   _payload(extra, more))
 
     @classmethod
-    def failed(cls, result: str, detail: str = "", deauths: int = 0, **extra) -> "AttackOutcome":
-        return cls(STATUS_FAILED, result, detail, None, deauths, extra)
+    def failed(cls, result: str, detail: str = "", deauths: int = 0,
+               extra: Optional[Dict[str, Any]] = None, **more) -> "AttackOutcome":
+        return cls(STATUS_FAILED, result, detail, None, deauths,
+                   _payload(extra, more))
 
     @classmethod
     def skipped(cls, result: str, detail: str = "") -> "AttackOutcome":
@@ -78,7 +94,9 @@ class AttackContext:
         return f"{kind}-{(ap.essid or 'hidden').replace(' ', '_')}-{ap.bssid.replace(':', '')}"
 
     def log(self, message: str, level: str = "info", **extra: Any) -> None:
-        self.bus.log(message, level=level, bssid=getattr(self, "_bssid", ""), **extra)
+        fields: Dict[str, Any] = {"bssid": getattr(self, "_bssid", "")}
+        fields.update(extra)          # a per-call bssid wins over the context default
+        self.bus.log(message, level=level, **fields)
 
     def progress(self, label: str, **fields: Any) -> None:
         self.session.set_progress(label=label, **fields)

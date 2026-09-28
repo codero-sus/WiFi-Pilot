@@ -15,8 +15,15 @@
   "scan_time": 30.0,
   "max_targets": 0,
 
-  "_attacks": "Valid: pmkid, handshake, wps_pixie, wps_pin, wep_ivs, passive. wps_pin (online PIN brute force) is intentionally not enabled by default: it is slow, loud and can permanently lock WPS.",
-  "attacks": ["pmkid", "handshake", "wps_pixie", "wep_ivs"],
+  "_attacks": "Valid: pmkid, handshake, wps_pixie, wps_pin, wep_ivs, hidden_ssid, tracker, rogue_ap, enterprise, rogue_radius, passive. wps_pin (online PIN brute force) is intentionally not enabled by default: it is slow, loud and can permanently lock WPS. rogue_ap, enterprise and rogue_radius are situational: enable them when the engagement is about rogue infrastructure or 802.1X (tracker is read-only and on by default).",
+  "attacks": ["pmkid", "handshake", "wps_pixie", "wep_ivs", "hidden_ssid", "tracker"],
+  "_client_mac": "deauthenticate this station only (the handshake attack); empty means the whole AP.",
+  "client_mac": "",
+  "_reveal_with_probe": "hidden-SSID discovery listens by default; with this on it also asks the AP for the name with a directed probe (the only part of it that transmits).",
+  "reveal_with_probe": false,
+  "_pmk_cache": "An ESSID-keyed PMK cache: once a passphrase is learned for a network, a later capture of the same ESSID is verified against it instead of being cracked again. Every hit is verified against the capture before it is believed.",
+  "pmk_cache": true,
+  "pmk_cache_path": "",
 
   "_budgets": "Per-attack time budget in seconds. attack_timeout > 0 overrides all of them.",
   "handshake_timeout": 90.0,

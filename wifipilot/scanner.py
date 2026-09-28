@@ -566,7 +566,7 @@ class Scanner:
         if not target:
             return
         self.session.add_client(target, record.mac, signal=record.signal,
-                                packets=record.packets)
+                                packets=record.packets, probes=record.probes)
 
     def _apply_wps(self, bssid: str, record: Dict[str, Any]) -> None:
         ap = self.session.ap(bssid)

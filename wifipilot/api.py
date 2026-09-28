@@ -46,7 +46,8 @@ from .config import Config
 from .engine import Engine
 from .events import Event
 from .models import AccessPoint, Capture
-from .util import PLATFORM_OVERRIDE_ENV, is_linux, mac_norm, parse_duration
+from .util import (PLATFORM_OVERRIDE_ENV, is_linux, mac_norm, oui_vendor,
+                   parse_duration)
 
 __all__ = [
     "ALL", "MODES", "WifiPilotError", "PlatformError", "AuthorizationError", "BusyError",
@@ -57,6 +58,8 @@ __all__ = [
     "vendor", "identify", "passwords", "advice", "benchmark", "hash_stats",
     "merge_hashes", "rescue_capture", "wordlist_stats", "expand_wordlist",
     "rules_info", "loot_manifest", "verify_loot",
+    "survey", "probes", "pins", "reveal", "eap", "pmk_verify", "pmk_convert",
+    "pmk_cache",
     "status", "session", "engine", "current_run", "subscribe", "stop", "reset",
     "is_running",
 ]
@@ -1114,6 +1117,138 @@ def verify_loot(directory: str = "") -> Dict[str, Any]:
     """Check the loot directory against its manifest."""
     from . import toolbox
     return toolbox.verify_manifest(directory or config().output_dir)
+
+
+def survey(capture: str = "", limit: int = 40) -> Dict[str, Any]:
+    """Read-only intelligence from a capture and/or the current session.
+
+    Answers three questions with no radio and no authorisation: which clients are
+    probing for which networks, whether deauthentication frames are flying, and
+    whether one ESSID is being served by more than one vendor (a twin pattern).
+    """
+    from .sniff import passive_report
+    sess = _offline_session()
+    path = str(capture or "")
+    if not path:
+        captures = [item for item in sess.all_captures()
+                    if item.path and os.path.exists(item.path)]
+        path = captures[-1].path if captures else ""
+    aps = [ap.to_dict() for ap in sess.aps.values()]
+    return passive_report(path, aps, limit=max(1, int(limit)))
+
+
+def probes(capture: str = "", limit: int = 40) -> List[Dict[str, Any]]:
+    """Just the probing clients: MAC, vendor, and the networks it asked for."""
+    return list(survey(capture, limit).get("probes") or [])
+
+
+def pins(bssid: str = "", essid: str = "", vendor: str = "", first_half: str = "",
+         limit: int = 24) -> Dict[str, Any]:
+    """WPS PIN candidates for a target, their provenance, and the attempt plan.
+
+    Offline arithmetic: nothing is transmitted, and nothing is guessed — every
+    candidate is checksum-valid and carries the reason it was suggested.
+    """
+    from . import wps as wps_module
+    mac = ""
+    if bssid:
+        mac = mac_norm(bssid)
+        if not mac:
+            raise TargetError(f"not a MAC address: {bssid}")
+    vendor = vendor or oui_vendor(mac)
+    candidates = wps_module.candidate_pins(bssid=mac, essid=str(essid),
+                                           vendor=str(vendor))
+    order = list(wps_module.pin_attempt_order(
+        [item.pin for item in candidates if item.pin], first_half=str(first_half)))
+    return {"bssid": mac, "essid": str(essid), "vendor": vendor,
+            "candidates": [item.to_dict() for item in candidates],
+            "order": order[:max(1, int(limit))],
+            "plan": wps_module.attempt_plan(bssid=mac, essid=str(essid),
+                                            vendor=str(vendor))}
+
+
+def eap(capture: str, limit: int = 4) -> Dict[str, Any]:
+    """Decode the 802.1X exchange in a capture: methods, identities, certificates.
+
+    Everything an enterprise assessment needs is in the clear on air, so this works
+    offline: which EAP method, the outer identity (a username unless it is
+    ``anonymous@…``), and the server certificate — including whether it is
+    self-signed, which is the difference between "uses 802.1X" and "impersonable".
+    """
+    from .sniff import eap_exchange
+    if not os.path.exists(str(capture)):
+        raise TargetError(f"no such file: {capture}")
+    return eap_exchange(str(capture), limit_certs=max(1, int(limit)))
+
+
+def pmk_verify(psk: str, capture: str, essid: str = "") -> Dict[str, Any]:
+    """Does this passphrase actually verify against that capture?"""
+    from . import pmk as pmk_module
+    if not os.path.exists(str(capture)):
+        raise TargetError(f"no such file: {capture}")
+    return pmk_module.verify_psk_against(str(psk), str(capture), str(essid))
+
+
+def pmk_convert(capture: str, psk: str = "", essid: str = "", out: str = ""
+                ) -> Dict[str, Any]:
+    """Write a mode-22001 file (raw-PMK candidates) for a capture."""
+    from . import pmk as pmk_module
+    if not os.path.exists(str(capture)):
+        raise TargetError(f"no such file: {capture}")
+    return pmk_module.convert_to_22001(str(capture), out=str(out), psk=str(psk),
+                                       essid=str(essid))
+
+
+def pmk_cache(load: bool = True) -> List[Dict[str, Any]]:
+    """What this engagement has already learned: ESSID -> PSK (with the PMK)."""
+    from . import pmk as pmk_module
+    cfg = config()
+    if not getattr(cfg, "pmk_cache", True):
+        return []
+    path = getattr(cfg, "pmk_cache_path", "") or os.path.join(
+        cfg.session_dir, pmk_module.PMK_CACHE_NAME)
+    cache = pmk_module.PMKCache(path=path)
+    if load:
+        cache.load()
+    return [entry.to_dict() for entry in cache.entries()]
+
+
+def reveal(capture: str = "") -> Dict[str, Any]:
+    """Name the hidden networks in a capture, and what else it reveals.
+
+    Hidden SSIDs are not visible in beacons, but they are in probe responses,
+    association requests and the handshake itself — so a passive capture can turn
+    a ``<hidden>`` BSSID into a target with a name.  Nothing is transmitted.
+    """
+    from .pcap import analyze_file
+    sess = _offline_session()
+    path = str(capture or "")
+    if not path:
+        captures = [item for item in sess.all_captures()
+                    if item.path and os.path.exists(item.path)]
+        path = captures[-1].path if captures else ""
+    found: List[Dict[str, Any]] = []
+    if path and os.path.exists(path):
+        analysis = analyze_file(path)
+        for bssid, essid in sorted(analysis.essids.items()):
+            if not essid:
+                continue
+            ap = sess.ap(mac_norm(bssid))
+            changed = bool(ap is not None and (ap.hidden or not ap.essid))
+            if ap is not None:
+                if changed:
+                    ap.essid = essid
+                    ap.hidden = False
+                    ap.remember("revealed", f"SSID {essid!r} learned from {path}")
+                    sess.stats.hidden_revealed += 1
+            found.append({"bssid": mac_norm(bssid), "essid": essid,
+                          "known_target": ap is not None, "revealed": changed})
+    report = survey(path)
+    return {"capture": path, "networks": found,
+            "wanted": report.get("wanted_networks", []),
+            "hidden_targets": report.get("hidden_targets", []),
+            "probes": report.get("probes", []),
+            "note": "read-only: nothing was transmitted"}
 
 
 def heuristic_advice() -> List[Dict[str, Any]]:
