@@ -15,10 +15,12 @@
   "scan_time": 30.0,
   "max_targets": 0,
 
-  "_attacks": "Valid: pmkid, handshake, wps_pixie, wps_pin, wep_ivs, hidden_ssid, tracker, rogue_ap, enterprise, rogue_radius, passive. wps_pin (online PIN brute force) is intentionally not enabled by default: it is slow, loud and can permanently lock WPS. rogue_ap, enterprise and rogue_radius are situational: enable them when the engagement is about rogue infrastructure or 802.1X (tracker is read-only and on by default).",
+  "_attacks": "Valid: pmkid, pmkid_flood, handshake, wps_pixie, wps_pin, wep_ivs, wep_p0841, wep_chopchop, wep_fragment, wep_hirte, hidden_ssid, tracker, rogue_ap, enterprise, rogue_radius, saewolf, pmf_audit, evil_twin, deauth_flood, beacon_flood, passive. Off by default on purpose: wps_pin (slow, loud, can permanently lock WPS), pmkid_flood (repeated deauth), the WEP enablers (chopchop/fragment/hirte recover keystream, not the key), evil_twin (impersonates the AP), deauth_flood/beacon_flood (denial-of-service detection tests) and the situational surveys. saewolf/pmf_audit are read-only WPA3/RSN audits: no offline attack on SAE exists, so they report the configuration. tracker and hidden_ssid are read-only and on by default.",
   "attacks": ["pmkid", "handshake", "wps_pixie", "wep_ivs", "hidden_ssid", "tracker"],
   "_client_mac": "deauthenticate this station only (the handshake attack); empty means the whole AP.",
   "client_mac": "",
+  "_twin_interface": "interface the evil twin serves the SSID on; empty = the monitor interface. Put the twin on a second radio to keep the capture running.",
+  "twin_interface": "",
   "_reveal_with_probe": "hidden-SSID discovery listens by default; with this on it also asks the AP for the name with a directed probe (the only part of it that transmits).",
   "reveal_with_probe": false,
   "_pmk_cache": "An ESSID-keyed PMK cache: once a passphrase is learned for a network, a later capture of the same ESSID is verified against it instead of being cracked again. Every hit is verified against the capture before it is believed.",

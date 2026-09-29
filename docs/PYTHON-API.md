@@ -35,7 +35,10 @@ own Python).
                 └──────┬───────┘
                        ▼
    attacks/  handshake (deauth → 4-way capture) · pmkid (`--pmkid` client-less)
-             wps_pixie (reaver/bully) · wps_pin (opt-in, online) · wep_ivs · passive
+             pmkid_flood (active PMKID hunt) · wps_pixie · wps_pin (opt-in, online)
+             wep_ivs/wep_p0841 (key) · wep_chopchop/fragment/hirte (enablers)
+             saewolf + pmf_audit (read-only WPA3/RSN) · evil_twin (hostapd)
+             deauth_flood/beacon_flood (capped DoS tests) · passive
                        │
                        ▼
                 ┌──────────────┐
@@ -125,13 +128,14 @@ that many passwords are recovered.
 
 | mode | transmits? | what it runs |
 |---|---|---|
-| `"force"` | yes, loudly | everything: deauth-driven handshakes, PMKID, WPS Pixie-Dust, WEP, **and the online WPS PIN attack** (can permanently lock an AP's WPS) |
-| `"default"` / `"recall"` | yes | the standard set: handshake, PMKID, WPS Pixie-Dust, WEP |
+| `"force"` | yes, loudly | **all 21 attacks** (`wp.ALL_ATTACKS`, which is the attack registry's own order): the floods, the evil twin, the active PMKID hunt, the WEP enablers and the online WPS PIN attack (which can permanently lock an AP's WPS) included |
+| `"default"` / `"recall"` | yes | the standard six: handshake, PMKID, WPS Pixie-Dust, WEP, hidden-SSID discovery and station tracking |
 | `"quick"` | yes, briefly | PMKID + handshake + crack only |
-| `"stealth"` | listen-only | passive capture, no deauth, no online PIN attacks |
-| `"passive"` | never | capture whatever the neighbourhood volunteers |
+| `"stealth"` | listen-only | passive capture, no deauth, no online PIN attacks, and the floods are refused even if enabled |
+| `"passive"` | never | capture whatever the neighbourhood volunteers, plus the read-only RSN/PMF audit |
 
-Individual knobs (`stealth=`, `wps_pin=`, `attacks=`) override the preset.
+Individual knobs (`stealth=`, `wps_pin=`, `attacks=`) override the preset, and `attacks=`
+is the only way to get a deliberate subset (`attacks=["pmkid","handshake"]`).
 
 ### The main calls
 

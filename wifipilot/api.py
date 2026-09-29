@@ -42,6 +42,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
+from .attacks import DEFAULT_ORDER as registry_order
 from .config import Config
 from .engine import Engine
 from .events import Event
@@ -50,7 +51,7 @@ from .util import (PLATFORM_OVERRIDE_ENV, is_linux, mac_norm, oui_vendor,
                    parse_duration)
 
 __all__ = [
-    "ALL", "MODES", "WifiPilotError", "PlatformError", "AuthorizationError", "BusyError",
+    "ALL", "ALL_ATTACKS", "MODES", "WifiPilotError", "PlatformError", "AuthorizationError", "BusyError",
     "TargetError", "CampaignError", "Run", "ScanResult", "CampaignResult",
     "configure", "config", "demo", "authorize", "set_provider", "providers", "advisor_status",
     "scan", "attack", "crack", "analyze", "export", "suggest_masks", "loot", "report",
@@ -68,17 +69,21 @@ __all__ = [
 #: builtin ``all``, so ``wp.attack(target=all)`` does what it looks like it does)
 ALL = "all"
 
+#: every attack this build ships, best first.  The order comes from the attack
+#: registry itself, so a new attack is never silently missing from ``"force"``.
+ALL_ATTACKS: List[str] = list(registry_order)
+
 #: how much a run is allowed to disturb the neighbourhood
 MODES: Dict[str, Dict[str, Any]] = {
     # name        loud, disruptive, everything that is off by default is turned on
-    "force": {"stealth": False, "wps_pin": True, "attacks": None},
+    "force": {"stealth": False, "wps_pin": True, "attacks": list(ALL_ATTACKS)},
     # the tool's own defaults: handsake/PMKID/WPS-pixie/WEP, no online PIN attack
     "default": {"stealth": False, "wps_pin": False, "attacks": None},
     # listen-only: passive capture + offline cracking, no deauth, no online PIN
     "stealth": {"stealth": True, "wps_pin": False, "attacks": None},
     # strictly passive: capture what the neighbourhood volunteers, never transmit
     "passive": {"stealth": True, "wps_pin": False,
-                "attacks": ["passive", "pmkid", "handshake", "crack"]},
+                "attacks": ["passive", "pmf_audit", "pmkid", "handshake", "crack"]},
     # grab a handshake/PMKID as fast as possible and crack it offline
     "quick": {"stealth": False, "wps_pin": False,
               "attacks": ["pmkid", "handshake", "crack"]},
@@ -689,8 +694,9 @@ def attack(target: Any = ALL, mode: str = "force", duration: Union[float, str] =
     :class:`~wifipilot.models.AccessPoint` objects.
 
     ``mode`` decides how intrusive the run is (see :data:`MODES`).  The default,
-    ``"force"``, is the loud one: deauthentications plus the online WPS PIN
-    attack, which can lock an access point's WPS for good.  Use ``"stealth"``
+    ``"force"``, is the loud one: every attack this build ships, including the
+    deauth flood, the twin, the active PMKID hunt and the online WPS PIN attack
+    (which can lock an access point's WPS for good).  Use ``"stealth"``
     for listen-only, ``"quick"`` for handshake/PMKID only.
 
     Live runs need :func:`authorize` first (or ``authorized=True``); without it

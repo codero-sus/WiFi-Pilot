@@ -158,6 +158,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_attack.add_argument("--no-scan", action="store_true", help="skip the discovery phase")
     p_attack.add_argument("--client", default="",
                           help="deauthenticate this station only (handshake attack)")
+    p_attack.add_argument("--twin-interface", default="",
+                          help="interface the evil twin serves on (default: the monitor "
+                               "interface; a second radio keeps the capture running)")
     p_attack.add_argument("--skip-crack", action="store_true",
                           help="capture only, do not run the cracker")
 
@@ -488,6 +491,8 @@ def apply_cli_config(args: argparse.Namespace) -> Config:
         config.pmk_cache = False
     if getattr(args, "client", ""):
         config.client_mac = mac_norm(args.client) or ""
+    if getattr(args, "twin_interface", ""):
+        config.twin_interface = args.twin_interface
     if config.attacks and "wps_pin" in config.attacks and not args.wps_pin:
         # only when the operator asked for it explicitly (or via the config file)
         pass
