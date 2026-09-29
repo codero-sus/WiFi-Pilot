@@ -184,7 +184,8 @@ def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
     enabled = [a for a in config.attacks if a in PLANNER_ACTIONS]
     caps = registry.capabilities() if not config.demo else {k: True for k in (
         "aircrack", "airodump", "deauth", "monitor", "wps", "wash", "pmkid",
-        "hcxtools", "hashcat", "john", "iw", "nmcli", "root")}
+        "hcxtools", "hashcat", "john", "iw", "nmcli", "root", "mdk4", "hostapd",
+        "twin")}
     out: List[str] = []
 
     def allow(name: str) -> bool:
@@ -207,6 +208,22 @@ def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
             return False
         if name == "tracker" and not caps.get("airodump"):
             return False
+        if name in ("saewolf", "pmf_audit") and not caps.get("airodump"):
+            # both are read-only, but they still need the capture stack
+            return False
+        if name == "pmkid_flood" and not (caps.get("airodump") and caps.get("deauth")):
+            return False
+        if name.startswith("wep_") and name != "wep_ivs":
+            # every additional WEP technique needs injection on top of the capture
+            if not (caps.get("airodump") and caps.get("deauth")):
+                return False
+        if name == "evil_twin":
+            if config.stealth or not caps.get("twin"):
+                return False
+        if name in ("deauth_flood", "beacon_flood"):
+            # a flood is a deliberate denial of service: never in stealth mode
+            if config.stealth or not caps.get("mdk4"):
+                return False
         if name == "rogue_radius":
             # a rogue RADIUS needs one of the impersonation tools; without them the
             # read-only enterprise survey is what is left
@@ -223,6 +240,9 @@ def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
     if (ap.has_handshake or ap.has_pmkid) and not config.skip_crack:
         out.append("crack")
     # read-only surveys change what we know, so they run before anything noisy
+    if allow("pmf_audit") and not ap.pmf_checked:
+        # which classic attacks are still possible on this AP?  known before we try
+        out.append("pmf_audit")
     if attackable_hidden(ap) and allow("hidden_ssid"):
         out.append("hidden_ssid")
     # following a station is read-only and decides which name is worth impersonating,
@@ -239,22 +259,54 @@ def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
         if allow("rogue_radius") and not config.stealth:
             out.append("rogue_radius")
         return _prune(out, ap)      # there is no PSK here to grab or crack
-    if ap.encryption == "WEP" and allow("wep_ivs"):
-        out.append("wep_ivs")
+    if ap.encryption == "WEP":
+        # the harvest first: it is the attack that actually recovers the key
+        if allow("wep_ivs"):
+            out.append("wep_ivs")
+        # then the techniques that get an idle network moving again
+        if allow("wep_p0841"):
+            out.append("wep_p0841")
+        if not ap.clients:
+            if allow("wep_chopchop"):
+                out.append("wep_chopchop")
+            if allow("wep_fragment"):
+                out.append("wep_fragment")
+        elif allow("wep_hirte"):
+            out.append("wep_hirte")
     if ap.wps and ap.wps_open:
         if allow("wps_pixie"):
             out.append("wps_pixie")
         if allow("wps_pin") and not config.stealth:
             out.append("wps_pin")
+    if ap.encryption == "WPA3" and ap.sae:
+        # a WPA3-only network is not cracked with a deauth: it is captured and audited
+        if allow("saewolf") and not ap.sai:
+            out.append("saewolf")
+        return _prune(out, ap)
     if ap.encryption in ("WPA", "WPA2", "WPA2/WPA3"):
+        if allow("saewolf") and ap.sae:
+            # transition mode: the SAE half is worth a capture for the report
+            out.append("saewolf")
         if not ap.clients and allow("pmkid") and not ap.has_pmkid:
             out.append("pmkid")
+        if (ap.clients and allow("pmkid_flood") and not ap.has_pmkid
+                and not config.stealth and not ap.sae):
+            # a whisper-quiet AP still answers M1 if we make its clients reconnect
+            out.append("pmkid_flood")
         if allow("handshake") and not ap.has_handshake and not (ap.sae and not ap.sai):
             out.append("handshake")
         elif not ap.clients and allow("pmkid") and not ap.has_pmkid:
             out.append("pmkid")
     if config.stealth and allow("passive") and not ap.has_handshake and not ap.has_pmkid:
         out.append("passive")
+    # the twin is a *lure*, not a capture: it goes last, after everything quiet has
+    # been tried, and only when the operator asked for it
+    if allow("evil_twin") and not ap.cracked and (ap.essid or "").strip():
+        out.append("evil_twin")
+    if allow("deauth_flood") and not config.stealth:
+        out.append("deauth_flood")
+    if allow("beacon_flood") and not config.stealth:
+        out.append("beacon_flood")
 
     return _prune(out, ap)
 
@@ -377,6 +429,34 @@ def validate_plan(raw: Any, session: Session, config: Optional[Config] = None,
         if attack == "crack" and not (ap.has_handshake or ap.has_pmkid):
             dropped.append(f"{bssid}: nothing captured yet, cannot crack")
             continue
+        if attack in ("wep_p0841", "wep_chopchop", "wep_fragment", "wep_hirte",
+                       "wep_ivs") and ap.encryption != "WEP":
+            dropped.append(f"{bssid}: {attack} only applies to WEP")
+            continue
+        if attack == "saewolf" and not (ap.sae or "WPA3" in (ap.encryption or "")):
+            dropped.append(f"{bssid}: not a WPA3 network, there is no SAE exchange")
+            continue
+        if attack == "pmkid_flood" and ap.encryption in ("OPEN", "OWE", "WEP", "WPA3"):
+            dropped.append(f"{bssid}: no PSK PMKID to force on {ap.encryption}")
+            continue
+        if attack in ("deauth_flood", "beacon_flood"):
+            if config.stealth:
+                dropped.append(f"{bssid}: {attack} is a denial of service; "
+                               f"stealth mode is on")
+                continue
+            if ap.cracked and attack == "deauth_flood":
+                dropped.append(f"{bssid}: already cracked, no reason to disconnect it")
+                continue
+        if attack == "evil_twin":
+            if (ap.auth or "").upper() in ("MGT", "802.1X", "ENTERPRISE"):
+                dropped.append(f"{bssid}: 802.1X clients need rogue_radius, not a PSK twin")
+                continue
+            if not (ap.essid or "").strip():
+                dropped.append(f"{bssid}: hidden network, a twin needs a name to serve")
+                continue
+            if config.stealth:
+                dropped.append(f"{bssid}: the twin transmits; stealth mode is on")
+                continue
         if attack == "wps_pin" and config.stealth:
             dropped.append(f"{bssid}: online PIN brute force disabled in stealth mode")
             continue
@@ -455,4 +535,24 @@ def explain_failure(attempt: Dict[str, Any], ap: Optional[AccessPoint]) -> str:
         return "candidate space exhausted: try a bigger wordlist or a mask attack"
     if attack == "wep_ivs":
         return "not enough ARP traffic to harvest IVs (weak injection or idle network)"
+    if attack in ("wep_chopchop", "wep_fragment", "wep_hirte"):
+        return ("no packet to work with: the technique needs traffic in the air and a "
+                "working injection (run `aireplay-ng -9` first)")
+    if attack == "wep_p0841":
+        return ("the injected ARP was not accepted: the AP may filter broadcast ARP, or "
+                "the card cannot inject (try --arpreplay once a real ARP packet exists)")
+    if attack == "saewolf":
+        return ("no client authenticated during the window: SAE needs a live "
+                "commit/confirm exchange to capture (and cannot be cracked offline)")
+    if attack == "pmf_audit":
+        return "no beacons or captures to read: the RSN elements were not in reach"
+    if attack == "pmkid_flood":
+        return ("the AP never sent a PMKID KDE, even with a client reconnecting: this "
+                "firmware disables it, and the handshake is the way in")
+    if attack == "evil_twin":
+        return ("no client tried the twin: either nothing was in range, or the client "
+                "has the real BSSID cached and stayed with it")
+    if attack in ("deauth_flood", "beacon_flood"):
+        return ("the flood produced no output: mdk4 did not start, or the monitor "
+                "interface is not on the target's channel")
     return attempt.get("detail", "attack did not succeed")

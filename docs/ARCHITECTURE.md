@@ -262,11 +262,11 @@ against the PMKID or the EAPOL MIC.
 
 ## 15. Non-transmitting intelligence (and the PMK cache)
 
-Four of wifipilot's attacks never touch the radio in a way anyone can complain
+Six of wifipilot's attacks never touch the radio in a way anyone can complain
 about, and they share one idea: *the information is already on air or already on
-disk, and reading it changes what the engagement knows*.  (The rogue RADIUS in the
-next section is the deliberate exception: it is the one that asks the question the
-read-only tools can only imply.)
+disk, and reading it changes what the engagement knows*.  (The rogue infrastructure in
+the next section is the deliberate exception: those ask the question the read-only
+tools can only imply.)
 
 * **`hidden_ssid`** (`attacks/hidden.py`) — a hidden AP omits its SSID from beacons,
   not from probe responses, association requests or the handshake. The attack watches
@@ -286,6 +286,19 @@ read-only tools can only imply.)
   (its real preferred network list), the BSSIDs it uses, and its signal trend, with the
   raw samples written to loot. It answers "which name is worth impersonating" before
   anything transmits.
+* **`pmf_audit`** (`attacks/wpa3.py`, `wpa3.py`) — airodump's CSV does not carry the RSN
+  capabilities bits, so the attack reads the beacons themselves and decodes MFPC (bit 5)
+  and MFPR (bit 4). Its output is a list of *what is still possible*: no required PMF,
+  transition mode, OWE transition. Each finding is raised once per session by
+  `_add_finding_once`, because reading the whole neighbourhood in one pass must not
+  report the same neighbour eleven times, and each AP it reads is marked
+  `pmf_checked` so the planner schedules it exactly once.
+* **`saewolf`** (`attacks/wpa3.py`, `wpa3.py`) — captures the SAE commit/confirm
+  exchange and reports the group, whether it completed, and whether the network also
+  advertises PSK. The decoder walks the authentication frames itself (an authentication
+  frame's body starts at header + 24, not at the beacon payload offset a naive reader
+  would use) and the result carries `feasible_offline_attack: False`, because SAE is a
+  PAKE: there is no offline attack, and a tool that implies otherwise is lying.
 
 `pcap.iter_frames()` was added for these readers: a stateless, cache-free walk that
 yields 802.11 frames with the radiotap header already skipped, so the analysis modules
@@ -309,10 +322,37 @@ two-half attack against 10⁷ for a blind sweep.
 
 ## 16. The radio is a last resort
 
-Two of the attacks added after the first release make the same point from opposite
-ends: `enterprise` reads the certificate, `rogue_radius` tests whether anybody checks
-it. Both are 802.1X, and both exist because "we captured an enterprise handshake" says
-nothing about whether the network is impersonable.
+The attacks that transmit do so deliberately, one at a time, and each one stops itself.
+Four of them make the same point from different ends: `enterprise` reads the
+certificate, `rogue_radius` tests whether anybody checks it, `evil_twin` asks whether
+clients prefer the SSID to the real BSSID, and the WEP enablers do the minimum needed
+to make the harvest possible. All of them exist because "we captured a handshake" says
+nothing about whether the network is reachable.
+
+`evil_twin` (`attacks/twin.py`) generates a hostapd config in the session directory
+(the target's SSID on `config.twin_interface` or the monitor interface), runs
+`hostapd-mana` when it is installed and `hostapd` otherwise, and watches the tool's own
+output for `AP-STA-CONNECTED` lines. Two outcomes are reported differently on purpose:
+with the PSK already known (it was cracked earlier in the engagement) the twin is a
+*working* access point and the finding is high severity — the network can be replaced;
+without it, clients still try, the 4-way handshake fails, and the measurement is the
+list of stations that preferred the SSID, at medium severity. The module never claims a
+password it did not get, and the process is stopped in a `finally` block.
+
+`wep.py` is a family of five rather than one attack: `wep_ivs` and `wep_p0841` can reach
+the key on their own (the second injects its own ARP so a silent network still yields
+IVs), while `wep_chopchop`, `wep_fragment` and `wep_hirte` recover keystream and are
+reported as *enablers* — `stats.wep_enablers` counts them separately from
+`stats.wep_cracks`, and the attempt carries `enables: wep_ivs` as the next step.
+`wep_p0841` is the one that reuses the harvest loop with different aireplay arguments
+(`_aireplay_command`), which is why the "does it need a client" question is a class
+attribute (`uses_client`) instead of a conditional.
+
+The two floods (`attacks/flood.py`) are denial of service by construction, so they are
+capped twice — the class caps at 60 s (`deauth_flood`) and 45 s (`beacon_flood`), and
+the planner refuses them entirely in stealth mode. Their deliverable is a finding about
+the *environment* (is 802.11w/WIDS really deployed?), never a password, and the log
+warning before they start says exactly what they will do to the network.
 
 The matching decoder lives in `sniff.py` (`eap_exchange`, `x509_name`) and works on
 any capture: EAP type codes, the clear-text outer identity, and a small DER walker

@@ -120,7 +120,10 @@ class AttackContext:
         if self.config.stealth:
             self.log("stealth mode: skipping deauthentication", level="debug")
             return 0
-        if "handshake" not in self.config.attacks and "wep_ivs" not in self.config.attacks:
+        # only transmit a deauth when an attack that is meant to use one is enabled:
+        # nothing here should ever be able to deauthenticate on its own
+        if not ({"handshake", "wep_ivs", "pmkid_flood", "evil_twin", "deauth_flood"}
+                & set(self.config.attacks)):
             return 0
         count = count or self.config.deauth_count
         client = mac_norm(client)

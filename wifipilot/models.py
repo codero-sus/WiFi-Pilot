@@ -29,6 +29,16 @@ ATTACK_NAMES = (
     "enterprise",     # 802.1X survey: method, identity, server certificate
     "rogue_radius",   # impersonate the AP: will a client trust any certificate?
     "tracker",        # follow one station: its real PNL, its signal trend
+    "saewolf",        # WPA3 SAE capture + transition-mode analysis
+    "pmf_audit",      # RSN/PMF audit: which classic attacks are still possible
+    "evil_twin",      # serve the SSID ourselves and see who prefers it
+    "deauth_flood",   # denial-of-service / WIDS detection test
+    "beacon_flood",   # beacon-flood / WIDS detection test
+    "pmkid_flood",    # active PMKID hunt: deauth to force M1 with a PMKID
+    "wep_chopchop",   # KoreK chopchop: keystream without the key
+    "wep_fragment",   # fragmentation attack: PRGA for injection
+    "wep_hirte",      # client-oriented fragmentation
+    "wep_p0841",      # injected ARP (P0841) so the IV harvest can run
     "passive",        # listen only, never transmit
 )
 
@@ -109,6 +119,7 @@ class AccessPoint:
     pmf: bool = False              # 802.11w management frame protection
     sae: bool = False              # WPA3-SAE
     sai: bool = False              # WPA3 transition mode indicator
+    pmf_checked: bool = False      # the RSN/PMF audit has read this AP's elements
     hidden: bool = False
     beacon_count: int = 0
     data_count: int = 0
@@ -196,22 +207,50 @@ class AccessPoint:
         return list(self.clients.values())
 
     def attackable(self, enabled: Optional[List[str]] = None) -> List[str]:
-        """Which attack primitives make sense for this AP."""
+        """Which attack primitives make sense for this AP, best first.
+
+        This is the *advisory* list shown next to a target (and in the report),
+        ordered the way the planner would run them: read-only surveys first, the
+        attacks that need no client before the ones that do, and the disruptive
+        ones last.
+        """
         enabled = enabled or list(ATTACK_NAMES)
         out: List[str] = []
+
+        def add(name: str, when: bool = True) -> None:
+            if when and name in enabled and name not in out:
+                out.append(name)
+
+        # read-only: these change what we know and transmit nothing
+        add("pmf_audit")
+        add("hidden_ssid", not (self.essid or "").strip())
+        add("tracker", bool(self.clients))
+        add("rogue_ap")
+        enterprise = (self.encryption in ("WPA-ENTERPRISE", "WPA2-ENTERPRISE",
+                                          "ENTERPRISE")
+                      or (self.auth or "").upper() in ("MGT", "802.1X", "ENTERPRISE"))
+        add("enterprise", enterprise)
+        add("rogue_radius", enterprise)
+        add("saewolf", bool(self.sae or "WPA3" in (self.encryption or "")))
+        # capture
         if self.encryption in ("WPA", "WPA2", "WPA2/WPA3", "WPA3"):
-            if "pmkid" in enabled:
-                out.append("pmkid")
-            if "handshake" in enabled and not self.sae:
-                out.append("handshake")
-        if self.wps and self.wps_open and "wps_pixie" in enabled:
-            out.append("wps_pixie")
-            if "wps_pin" in enabled:
-                out.append("wps_pin")
-        if self.encryption == "WEP" and "wep_ivs" in enabled:
-            out.append("wep_ivs")
-        if "passive" in enabled:
-            out.append("passive")
+            add("pmkid", not self.has_pmkid)
+            add("pmkid_flood", bool(self.clients) and not self.has_pmkid)
+            add("handshake", not self.sae and not self.has_handshake)
+        if self.wps and self.wps_open:
+            add("wps_pixie")
+            add("wps_pin")
+        if self.encryption == "WEP":
+            add("wep_ivs")
+            add("wep_p0841")
+            add("wep_chopchop", not self.clients)
+            add("wep_fragment", not self.clients)
+            add("wep_hirte", bool(self.clients))
+        # rogue infrastructure and the denial-of-service tests, last
+        add("evil_twin", bool((self.essid or "").strip()) and not enterprise)
+        add("deauth_flood")
+        add("beacon_flood")
+        add("passive")
         return out
 
     def add_client(self, client: Client) -> bool:
@@ -314,6 +353,7 @@ class AccessPoint:
             "pmf": self.pmf,
             "sae": self.sae,
             "sai": self.sai,
+            "pmf_checked": self.pmf_checked,
             "hidden": self.hidden,
             "vendor": self.vendor,
             "clients": len(self.clients),
@@ -496,6 +536,11 @@ class SessionStats:
     rogue_twins: int = 0               # twin/rogue patterns reported
     enterprise_surveys: int = 0        # 802.1X exchanges captured
     rogue_radius: int = 0              # rogue-RADIUS attempts that reached a client
+    sae_captures: int = 0              # SAE exchanges captured for the report
+    pmf_audits: int = 0                # RSN/PMF audits run
+    twins_run: int = 0                 # evil twins that lured at least one station
+    floods_run: int = 0                # denial-of-service tests run
+    wep_enablers: int = 0              # WEP injection techniques that succeeded
     stations_tracked: int = 0          # stations followed for a signal trend
     probing_clients: int = 0           # clients whose PNL was read out of a capture
     pmk_hits: int = 0                  # captures "cracked" from the PMK cache

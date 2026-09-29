@@ -32,7 +32,8 @@ from .demo import DemoRadio
 from .deps import registry
 from .events import EK, EventBus
 from .iface import InterfaceError, InterfaceManager
-from .models import STATUS_FAILED, STATUS_RUNNING, AccessPoint, Attempt, Capture
+from .models import (STATUS_FAILED, STATUS_RUNNING, STATUS_SKIPPED, AccessPoint,
+                      Attempt, Capture)
 from .planner import Plan, heuristic_plan, preferred_attacks, should_replan
 from .scanner import Scanner
 from .session import Session
@@ -513,6 +514,13 @@ class Engine:
         self.session.attacking = False
         self.status.phase = "idle"
         attempt = self.debug_last_attempt()
+        if (outcome is not None and attempt is not None
+                and attempt.status == STATUS_RUNNING):
+            # an attack that decided not to act (already captured, nothing to do,
+            # no client around) must still close its attempt record: otherwise the
+            # UI shows an attack running forever
+            self.session.end_attempt(attempt, STATUS_SKIPPED,
+                                     outcome.result or "skipped", outcome.detail)
         if outcome is not None and outcome.extra and attempt is not None:
             # structured results (a survey's twins, a PIN plan) belong on the
             # attempt record, not only in the log line

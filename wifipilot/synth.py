@@ -159,8 +159,14 @@ def write_pcap(path: str, frames: List[bytes], spacing: float = 0.001) -> str:
     return str(target)
 
 
-def build_beacon(ssid: str, bssid: str, channel: int = 6, include_rsn: bool = True) -> bytes:
-    """A well-formed 802.11 beacon, for capture-shape benchmarks and tests."""
+def build_beacon(ssid: str, bssid: str, channel: int = 6, include_rsn: bool = True,
+                 akm: str = "psk", pmf: bool = False) -> bytes:
+    """A well-formed 802.11 beacon, for capture-shape benchmarks and tests.
+
+    ``akm`` selects the AKM suites in the RSN element (``psk``, ``sae``,
+    ``sae+psk`` for transition mode, ``owe``, ``802.1x``) and ``pmf`` sets the
+    MFPC/MFPR bits, because the WPA3 audit reads exactly those two fields.
+    """
     ap = _mac(bssid)
     ssid_bytes = ssid.encode()[:32]
     body = (b"\x80\x00\x00\x00" + b"\xff" * 6 + ap + ap + b"\x00\x00"
@@ -171,8 +177,7 @@ def build_beacon(ssid: str, bssid: str, channel: int = 6, include_rsn: bool = Tr
         body += b"\x00" + bytes([len(ssid_bytes)]) + ssid_bytes
         body += b"\x01\x08\x82\x84\x8b\x96\x0c\x12\x18\x24"    # rates
         body += b"\x03\x01" + bytes([channel])                          # DS parameter
-        body += (b"\x30\x14\x01\x00\x00\x0f\xac\x04\x01\x00\x00\x0f\xac\x04"
-                 b"\x01\x00\x00\x0f\xac\x02\x00\x00")               # RSN
+        body += rsn_element(akm, pmf=pmf)
     else:
         body += b"\x00\x00"                                            # hidden SSID
     return body
@@ -210,6 +215,74 @@ def build_deauth_flood(bssid: str, rounds: int = 40, broadcast: bool = True) -> 
         frames.append(build_deauth(bssid, "ff:ff:ff:ff:ff:ff" if broadcast
                                    else random_mac(locally_administered=True)))
     return frames
+
+
+#: AKM suite selector bytes (little-endian 4-byte selectors 00-0f-ac-XX)
+_AKM_CODES = {"802.1x": 1, "psk": 2, "ft-802.1x": 3, "ft-psk": 4, "psk-sha256": 6,
+              "sae": 8, "ft-sae": 9, "owe": 18, "sae-ext": 24}
+
+
+def rsn_element(akm: str = "psk", pmf: bool = False, pairwise: int = 4,
+                group: int = 4) -> bytes:
+    """An RSN information element (tag 48) with the AKM list and PMF bits.
+
+    ``akm="sae+psk"`` builds the transition-mode element that makes a "WPA3" network
+    still reachable through its WPA2 path — the thing the WPA3 audit looks for.
+    """
+    suites: List[int] = []
+    for name in str(akm).replace("/", "+").split("+"):
+        code = _AKM_CODES.get(name.strip().lower())
+        if code is not None and code not in suites:
+            suites.append(code)
+    if not suites:
+        suites = [2]
+    capabilities = 0
+    if pmf:
+        capabilities = 0x0030                     # MFPC (bit 5) + MFPR (bit 4)
+    body = (bytes([1, 0])                          # RSN version 1
+            + bytes([group, 0, 0, 0])              # group cipher: CCMP
+            + bytes([1, 0]) + bytes([pairwise, 0, 0, 0])
+            + bytes([len(suites), 0])
+            + b"".join(bytes([code, 0, 0, 0]) for code in suites)
+            + struct.pack("<H", capabilities))
+    return bytes([48, len(body)]) + body
+
+
+def build_sae_commit(bssid: str, station: str, group: int = 19, scalar: bytes = b"",
+                     element: bytes = b"", status: int = 0) -> bytes:
+    """An SAE commit frame (802.11 auth, algorithm 3, transaction 1).
+
+    The commit carries the *group* in its status field and a fixed-size scalar and
+    element; nothing in it can be checked against a password guess offline, which is
+    the whole point of a PAKE.
+    """
+    scalar = scalar or bytes((index * 7 + 3) % 256 for index in range(32))
+    element = element or bytes((index * 11 + 5) % 256 for index in range(64))
+    body = struct.pack("<HHH", 3, 1, group if not status else status)
+    body += scalar + element
+    return (b"\xb0\x00\x00\x00" + _mac(bssid) + _mac(station) + _mac(bssid)
+            + b"\x00\x00" + body)
+
+
+def build_sae_confirm(bssid: str, station: str, status: int = 0) -> bytes:
+    """An SAE confirm frame (802.11 auth, algorithm 3, transaction 2)."""
+    body = struct.pack("<HHH", 3, 2, status) + bytes((index * 13 + 7) % 256
+                                                     for index in range(32))
+    return (b"\xb0\x00\x00\x00" + _mac(bssid) + _mac(station) + _mac(bssid)
+            + b"\x00\x00" + body)
+
+
+def build_wpa3_capture(path: str, essid: str = "Vodafone-9C31",
+                       bssid: str = "f0:63:da:4a:c1:f5",
+                       station: str = "02:00:00:00:00:31", akm: str = "sae",
+                       pmf: bool = True, group: int = 19) -> Tuple[str, List[bytes]]:
+    """A WPA3 beacon plus a complete SAE commit/confirm exchange."""
+    frames = [build_beacon(essid, bssid, channel=100, akm=akm, pmf=pmf),
+              build_sae_commit(bssid, station, group=group),
+              build_sae_confirm(bssid, station),
+              build_sae_commit(bssid, station, group=group)]
+    write_pcap(path, frames, spacing=0.01)
+    return str(path), frames
 
 
 def self_signed_certificate(common_name: str = "radius.lab.local",

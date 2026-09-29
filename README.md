@@ -174,6 +174,20 @@ aircrack-ng suite properly) and rebuilds everything around it:
 - **Station tracking** — point wifipilot at one device and it reports the networks the
   device actually probes for (its real PNL), the APs it associates with, and its
   signal trend as you move. Read-only, and scheduled before anything noisy.
+- **WPA3 answered honestly** — `saewolf` captures the SAE exchange and reads it (group,
+  completeness, transition mode) while `pmf_audit` decodes the MFPC/MFPR bits and says
+  which classic attacks are still possible. No offline attack on SAE exists, so none is
+  simulated: the deliverable is the configuration finding.
+- **The WEP family of five** — the harvest plus the four injection techniques that make
+  it possible on a quiet network (P0841, chopchop, fragmentation, client-oriented
+  fragmentation), each reported as capability or key recovery as appropriate.
+- **An active PMKID hunt** — `pmkid_flood` deauthenticates until M1 carrying a PMKID
+  arrives, so a quiet AP becomes an answer instead of a timeout.
+- **Rogue infrastructure** — `evil_twin` (hostapd-mana/hostapd) measures which stations
+  prefer the SSID; `rogue_radius` tests the certificate policy. Both stop themselves.
+- **Denial-of-service *detection* tests** — `deauth_flood`/`beacon_flood`, capped at 60 s
+  and 45 s, whose only deliverable is whether the site's monitoring notices (and, for
+  the deauth flood, whether 802.11w is real).
 
 ## Install
 
@@ -194,6 +208,10 @@ External tools (install what you need — `wifipilot tools` tells you exactly wh
 sudo apt install aircrack-ng reaver bully pixiewps hcxtools hashcat iw rfkill
 # Arch
 sudo pacman -S aircrack-ng reaver bully pixiewps hcxtools hashcat iw rfkill
+# optional, one attack family each
+sudo apt install mdk4          # deauth_flood / beacon_flood
+sudo apt install hostapd       # evil_twin (hostapd-mana is better: it answers probes)
+sudo apt install wpasupplicant # client-side checks
 ```
 
 Minimum for a live run: `aircrack-ng` (provides `airmon-ng`, `airodump-ng`, `aireplay-ng`).
@@ -229,7 +247,7 @@ import wifipilot as wp
 # rehearse the whole pipeline with no radio and no risk
 wp.attack(target=all, mode="force", demo=True, duration="2m")
 
-# a real, authorised engagement; "force" is loud, "stealth" is listen-only
+# a real, authorised engagement; "force" runs all 21 attacks, "stealth" is listen-only
 wp.authorize("change ticket CHG-4711, client ACME Labs")
 result = wp.attack(target="Cafe Guest", mode="default", duration="45m",
                    on_event=lambda event: print(event.kind, event.data))
@@ -384,7 +402,17 @@ failure — is in [docs/ATTACKS.md](docs/ATTACKS.md). The short version:
 | `handshake` | airodump-ng + aireplay-ng | **yes** (deauth) | needs a client; fails vs WPA3-SAE/PMF |
 | `wps_pixie` | reaver `-K 1` / bully `--pixiewps` | mildly | usually <60 s on vulnerable chipsets |
 | `wps_pin` | reaver / bully | **yes, slow** | opt-in only; can lock WPS permanently |
+| `pmkid_flood` | airodump-ng + aireplay-ng deauth | **yes** (repeated deauth) | the active PMKID hunt: force a quiet client to reconnect so M1 with the PMKID is sent. Stops the moment one lands; "AP never sent the KDE" is itself the answer |
 | `wep_ivs` | airodump-ng + aireplay `--arpreplay` | yes | legacy networks |
+| `wep_p0841` | aireplay-ng `-2 -p 0841` | yes | injects its own ARP, so the IV harvest runs on a network where no client is talking |
+| `wep_chopchop` | aireplay-ng `-4` | yes | keystream from one packet, no client needed — this is an **enabler**, not a key recovery |
+| `wep_fragment` | aireplay-ng `-5` | yes | the fast fragmentation variant of the same idea |
+| `wep_hirte` | aireplay-ng `-7` | yes | client-oriented fragmentation: keystream from a client's traffic when the AP will not answer |
+| `saewolf` | airodump-ng + own SAE decoder | **no** | captures the WPA3 SAE commit/confirm exchange and reports the group, whether it completed, and whether the WPA2 path is still advertised. SAE cannot be cracked offline and this attack never claims otherwise |
+| `pmf_audit` | wifipilot (offline RSN decoder) | **no** | reads the MFPC/MFPR bits airodump's CSV does not carry and says which classic attacks are still possible: no required PMF, transition mode, OWE transition |
+| `evil_twin` | hostapd-mana / hostapd | **yes** (impersonation) | serves the target SSID and measures who prefers it. With the PSK known the network can be *replaced* (high); otherwise the finding is the list of stations that tried |
+| `deauth_flood` | mdk4 `d` | **yes, heavily** | ≤60 s denial-of-service *detection test*: is 802.11w/WIDS really deployed, or only documented? |
+| `beacon_flood` | mdk4 `b` | **yes, heavily** | ≤45 s beacon flood; the finding is whether the site notices |
 | `hidden_ssid` | airodump-ng | **no** | names a hidden network from probe responses, associations or the handshake; `--reveal-with-probe` sends the one directed probe |
 | `rogue_ap` | wifipilot (offline) | **no** | compares every ESSID against its BSSIDs, vendors and signal spread, and against the names clients are probing for — reports twins as a *pattern*, never as an accusation |
 | `enterprise` | airodump-ng | no | 802.1X survey: EAP method, outer identity, server certificate — all decoded offline; identical subject/issuer means self-signed, i.e. impersonable. There is no PSK to crack |
@@ -392,9 +420,11 @@ failure — is in [docs/ATTACKS.md](docs/ATTACKS.md). The short version:
 | `tracker` | airodump-ng (listen-only) | no | Follow one station: the SSIDs it really probes for, the BSSIDs it associates with, and its signal trend as you walk. Decides which name is worth impersonating, before anything transmits |
 | `passive` | airodump-ng | no | listen-only; harvests what is on air |
 
-Only `hidden_ssid --reveal-with-probe`, `rogue_radius` and the classic attacks
-transmit anything; `rogue_ap`, `enterprise` and `tracker` are pure analysis and need
-no authorisation for the part that listens. `rogue_radius` is the opposite end of the
+Only `hidden_ssid --reveal-with-probe`, `rogue_radius`, `evil_twin`, the two floods and
+the classic attacks transmit anything; `rogue_ap`, `enterprise`, `tracker`, `saewolf`
+and `pmf_audit` are pure analysis and need no authorisation for the part that listens.
+`saewolf`/`pmf_audit` are the WPA3 story: capture the SAE exchange and read it, then say
+in plain words that the WPA2 transition path — not the SAE exchange — is the way in. `rogue_radius` is the opposite end of the
 same idea as `enterprise`: one reads the certificate, the other tests whether anybody
 checks it.
 
@@ -804,9 +834,11 @@ and stops rather than burning hours; `wps_pin` is off by default for exactly thi
 
 ## Roadmap
 
-- [ ] WPA3-SAE dictionary/transition-mode attacks where legitimate tooling exists
+- [x] WPA3: SAE capture + transition-mode/PMF audit (`saewolf`, `pmf_audit`) — there is
+      still no dictionary attack on SAE, and the docs say so
+- [x] Evil twin (`evil_twin`) and the capped denial-of-service detection tests
 - [x] Enterprise (802.1X) capture + identity harvesting (passive survey — see `attacks/enterprise.py`)
-- [ ] Rogue RADIUS/hostapd-mana driven credential capture for authorised 802.1X engagements
+- [x] Rogue RADIUS/hostapd-mana driven credential capture for authorised 802.1X engagements
 - [ ] Multi-adapter support (dedicated deauth + capture radios)
 - [ ] Attack scheduling by time window, and a "resume session" flag
 - [ ] Landscape/PDF report templates for client deliverables

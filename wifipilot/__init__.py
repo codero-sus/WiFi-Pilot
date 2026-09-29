@@ -37,7 +37,8 @@ __version__ = "0.1.0"
 __all__ = [
     "__version__", "TOOL_NAME", "LEGAL_NOTICE",
     # scriptable API
-    "ALL", "MODES", "WifiPilotError", "PlatformError", "AuthorizationError", "BusyError",
+    "ALL", "ALL_ATTACKS", "MODES", "WifiPilotError", "PlatformError", "AuthorizationError",
+    "BusyError",
     "TargetError", "Run", "ScanResult", "CampaignResult",
     "configure", "config", "demo", "authorize", "set_provider", "providers",
     "advisor_status", "scan", "attack", "crack", "analyze", "export", "suggest_masks",
@@ -72,7 +73,7 @@ maintenance window and a named authorising party.
 # eager: pure stdlib, no side effects, and the whole point of the package is
 # that `import wifipilot as wp` gives you something to call.
 from .api import (  # noqa: E402  (import at the end: api.py imports config/models)
-    ALL, MODES, AuthorizationError, BusyError, CampaignResult, PlatformError, Run,
+    ALL, ALL_ATTACKS, MODES, AuthorizationError, BusyError, CampaignResult, PlatformError, Run,
     ScanResult, TargetError, WifiPilotError, advisor_status, analyze, attack, authorize,
     config, configure, crack, current_run, demo, engine, export, is_running, loot,
     suggest_masks, strategies, targets, select, selected, note, notes, tag, history,

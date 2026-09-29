@@ -23,6 +23,9 @@ tool_pkgs=(
   "rfkill:rfkill"
   "ethtool:ethtool"
   "nmcli:network-manager"
+  # optional, one attack family each
+  "mdk4:mdk4"              # deauth_flood / beacon_flood
+  "hostapd:hostapd"        # evil_twin (hostapd-mana is better when packaged)
 )
 
 missing_tools=()

