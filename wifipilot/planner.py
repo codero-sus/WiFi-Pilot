@@ -186,6 +186,10 @@ def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
         "aircrack", "airodump", "deauth", "monitor", "wps", "wash", "pmkid",
         "hcxtools", "hashcat", "john", "iw", "nmcli", "root", "mdk4", "hostapd",
         "twin")}
+    if config.demo:
+        # the simulated radio also provides the tools that have no package on every
+        # distribution (hostapd-mana is the Karma prerequisite)
+        caps["hostapd-mana"] = True
     out: List[str] = []
 
     def allow(name: str) -> bool:
@@ -220,7 +224,15 @@ def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
         if name == "evil_twin":
             if config.stealth or not caps.get("twin"):
                 return False
-        if name in ("deauth_flood", "beacon_flood"):
+        if name == "karma":
+            # Karma is hostapd-mana or nothing: plain hostapd cannot answer probes
+            if config.stealth or not registry.path("hostapd-mana"):
+                return False
+        if name == "eapol_logoff" and (config.stealth or not caps.get("monitor")):
+            return False
+        if name in ("ie_audit", "pnl_harvest") and not caps.get("airodump"):
+            return False
+        if name in ("deauth_flood", "beacon_flood", "auth_flood", "probe_flood"):
             # a flood is a deliberate denial of service: never in stealth mode
             if config.stealth or not caps.get("mdk4"):
                 return False
@@ -240,9 +252,16 @@ def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
     if (ap.has_handshake or ap.has_pmkid) and not config.skip_crack:
         out.append("crack")
     # read-only surveys change what we know, so they run before anything noisy
+    if allow("ie_audit") and not ap.pmf_checked:
+        # what the AP says about itself: RSN, WPS, HT/VHT, 802.11r — the configuration
+        # findings that decide whether the rest of the plan is worth running
+        out.append("ie_audit")
     if allow("pmf_audit") and not ap.pmf_checked:
         # which classic attacks are still possible on this AP?  known before we try
         out.append("pmf_audit")
+    if allow("pnl_harvest") and not ap.clients:
+        # a quiet target: what are the stations around here asking for?
+        out.append("pnl_harvest")
     if attackable_hidden(ap) and allow("hidden_ssid"):
         out.append("hidden_ssid")
     # following a station is read-only and decides which name is worth impersonating,
@@ -297,14 +316,24 @@ def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
             out.append("handshake")
         elif not ap.clients and allow("pmkid") and not ap.has_pmkid:
             out.append("pmkid")
+        if ap.clients and allow("eapol_logoff") and not ap.pmf and not config.stealth:
+            # a quiet disconnect for the clients a deauth would also move: it never
+            # produces a handshake, so it runs *after* the capture attacks
+            out.append("eapol_logoff")
     if config.stealth and allow("passive") and not ap.has_handshake and not ap.has_pmkid:
         out.append("passive")
     # the twin is a *lure*, not a capture: it goes last, after everything quiet has
     # been tried, and only when the operator asked for it
     if allow("evil_twin") and not ap.cracked and (ap.essid or "").strip():
         out.append("evil_twin")
+    if allow("karma") and not config.stealth:
+        out.append("karma")
     if allow("deauth_flood") and not config.stealth:
         out.append("deauth_flood")
+    if allow("auth_flood") and not config.stealth:
+        out.append("auth_flood")
+    if allow("probe_flood") and not config.stealth:
+        out.append("probe_flood")
     if allow("beacon_flood") and not config.stealth:
         out.append("beacon_flood")
 
@@ -439,14 +468,35 @@ def validate_plan(raw: Any, session: Session, config: Optional[Config] = None,
         if attack == "pmkid_flood" and ap.encryption in ("OPEN", "OWE", "WEP", "WPA3"):
             dropped.append(f"{bssid}: no PSK PMKID to force on {ap.encryption}")
             continue
-        if attack in ("deauth_flood", "beacon_flood"):
+        if attack in ("deauth_flood", "beacon_flood", "auth_flood", "probe_flood"):
             if config.stealth:
                 dropped.append(f"{bssid}: {attack} is a denial of service; "
                                f"stealth mode is on")
                 continue
-            if ap.cracked and attack == "deauth_flood":
-                dropped.append(f"{bssid}: already cracked, no reason to disconnect it")
+            if ap.cracked and attack in ("deauth_flood", "auth_flood"):
+                dropped.append(f"{bssid}: already cracked, no reason to disrupt it")
                 continue
+        if attack == "eapol_logoff":
+            if not ap.clients:
+                dropped.append(f"{bssid}: nobody associated, a Logoff has no target")
+                continue
+            if config.stealth:
+                dropped.append(f"{bssid}: the Logoff transmits; stealth mode is on")
+                continue
+            if ap.pmf:
+                dropped.append(f"{bssid}: the plan asked for a Logoff on a PMF network "
+                               f"— it still works, but say so deliberately")
+                continue
+        if attack == "karma":
+            if config.stealth:
+                dropped.append(f"{bssid}: Karma is an access point; stealth mode is on")
+                continue
+            if (ap.auth or "").upper() in ("MGT", "802.1X", "ENTERPRISE"):
+                dropped.append(f"{bssid}: an 802.1X site needs rogue_radius, not Karma")
+                continue
+        if attack in ("ie_audit", "pnl_harvest"):
+            # read-only: they need no justification beyond being enabled
+            pass
         if attack == "evil_twin":
             if (ap.auth or "").upper() in ("MGT", "802.1X", "ENTERPRISE"):
                 dropped.append(f"{bssid}: 802.1X clients need rogue_radius, not a PSK twin")
@@ -552,7 +602,17 @@ def explain_failure(attempt: Dict[str, Any], ap: Optional[AccessPoint]) -> str:
     if attack == "evil_twin":
         return ("no client tried the twin: either nothing was in range, or the client "
                 "has the real BSSID cached and stayed with it")
-    if attack in ("deauth_flood", "beacon_flood"):
+    if attack in ("deauth_flood", "beacon_flood", "auth_flood", "probe_flood"):
         return ("the flood produced no output: mdk4 did not start, or the monitor "
                 "interface is not on the target's channel")
+    if attack == "eapol_logoff":
+        return ("the Logoff was not accepted: the supplicant ignores it (which is the "
+                "correct client-side behaviour), or the frame never left the card "
+                "(check `aireplay-ng -9`)")
+    if attack == "karma":
+        return ("no station asked for anything: either nothing is probing in range, or "
+                "the interface is not on a channel clients use")
+    if attack in ("ie_audit", "pnl_harvest"):
+        return ("nothing to read: the capture on this target has no beacons/probes — "
+                "run `passive` first, or point the audit at a pcap")
     return attempt.get("detail", "attack did not succeed")

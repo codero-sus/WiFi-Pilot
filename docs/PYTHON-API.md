@@ -128,14 +128,26 @@ that many passwords are recovered.
 
 | mode | transmits? | what it runs |
 |---|---|---|
-| `"force"` | yes, loudly | **all 21 attacks** (`wp.ALL_ATTACKS`, which is the attack registry's own order): the floods, the evil twin, the active PMKID hunt, the WEP enablers and the online WPS PIN attack (which can permanently lock an AP's WPS) included |
+| `"force"` | yes, loudly | **all 27 attacks** (`wp.ALL_ATTACKS`, which is the attack registry's own order): the four floods, the evil twin, Karma, the EAPOL-Logoff disconnect, the active PMKID hunt, the WEP enablers and the online WPS PIN attack (which can permanently lock an AP's WPS) included |
 | `"default"` / `"recall"` | yes | the standard six: handshake, PMKID, WPS Pixie-Dust, WEP, hidden-SSID discovery and station tracking |
 | `"quick"` | yes, briefly | PMKID + handshake + crack only |
 | `"stealth"` | listen-only | passive capture, no deauth, no online PIN attacks, and the floods are refused even if enabled |
-| `"passive"` | never | capture whatever the neighbourhood volunteers, plus the read-only RSN/PMF audit |
+| `"passive"` | never | capture whatever the neighbourhood volunteers, plus the read-only audits (RSN/PMF and the information-element audit) |
 
 Individual knobs (`stealth=`, `wps_pin=`, `attacks=`) override the preset, and `attacks=`
-is the only way to get a deliberate subset (`attacks=["pmkid","handshake"]`).
+is the only way to get a deliberate subset (`attacks=["pmkid","handshake"]`). The two
+read-only attacks are worth running on any engagement, because everything after them can
+be reasoned about instead of guessed:
+
+```python
+# what does the AP say about itself, and what are the clients asking for?
+wp.attack(target="all", mode="passive", duration="10m")     # includes ie_audit/pmf_audit
+report = wp.status()["findings"]                            # ie_wps_enabled, ie_no_pmf, ...
+
+# one target, the two read-only decoders, no radio time wasted
+wp.attack(target="d0:9e:12:9d:36:cc", mode="default",
+          attacks=["ie_audit", "pnl_harvest"])              # nothing transmitted
+```
 
 ### The main calls
 
@@ -154,6 +166,8 @@ hit = wp.crack("capture.cap", wordlist=["words.txt"])  # -> CrackResult
 print(hit.cracked, hit.password, hit.verified, hit.tool)
 
 wp.analyze("capture.cap")            # EAPOL/PMKID inventory of a file
+wp.decode("capture.cap")             # every information element + the IE findings
+wp.decode("capture.cap", include_low=False)   # only what is worth acting on
 wp.export("capture.cap")             # -> capture.hc22000 (hashcat mode 22000)
 wp.crack("web.hc22000")              # crack a hash file with the built-in engine
 wp.analyze("web.hc22000")            # -> {"format": "hc22000", "verifiable": 2, ...}

@@ -85,7 +85,7 @@ the effective engagement settings.
 | **scope** | paste BSSIDs to restrict the campaign |
 | **simulation** | switches between live and simulated radio (rebuilds the engine) |
 | **I have written authorisation** | required for any live attack; without it the API returns 403 |
-| **Attack toggles** | the engine's catalog (in `/api/state`) lists all 21 attacks with their label, tool, description, whether they need injection, whether their tools are installed and whether they are enabled in the current config. The disruptive ones (`wps_pin`, `pmkid_flood`, `evil_twin`, the floods, the WEP enablers) start unticked |
+| **Attack toggles** | the engine's catalog (in `/api/state`) lists all 27 attacks with their label, tool, description, whether they need injection, whether their tools are installed and whether they are enabled in the current config. The disruptive ones (`wps_pin`, `pmkid_flood`, `evil_twin`, `karma`, `eapol_logoff`, the four floods, the WEP enablers) start unticked, and the two read-only decoders (`ie_audit`, `pnl_harvest`) are marked read-only — tick them freely, they transmit nothing |
 
 ## REST API
 

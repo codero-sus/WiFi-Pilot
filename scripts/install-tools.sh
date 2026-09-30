@@ -24,8 +24,10 @@ tool_pkgs=(
   "ethtool:ethtool"
   "nmcli:network-manager"
   # optional, one attack family each
-  "mdk4:mdk4"              # deauth_flood / beacon_flood
-  "hostapd:hostapd"        # evil_twin (hostapd-mana is better when packaged)
+  "mdk4:mdk4"              # deauth_flood / auth_flood / probe_flood / beacon_flood
+  "hostapd:hostapd"        # evil_twin
+  # hostapd-mana is not packaged everywhere; where it is, it powers evil_twin and
+  # is the only tool that can run the Karma attack (enable_mana=1)
 )
 
 missing_tools=()

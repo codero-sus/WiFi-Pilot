@@ -44,6 +44,9 @@ jobs:
       - name: Scriptable API tests
         run: python -m pytest tests/test_api.py -q
 
+      - name: Attack decoders and gates (elements, raw frames, planner)
+        run: python -m pytest tests/test_attacks_more.py -q
+
       - name: Hash files (hashcat mode 22000) round-trip
         run: |
           python -m pytest tests/test_hash22000.py -q

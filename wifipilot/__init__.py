@@ -46,7 +46,7 @@ __all__ = [
     "vendor", "identify", "passwords", "advice", "benchmark", "hash_stats",
     "merge_hashes", "rescue_capture", "wordlist_stats", "expand_wordlist",
     "rules_info", "loot_manifest", "verify_loot", "loot", "report",
-    "survey", "probes", "pins", "reveal", "eap", "pmk_verify", "pmk_convert",
+    "survey", "probes", "pins", "reveal", "eap", "decode", "pmk_verify", "pmk_convert",
     "pmk_cache",
     "status",
     "session", "engine", "subscribe", "stop", "reset", "is_running",
@@ -79,7 +79,8 @@ from .api import (  # noqa: E402  (import at the end: api.py imports config/mode
     suggest_masks, strategies, targets, select, selected, note, notes, tag, history,
     vendor, identify, passwords, advice, benchmark, hash_stats, merge_hashes,
     rescue_capture, wordlist_stats, expand_wordlist, rules_info, loot_manifest,
-    verify_loot, survey, probes, pins, reveal, eap, pmk_verify, pmk_convert, pmk_cache,
+    verify_loot, survey, probes, pins, reveal, eap, decode, pmk_verify, pmk_convert,
+    pmk_cache,
     providers, report, reset, scan, session, set_provider, status, stop, subscribe,
 )
 

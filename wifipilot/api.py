@@ -59,7 +59,7 @@ __all__ = [
     "vendor", "identify", "passwords", "advice", "benchmark", "hash_stats",
     "merge_hashes", "rescue_capture", "wordlist_stats", "expand_wordlist",
     "rules_info", "loot_manifest", "verify_loot",
-    "survey", "probes", "pins", "reveal", "eap", "pmk_verify", "pmk_convert",
+    "survey", "probes", "pins", "reveal", "eap", "decode", "pmk_verify", "pmk_convert",
     "pmk_cache",
     "status", "session", "engine", "current_run", "subscribe", "stop", "reset",
     "is_running",
@@ -83,7 +83,11 @@ MODES: Dict[str, Dict[str, Any]] = {
     "stealth": {"stealth": True, "wps_pin": False, "attacks": None},
     # strictly passive: capture what the neighbourhood volunteers, never transmit
     "passive": {"stealth": True, "wps_pin": False,
-                "attacks": ["passive", "pmf_audit", "pmkid", "handshake", "crack"]},
+                # the read-only decoders belong here: they transmit nothing, and what
+                # they learn (WPS unlocked, PMF absent, which names clients want) is
+                # exactly what a passive engagement should come away with
+                "attacks": ["passive", "ie_audit", "pmf_audit", "pnl_harvest",
+                            "pmkid", "handshake", "crack"]},
     # grab a handshake/PMKID as fast as possible and crack it offline
     "quick": {"stealth": False, "wps_pin": False,
               "attacks": ["pmkid", "handshake", "crack"]},
@@ -1141,6 +1145,33 @@ def survey(capture: str = "", limit: int = 40) -> Dict[str, Any]:
         path = captures[-1].path if captures else ""
     aps = [ap.to_dict() for ap in sess.aps.values()]
     return passive_report(path, aps, limit=max(1, int(limit)))
+
+
+def decode(capture: str, include_low: bool = True, max_packets: int = 200_000
+           ) -> Dict[str, Any]:
+    """Read a capture offline and report what the frames say about themselves.
+
+    The information-element audit and the preferred-network-list harvest in one call,
+    with no radio and no authorisation: per BSSID the decoded elements (RSN, WPS,
+    HT/VHT/HE, 802.11r/k/v, country, rates, BSS load), the severity-sorted
+    configuration findings, the vendor-element tally, and the probe requests other
+    clients broadcast.  This is the same decoder the ``ie_audit`` and ``pnl_harvest``
+    attacks run against a live capture, applied to a file.
+    """
+    from .ies import capture_beacons, ie_findings, vendor_breakdown
+    from .sniff import probe_requests
+    if not os.path.exists(str(capture)):
+        raise TargetError(f"no such file: {capture}")
+    result = capture_beacons(str(capture), max_packets=max(1, int(max_packets)))
+    result["capture"] = result.get("path", str(capture))     # one canonical name
+    networks = result.get("networks") or []
+    result["findings"] = ie_findings(networks, include_low=include_low)
+    result["vendors"] = vendor_breakdown(networks)
+    probes = probe_requests(str(capture))
+    result["probes"] = [client.to_dict() for client in probes.values()]
+    result["ssids_wanted"] = sorted({ssid for client in probes.values()
+                                     for ssid in client.ssids})
+    return result
 
 
 def probes(capture: str = "", limit: int = 40) -> List[Dict[str, Any]]:

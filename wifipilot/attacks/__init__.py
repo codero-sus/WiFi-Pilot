@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from typing import Dict, List, Type
 
+from .audit import IeAuditAttack, PnlHarvestAttack
 from .base import Attack, AttackContext, AttackOutcome
 from .enterprise import EnterpriseSurveyAttack
-from .flood import BeaconFloodAttack, DeauthFloodAttack
+from .flood import (AuthFloodAttack, BeaconFloodAttack, DeauthFloodAttack,
+                    ProbeFloodAttack)
+from .karma import KarmaAttack
+from .logoff import EapolLogoffAttack, logoff_preview
 from .handshake import HandshakeAttack
 from .hidden import HiddenSsidAttack
 from .offensive import RogueRadiusAttack, ROGUE_TOOLS
@@ -25,6 +29,7 @@ ATTACK_CLASSES: Dict[str, Type[Attack]] = {
     "handshake": HandshakeAttack,
     "pmkid": PmkidAttack,
     "pmkid_flood": PmkidFloodAttack,
+    "eapol_logoff": EapolLogoffAttack,
     # WPS / WEP
     "wps_pixie": PixieDustAttack,
     "wps_pin": WpsPinAttack,
@@ -40,21 +45,28 @@ ATTACK_CLASSES: Dict[str, Type[Attack]] = {
     "tracker": TrackerAttack,
     "pmf_audit": PmfAuditAttack,
     "saewolf": SaeWolfAttack,
+    "ie_audit": IeAuditAttack,
+    "pnl_harvest": PnlHarvestAttack,
     "passive": PassiveAttack,
     # rogue infrastructure
     "evil_twin": EvilTwinAttack,
+    "karma": KarmaAttack,
     "rogue_radius": RogueRadiusAttack,
     "deauth_flood": DeauthFloodAttack,
+    "auth_flood": AuthFloodAttack,
+    "probe_flood": ProbeFloodAttack,
     "beacon_flood": BeaconFloodAttack,
 }
 
 #: order the engine falls back to when the advisor does not decide.  The
 #: read-only surveys come first: they cost no radio time and they change what the
 #: planner knows (a revealed SSID, a twin warning) before a noisy attack starts.
-DEFAULT_ORDER = ["rogue_ap", "pmf_audit", "hidden_ssid", "tracker", "saewolf", "pmkid",
-                 "pmkid_flood", "handshake", "wps_pixie", "wps_pin", "wep_ivs",
-                 "wep_p0841", "wep_chopchop", "wep_fragment", "wep_hirte", "enterprise",
-                 "evil_twin", "rogue_radius", "deauth_flood", "beacon_flood", "passive"]
+DEFAULT_ORDER = ["rogue_ap", "ie_audit", "pmf_audit", "hidden_ssid", "pnl_harvest",
+                 "tracker", "saewolf", "pmkid", "pmkid_flood", "handshake",
+                 "eapol_logoff", "wps_pixie", "wps_pin", "wep_ivs", "wep_p0841",
+                 "wep_chopchop", "wep_fragment", "wep_hirte", "enterprise", "evil_twin",
+                 "karma", "rogue_radius", "deauth_flood", "auth_flood", "probe_flood",
+                 "beacon_flood", "passive"]
 
 __all__ = [
     "Attack", "AttackContext", "AttackOutcome", "ATTACK_CLASSES", "DEFAULT_ORDER",
@@ -64,6 +76,8 @@ __all__ = [
     "SaeWolfAttack", "PmfAuditAttack", "EvilTwinAttack", "DeauthFloodAttack",
     "BeaconFloodAttack", "PmkidFloodAttack", "WepChopchopAttack", "WepFragmentAttack",
     "WepHirteAttack", "WepP0841Attack", "keystream_file",
+    "IeAuditAttack", "PnlHarvestAttack", "EapolLogoffAttack", "logoff_preview",
+    "KarmaAttack", "AuthFloodAttack", "ProbeFloodAttack",
     "candidate_pins", "get_attack", "attack_catalog", "airodump_stations",
 ]
 

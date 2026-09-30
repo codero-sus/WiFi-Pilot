@@ -185,9 +185,32 @@ aircrack-ng suite properly) and rebuilds everything around it:
   arrives, so a quiet AP becomes an answer instead of a timeout.
 - **Rogue infrastructure** — `evil_twin` (hostapd-mana/hostapd) measures which stations
   prefer the SSID; `rogue_radius` tests the certificate policy. Both stop themselves.
-- **Denial-of-service *detection* tests** — `deauth_flood`/`beacon_flood`, capped at 60 s
-  and 45 s, whose only deliverable is whether the site's monitoring notices (and, for
-  the deauth flood, whether 802.11w is real).
+- **The element audit, live or offline** — `ie_audit` decodes what airodump's CSV
+  throws away (RSN
+  cipher/AKM suites, MFPC/MFPR, WPS state and configuration methods, HT/VHT/HE, 802.11r/k/v,
+  country, rates, channel width, BSS load) and reports the configuration findings a
+  report can act on: TKIP still advertised, PMF optional, WPS unlocked, 40 MHz in
+  2.4 GHz. Read-only, and it annotates the session with element-level facts so the
+  planner decides from the elements rather than from a guess. The same decoder is a
+  command — `wifipilot decode capture.pcap` (and `wp.decode(...)`) reads an existing
+  pcap with no radio and no authorisation, which is how a capture collected by somebody
+  else becomes findings.
+- **Preferred-network-list harvesting** — `pnl_harvest` reads the probe requests
+  stations broadcast in the clear (even on WPA3) and builds the wanted list: which
+  names are being asked for, by whom, and which of them nothing is serving. The
+  trace lands in `reports/pnl.json` and is the target list a twin or Karma attack
+  should serve.
+- **Karma** — `karma` runs hostapd-mana with `enable_mana=1` and answers *every*
+  probe: the network exists only because the client asked for it. Stations that join
+  are the finding (they trust a name and nothing else); stations that refuse are the
+  other finding, and the probed SSIDs are intelligence either way.
+- **An unauthenticated disconnect test** — `eapol_logoff` builds the three-field
+  EAPOL-Logoff frame itself (PMF does not cover it) and sends three frames per client,
+  then watches for reassociation. It is a client-behaviour measurement, explicitly not
+  a handshake technique.
+- **Denial-of-service *detection* tests** — `deauth_flood`/`auth_flood`/`probe_flood`/
+  `beacon_flood`, capped at 45-60 s, whose only deliverable is whether the site's
+  monitoring notices (and, for the deauth flood, whether 802.11w is real).
 
 ## Install
 
@@ -247,7 +270,7 @@ import wifipilot as wp
 # rehearse the whole pipeline with no radio and no risk
 wp.attack(target=all, mode="force", demo=True, duration="2m")
 
-# a real, authorised engagement; "force" runs all 21 attacks, "stealth" is listen-only
+# a real, authorised engagement; "force" runs all 27 attacks, "stealth" is listen-only
 wp.authorize("change ticket CHG-4711, client ACME Labs")
 result = wp.attack(target="Cafe Guest", mode="default", duration="45m",
                    on_event=lambda event: print(event.kind, event.data))
@@ -398,6 +421,8 @@ failure — is in [docs/ATTACKS.md](docs/ATTACKS.md). The short version:
 
 | Attack | Tool | Disruptive? | Notes |
 |---|---|---|---|
+| `ie_audit` | wifipilot (own IE decoder) | **no** | reads every beacon-like frame's elements — RSN, WPS, HT/VHT/HE, 802.11r/k/v, country, rates, BSS load — and reports the configuration findings (TKIP, PMF optional, WPS unlocked, 40 MHz in 2.4 GHz). Read-only, and it annotates the session for the planner |
+| `pnl_harvest` | wifipilot (own probe decoder) | **no** | the preferred network list, out loud: which SSIDs stations ask for, and which of them are not on air. Writes `reports/pnl.json` as the target list for the twin/Karma stage |
 | `pmkid` | hcxdumptool / own sniffer | no | client-less, first choice for WPA2 |
 | `handshake` | airodump-ng + aireplay-ng | **yes** (deauth) | needs a client; fails vs WPA3-SAE/PMF |
 | `wps_pixie` | reaver `-K 1` / bully `--pixiewps` | mildly | usually <60 s on vulnerable chipsets |
@@ -411,18 +436,25 @@ failure — is in [docs/ATTACKS.md](docs/ATTACKS.md). The short version:
 | `saewolf` | airodump-ng + own SAE decoder | **no** | captures the WPA3 SAE commit/confirm exchange and reports the group, whether it completed, and whether the WPA2 path is still advertised. SAE cannot be cracked offline and this attack never claims otherwise |
 | `pmf_audit` | wifipilot (offline RSN decoder) | **no** | reads the MFPC/MFPR bits airodump's CSV does not carry and says which classic attacks are still possible: no required PMF, transition mode, OWE transition |
 | `evil_twin` | hostapd-mana / hostapd | **yes** (impersonation) | serves the target SSID and measures who prefers it. With the PSK known the network can be *replaced* (high); otherwise the finding is the list of stations that tried |
+| `karma` | hostapd-mana (`enable_mana=1`) | **yes** (impersonation) | answers every probe with the name the client just asked for. Stations that join prove they trust a name and nothing else; stations that refuse are reported as the correct behaviour. Anything the daemon prints (including credentials, if a station offers them) is reported verbatim |
+| `eapol_logoff` | wifipilot `rawtx.py` (AF_PACKET) | **yes, 3 frames/client** | an EAPOL-Logoff has no authentication field, so 802.11w does not stop it: the attack measures whether the client accepts a disconnect from "the AP". Bounded, and never a handshake — it is a client-behaviour finding |
 | `deauth_flood` | mdk4 `d` | **yes, heavily** | ≤60 s denial-of-service *detection test*: is 802.11w/WIDS really deployed, or only documented? |
+| `auth_flood` | mdk4 `a` | **yes, heavily** | ≤45 s: fills the AP's association table and answers "is there a limit, and does anybody notice?" |
+| `probe_flood` | mdk4 `p` | **yes, heavily** | ≤45 s of probe requests with random SSIDs: the target is the clients' scan lists and the WIDS's alerting, not the AP |
 | `beacon_flood` | mdk4 `b` | **yes, heavily** | ≤45 s beacon flood; the finding is whether the site notices |
 | `hidden_ssid` | airodump-ng | **no** | names a hidden network from probe responses, associations or the handshake; `--reveal-with-probe` sends the one directed probe |
 | `rogue_ap` | wifipilot (offline) | **no** | compares every ESSID against its BSSIDs, vendors and signal spread, and against the names clients are probing for — reports twins as a *pattern*, never as an accusation |
 | `enterprise` | airodump-ng | no | 802.1X survey: EAP method, outer identity, server certificate — all decoded offline; identical subject/issuer means self-signed, i.e. impersonable. There is no PSK to crack |
 | `rogue_radius` | eaphammer / hostapd-mana / hostapd-wpe | **yes** (impersonation) | The test the survey implies: impersonate the AP for one association attempt and see whether the client hands over a credential or "only" its identity. Output reported verbatim; the rogue service is always stopped |
 | `tracker` | airodump-ng (listen-only) | no | Follow one station: the SSIDs it really probes for, the BSSIDs it associates with, and its signal trend as you walk. Decides which name is worth impersonating, before anything transmits |
-| `passive` | airodump-ng | no | listen-only; harvests what is on air |
+| `passive` | airodump-ng | no | listen-only; harvests what is on air, then runs the two read-only decoders over the result (`ie_audit`, `pmf_audit`, `pnl_harvest`) |
 
-Only `hidden_ssid --reveal-with-probe`, `rogue_radius`, `evil_twin`, the two floods and
-the classic attacks transmit anything; `rogue_ap`, `enterprise`, `tracker`, `saewolf`
-and `pmf_audit` are pure analysis and need no authorisation for the part that listens.
+Only `hidden_ssid --reveal-with-probe`, `rogue_radius`, `evil_twin`, `karma`,
+`eapol_logoff`, the four floods and the classic attacks transmit anything; `rogue_ap`,
+`enterprise`, `tracker`, `saewolf`, `ie_audit` and `pnl_harvest` are pure analysis of
+frames already on disk, and need no authorisation for the part that only reads. The
+floods are the attacks to argue about before running: they are the only ones whose value
+is entirely in what the defender does about them.
 `saewolf`/`pmf_audit` are the WPA3 story: capture the SAE exchange and read it, then say
 in plain words that the WPA2 transition path — not the SAE exchange — is the way in. `rogue_radius` is the opposite end of the
 same idea as `enterprise`: one reads the certificate, the other tests whether anybody
@@ -720,6 +752,11 @@ wifipilot --demo attack --attacks tracker          # live: follows the best stat
 wifipilot eap corp-8021x.pcap                      # method, identity, certificate
 wifipilot eap corp-8021x.pcap --json               # subject/issuer/self_signed
 
+# every information element in a capture, and the findings they imply
+wifipilot decode corp-site.pcap                    # RSN/WPS/HT/VHT/roaming/rates
+wifipilot decode corp-site.pcap --json             # the networks, findings and vendors
+wifipilot decode corp-site.pcap --no-low           # only what is worth acting on
+
 # the PMK cache: a passphrase learned once is verified, not re-cracked, later
 wifipilot pmk verify  capture.hc22000 --psk 'hashcat!'
 wifipilot pmk convert capture.hc22000 --psk 'hashcat!'   # -> mode 22001
@@ -743,6 +780,8 @@ wifipilot/
 ├── session.py      APs, captures, attempts, reports   (state)
 ├── scanner.py      airodump-ng CLI + CSV parsing, wash
 ├── attacks/        one module per primitive; all drive real tools
+├── ies.py          information-element decoder: RSN, WPS, HT/VHT/HE, roaming, country
+├── rawtx.py        frame builder + AF_PACKET injector (deauth, EAPOL-Logoff)
 ├── crack.py        hashcat / aircrack-ng / built-in engine + rule engine
 ├── crypto.py       AES, CMAC, PBKDF2, PRF, PMKID, MIC (pure stdlib)
 ├── masks.py        hashcat-style ?d?l?u masks: expand, derive, budget

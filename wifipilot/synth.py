@@ -159,13 +159,108 @@ def write_pcap(path: str, frames: List[bytes], spacing: float = 0.001) -> str:
     return str(target)
 
 
+#: the four 802.11b basic rates, and the 802.11b/g set a modern AP advertises
+LEGACY_RATES = b"\x82\x84\x8b\x96"
+MODERN_RATES = b"\x82\x84\x8b\x96\x0c\x12\x18\x24"
+
+
+def ie(tag: int, value: bytes) -> bytes:
+    """One information element: tag, length, value."""
+    return bytes([tag & 0xFF, len(value) & 0xFF]) + value
+
+
+def wps_element(version: str = "1.0", methods: int = 0x0088, locked: bool = False,
+                manufacturer: str = "", model: str = "", device_name: str = "",
+                model_number: str = "", serial: str = "") -> bytes:
+    """A WPS element (vendor-specific, OUI 00:50:f2:04) as an AP advertises it.
+
+    ``methods`` is the configuration-methods bit field: 0x0080 is push-button,
+    0x0008 label, 0x0100 keypad.  The default here is label + push-button, which is
+    what a consumer AP ships with.
+    """
+    major, _, minor = (version or "1.0").partition(".")
+    attributes = bytearray()
+
+    def attr(name: int, body: bytes) -> None:
+        # closure over a bytearray: ``+=`` would rebind the name, ``extend`` mutates
+        attributes.extend(name.to_bytes(2, "big"))
+        attributes.extend(len(body).to_bytes(2, "big"))
+        attributes.extend(body)
+
+    attr(0x1044, bytes([int(major or 1), int(minor or 0)]))
+    attr(0x1053, b"\x00")                                  # selected registrar
+    attr(0x1057, b"\x02")                                  # response type: AP
+    attr(0x1012, methods.to_bytes(2, "big"))
+    attr(0x1051, b"\x01" if locked else b"\x00")
+    if manufacturer:
+        attr(0x1021, manufacturer.encode()[:64])
+    if model:
+        attr(0x1023, model.encode()[:32])
+    if model_number:
+        attr(0x1024, model_number.encode()[:32])
+    if device_name:
+        attr(0x1026, device_name.encode()[:32])
+    if serial:
+        attr(0x104A, serial.encode()[:32])
+    return ie(221, b"\x00\x50\xf2\x04" + bytes(attributes))
+
+
+def country_element(code: str = "IN", first_channel: int = 1, channels: int = 13,
+                    max_power: int = 20, code_bytes: int = 3) -> bytes:
+    """The country element: a country code and one regulatory class' triplets."""
+    body = code.upper().encode("ascii")[:2].ljust(2, b"X")
+    body += b"\x20" if code_bytes == 3 else b""
+    triplet = bytes([first_channel, channels, max_power])
+    return ie(7, body + triplet * 4)
+
+
+def ht_capabilities(width40: bool = False, streams: int = 1) -> bytes:
+    """HT capabilities: the 2.4/5 GHz high-throughput element.
+
+    ``streams`` sets the basic MCS set's highest supported rate index in the
+    supported-MCS field (0xFF = 1..8 for two or more spatial streams), which is what
+    the element decoder reads back out of the capture.
+    """
+    capa = 0x000C                                   # LDPC + short GI, 20 MHz
+    if width40:
+        capa |= 0x0400                              # 40 MHz intolerant off -> 40 MHz
+    mcs_set = bytearray(16)
+    mcs_set[0] = 0xFF if streams > 1 else 0x00      # Rx MCS bitmask: MCS 0-7
+    # HT Capabilities Info (2) + A-MPDU parameters (1) + supported MCS set (16) +
+    # HT extended capabilities (2) + transmit beamforming (4) + ASEL (1)
+    return ie(45, struct.pack("<H", capa) + bytes([0x1B]) + bytes(mcs_set) + bytes(9))
+
+
+def vht_capabilities() -> bytes:
+    """VHT capabilities: the 5 GHz element that says the AP is 802.11ac."""
+    body = struct.pack("<I", 0x0F8F0000) + bytes([0x00, 0x00, 0x00, 0x00])
+    body += bytes(8) + bytes([0xFC, 0x00, 0x00]) + bytes(4)
+    return ie(191, body)
+
+
+def extended_capabilities(bss_transition: bool = True) -> bytes:
+    """Extended capabilities: bit 3 of byte 3 is BSS transition (802.11v)."""
+    value = bytearray(8)
+    if bss_transition:
+        value[3] |= 0x08
+    return ie(93, bytes(value))
+
+
+def mobility_domain(md: bytes = b"\x00\x01") -> bytes:
+    """The 802.11r mobility domain element."""
+    return ie(52, md[:2] + b"\x01\x00")
+
+
 def build_beacon(ssid: str, bssid: str, channel: int = 6, include_rsn: bool = True,
-                 akm: str = "psk", pmf: bool = False) -> bytes:
+                 akm: str = "psk", pmf: bool = False, extra_ies: bytes = b"",
+                 rates: bytes = MODERN_RATES) -> bytes:
     """A well-formed 802.11 beacon, for capture-shape benchmarks and tests.
 
     ``akm`` selects the AKM suites in the RSN element (``psk``, ``sae``,
     ``sae+psk`` for transition mode, ``owe``, ``802.1x``) and ``pmf`` sets the
     MFPC/MFPR bits, because the WPA3 audit reads exactly those two fields.
+    ``extra_ies`` appends any further elements (WPS, country, HT/VHT, 802.11r, …),
+    which is how the configuration audit gets something to audit.
     """
     ap = _mac(bssid)
     ssid_bytes = ssid.encode()[:32]
@@ -175,12 +270,12 @@ def build_beacon(ssid: str, bssid: str, channel: int = 6, include_rsn: bool = Tr
             + b"\x01\x04")                                   # capability: ESS + privacy
     if include_rsn:
         body += b"\x00" + bytes([len(ssid_bytes)]) + ssid_bytes
-        body += b"\x01\x08\x82\x84\x8b\x96\x0c\x12\x18\x24"    # rates
+        body += ie(1, rates)
         body += b"\x03\x01" + bytes([channel])                          # DS parameter
         body += rsn_element(akm, pmf=pmf)
     else:
         body += b"\x00\x00"                                            # hidden SSID
-    return body
+    return body + bytes(extra_ies)
 
 
 def build_probe_request(station: str, ssid: str = "", bssid: str = "ff:ff:ff:ff:ff:ff"

@@ -1,10 +1,11 @@
 # Attacks
 
-wifipilot ships **21 attacks**: every technique a WiFi assessment genuinely needs, and
-nothing that exists only to lengthen the list. The families are capture (handshake,
-PMKID, the active PMKID hunt), WPS/WEP, WPA3 (which is an audit, not a crack), the
-surveys that decide what is worth attacking, and the two rogue-infrastructure attacks
-that impersonate a network or flood it. What follows is the reference for each one:
+wifipilot ships **27 attacks**: every technique a WiFi assessment genuinely needs, and
+nothing that exists only to lengthen the list. The families are read-only intelligence
+(the element audit and the preferred-network-list harvest), capture (handshake, PMKID,
+the active PMKID hunt), WPS/WEP, WPA3 (which is an audit, not a crack), the surveys that
+decide what is worth attacking, and the rogue-infrastructure and denial-of-service tests
+that impersonate, disconnect or flood. What follows is the reference for each one:
 **what question it answers, what it costs, what it puts on the air, and how to read
 the result** — including the failure modes, which are the part most tools leave out.
 
@@ -22,6 +23,8 @@ to start without `--i-am-authorized` (or the UI checkbox, or `authorized=true`).
 
 | Attack | Family | Transmits | Needs | Answers | Default |
 |---|---|---|---|---|---|
+| `ie_audit` | read-only | no | airodump-ng (or any pcap) | "What does this AP say about itself — RSN, WPS, HT/VHT, 802.11r/k/v?" | ❌ safe |
+| `pnl_harvest` | read-only | no | airodump-ng (or any pcap) | "Which networks are the clients here asking for, and which are not on air?" | ❌ safe |
 | `pmkid` | capture | no\* | hcxdumptool or airodump-ng | "Is there a PMKID I can crack offline, without a client?" | ✅ |
 | `pmkid_flood` | capture | **yes** | airodump-ng + aireplay-ng | "The AP is quiet — can I force a PMKID out of it now?" | ❌ loud |
 | `handshake` | capture | **yes** | airodump-ng + aireplay-ng, ≥1 client | "Can I force a fresh 4-way handshake out of this AP?" | ✅ |
@@ -38,8 +41,12 @@ to start without `--i-am-authorized` (or the UI checkbox, or `authorized=true`).
 | `rogue_ap` | survey | no | nothing | "Is somebody already impersonating this network?" | ❌ situational |
 | `enterprise` | survey | no | airodump-ng | "What does the 802.1X conversation expose, and is the server certificate checkable?" | ❌ situational |
 | `evil_twin` | rogue AP | **yes** | hostapd or hostapd-mana | "Will clients prefer my copy of this SSID, and can I replace the network?" | ❌ opt-in |
+| `karma` | rogue AP | **yes** | hostapd-mana (`enable_mana=1`) | "Will a station join a network that exists only because it asked for it?" | ❌ opt-in |
+| `eapol_logoff` | disconnect | **yes, small** | a monitor interface, 3 frames per client | "Does this client tear down its session for an unauthenticated Logoff?" | ❌ opt-in |
 | `rogue_radius` | rogue AP | **yes** | eaphammer or hostapd-mana/wpe | "Will a client hand its credentials to a server it has never seen?" | ❌ situational |
 | `deauth_flood` | DoS test | **yes, heavily** | mdk4 (or aireplay-ng) | "Is 802.11w/WIDS actually deployed here, or only documented?" | ❌ opt-in |
+| `auth_flood` | DoS test | **yes, heavily** | mdk4 | "Can the AP's association table be filled, and does anything notice?" | ❌ opt-in |
+| `probe_flood` | DoS test | **yes, heavily** | mdk4 | "How do the clients and the WIDS react to a storm of probe requests?" | ❌ opt-in |
 | `beacon_flood` | DoS test | **yes, heavily** | mdk4 | "Does this site notice a beacon flood?" | ❌ opt-in |
 | `tracker` | survey | no | airodump-ng | "Which networks does this device really trust, and where is it going?" | ✅ |
 | `passive` | survey | no | airodump-ng | "What is on air right now, with zero risk?" | ❌ situational |
@@ -47,11 +54,14 @@ to start without `--i-am-authorized` (or the UI checkbox, or `authorized=true`).
 \* `pmkid` transmits only if you ask it to (the association-based path inside
 hcxdumptool); `hidden_ssid` transmits only with `--reveal-with-probe`.
 
-The last column is what `Config().attacks` contains: six read-only-or-quiet attacks
-enabled, and everything disruptive (`wps_pin`, `pmkid_flood`, the WEP enablers, the
-twin, both floods, the situational surveys) opt-in — through `--attacks`, the web UI's
-checkbox list, `attacks=[...]` in the API, or `mode="force"` when you really do mean
-all of them.
+The last column is what `Config().attacks` contains: six quiet attacks enabled, and
+everything else — the two read-only decoders (`ie_audit`, `pnl_harvest`), the
+situational surveys and everything disruptive (`wps_pin`, `pmkid_flood`, the WEP
+enablers, the twin, Karma, the Logoff and all four floods) — opt-in, through `--attacks`,
+the web UI's checkbox list, `attacks=[...]` in the API, or `mode="force"` when you
+really do mean all of them. `❌ safe` means the attack transmits nothing at all: it
+decodes frames already on disk, so it is always safe to add to the list, and it is
+included in `mode="passive"` for exactly that reason.
 
 `wifipilot attack --attacks pmkid,handshake` runs exactly those, in that order, and
 the planner (or the LLM advisor) will restrict itself to the list you enabled. All
@@ -74,44 +84,53 @@ human decision. Read it as "what a competent tester would do next", not as a scr
 1. **`rogue_ap` / `passive` first on an unfamiliar site.** Minutes of listening tells
    you whether you are walking into somebody else's attack (a twin, a deauth flood),
    and it costs nothing. A rogue-AP finding changes the *rest* of the engagement.
-2. **`hidden_ssid` on anything without a name.** You cannot plan, vendor-profile or
+2. **`ie_audit` on every target before anything is transmitted.** It decodes the
+   information elements airodump's CSV throws away and reports the configuration
+   findings that decide the rest of the plan: TKIP still advertised, PMF optional,
+   WPS unlocked, 802.11r without PMF, 40 MHz in 2.4 GHz. Read-only and free, and it is
+   what turns "try everything" into a reasoned order. On a site where nothing is
+   associated yet, `pnl_harvest` runs with it: the names the clients ask for are the
+   target list for `evil_twin` and `karma`.
+3. **`hidden_ssid` on anything without a name.** You cannot plan, vendor-profile or
    mask a network you cannot name.
-3. **`pmkid` before `handshake`, always.** PMKID needs no client, no deauth, and no
+4. **`pmkid` before `handshake`, always.** PMKID needs no client, no deauth, and no
    cooperation; when the AP supports it, the handshake campaign is wasted radio time.
-4. **`pmkid_flood` when `pmkid` sat there for a whole window and got nothing** and a
+5. **`pmkid_flood` when `pmkid` sat there for a whole window and got nothing** and a
    client does exist: making that client reconnect is the difference between an AP
    that is quiet and an AP that does not do PMKIDs. Louder, and worth it once.
-5. **`handshake` when PMKID fails and a client exists** — and accept that this is the
+6. **`handshake` when PMKID fails and a client exists** — and accept that this is the
    noisy, slow one.
-6. **`wps_pixie` on any AP advertising WPS that is not locked.** It is fast and it
+7. **`wps_pixie` on any AP advertising WPS that is not locked.** It is fast and it
    either works or it does not.
-7. **`wps_pin`** only when Pixie-Dust failed, the operator accepts the lock risk, and
+8. **`wps_pin`** only when Pixie-Dust failed, the operator accepts the lock risk, and
    `wifipilot pins` produced a short candidate list (a vendor default or an M7 leak —
    not a blind 10⁷ sweep).
-8. **`wep_ivs`** for WEP, which still shows up in industrial and medical kit. On a
+9. **`wep_ivs`** for WEP, which still shows up in industrial and medical kit. On a
    WEP network that has gone quiet, the injection techniques are what restart it:
    `wep_p0841` (inject an ARP and harvest), `wep_fragment`/`wep_chopchop` (keystream
    from any single packet, no client needed), `wep_hirte` (keystream from a client's
    own traffic when the AP will not answer). They recover *capability*, not the key —
    run `wep_ivs` again once they succeed.
-9. **`saewolf`/`pmf_audit` on anything WPA3 or novel.** The audit says which of the
+10. **`saewolf`/`pmf_audit` on anything WPA3 or novel.** The audit says which of the
    classic attacks are still possible before you spend radio time on them, and
    `saewolf` answers the only question that matters about a WPA3 network: is the WPA2
-   path still open? Read §5 before pointing either at a customer's WPA3 site.
-10. **`evil_twin`** when the engagement authorises impersonating the AP and you want
+   path still open? Read §6 before pointing either at a customer's WPA3 site.
+11. **`evil_twin`** when the engagement authorises impersonating the AP and you want
    to know who prefers it — the deliverable is the client list, not a password, unless
    the PSK is already known.
-11. **`deauth_flood`/`beacon_flood`** only as a detection test, with a stated reason
-   in the report: they are denial of service, and the finding is whether the site
-   notices.
-12. **`enterprise`** for 802.1X networks — there is no PSK to crack, and pretending
+12. **`deauth_flood`/`beacon_flood`/`auth_flood`/`probe_flood`** only as detection
+   tests, with a stated reason in the report: they are denial of service, and the
+   finding is whether the site notices. `auth_flood` also answers a question the
+   deauth flood cannot — whether the association table is finite and monitored — and
+   `probe_flood` is the one that tests client-side behaviour rather than the AP's.
+13. **`enterprise`** for 802.1X networks — there is no PSK to crack, and pretending
    otherwise is the most common mistake in WiFi reporting. Read the certificate it
    decodes before deciding anything else.
-13. **`rogue_radius`** only when the survey says the certificate is worth testing
+14. **`rogue_radius`** only when the survey says the certificate is worth testing
    (missing or self-signed) and the engagement authorises impersonating the AP. It is
    also the point at which a target may have to be *dropped*: a properly issued
    certificate that clients validate is the finding.
-14. **`tracker`** whenever the interesting device is a client rather than an AP:
+15. **`tracker`** whenever the interesting device is a client rather than an AP:
    which SSIDs does it remember, which BSSID is it on, and is it walking towards you.
    Run it before a targeted deauth or a twin, not after.
 
@@ -121,7 +140,97 @@ show that a target was skipped deliberately rather than forgotten.
 
 ---
 
-## 3. Capture attacks
+## 3. Read-only intelligence
+
+Two attacks exist to *read*: they decode frames that are already on disk, transmit
+nothing at all, and need no authorisation. Between them they answer the two questions
+that make every later decision cheaper — *what does this AP say about itself*, and *what
+are the clients here asking for* — and because they cost nothing they are included in
+`mode="passive"` and are safe to add to any attack list.
+
+### `ie_audit` — the information elements nobody reads
+
+**What it is.** Airodump's CSV records the SSID, the BSSID, the channel, the privacy
+flag and a signal level. Everything else an AP broadcasts — the RSN cipher and AKM
+suites, the MFPC/MFPR bits, WPS state and configuration methods, HT/VHT/HE capability,
+802.11r/k/v roaming, the country element, supported rates, channel width, BSS load — is
+thrown away, and those elements are where the configuration findings live. `ie_audit`
+walks every beacon, probe response and association response, decodes the elements
+(vendor elements included, which is where WPS, WMM and WPA1 hide) and reports what it
+found:
+
+* `ie_wps_enabled` (`high` while unlocked, `medium` once the AP says it is locked) —
+  WPS is on, with the configuration methods it advertises, which is the reason to run
+  `wps_pixie`;
+* `ie_tkip` / `ie_wpa1` (`high`) — deprecated crypto still advertised;
+* `ie_no_pmf` / `ie_pmf_optional` (`low`) — the findings that say a deauth will land;
+* `ie_wpa3_transition` (`medium`) — the WPA2 door is still open on a "WPA3" network;
+* `ie_ft_without_pmf` (`medium`) — 802.11r with unauthenticated management frames;
+* `ie_40mhz_2ghz`, `ie_no_country`, `ie_open_network`, `ie_legacy_only`,
+  `ie_busy_channel` — the housekeeping findings a good wireless report also contains.
+
+**How wifipilot runs it.** Pure analysis of frames already on disk: the pcap another
+attack produced, or — under `--demo` — a capture the simulator writes. It annotates the
+session as it goes (`wps_locked`, `wps_model`, `pmf_required`, channel width), so the
+planner and the LLM advisor see element-level facts rather than a guess, and it stores
+the file it read as an **artifact**: visible in the report and re-readable later, but
+never listed as loot, because nothing in it can be cracked.
+
+**Reading the result.** Every finding names the element it came from, because "your
+network is insecure" is not a finding. The two worth acting on immediately are WPS
+unlocked (run `wps_pixie`) and `ie_no_pmf` (a `handshake` or `deauth_flood` will work);
+the one worth putting in the report even when the engagement stops there is
+`ie_wpa3_transition`, because it is the difference between "WPA3 site" and "WPA2 site
+with a WPA3 sticker".
+
+```
+wifipilot attack -b d0:9e:12:9d:36:cc --attacks ie_audit
+wifipilot decode capture.pcap --json | jq '.networks[] | {bssid, essid, facts}'
+```
+
+**Failure modes.** `no beacons to read` means there is no capture on the target and the
+scanner has not seen it yet — run `passive` for a window first, or point the audit at a
+file. A finding count of zero on a modern site is a *result*, not a failure: it means
+the elements are what they should be.
+
+### `pnl_harvest` — the preferred network list, out loud
+
+**What it is.** Stations broadcast the names of the networks they remember, in the
+clear, in directed probe requests — including on WPA3 networks, where the data plane is
+protected but the probe is not. `pnl_harvest` reads those probes and builds the
+neighbourhood's **wanted list**: which SSIDs are being asked for, by which stations, and
+which of them are not on air at all. The last part is the finding: a name that clients
+ask for and nothing advertises is either a network that moved away or the hidden SSID of
+the site you are standing in, and either way it is a name an attacker can serve.
+
+**How wifipilot runs it.** It decodes probe requests from any capture (or from the live
+session state the scanner already holds) and reports:
+
+* `pnl_missing_network` (`medium`) — per SSID, the stations looking for a network that
+  is not on air. These are the candidate names for `evil_twin` and `karma`.
+* `pnl_disclosure` (`low`) — one finding for the whole neighbourhood, counting the
+  stations that leak a preferred network list of three names or more. Sixty clients
+  leaking their history is one problem, not sixty findings.
+
+The measurements are written to `reports/pnl.json` — stations, wanted list ranked by how
+many stations asked, the subset that is not on air, the capture the numbers came from —
+and the capture is kept as an artifact, so the twin stage has a machine-readable target
+list rather than a paragraph of prose.
+
+**Reading the result.** This is the attack that makes `karma` and `evil_twin`
+evidence-driven instead of speculative: run it first, and the twin serves a name
+somebody is actually looking for. The site-side fix is client configuration — directed
+probe requests off — which is worth stating in the report, because it is the only one of
+the two findings a customer can act on.
+
+```
+wifipilot attack -b d0:9e:12:9d:36:cc --attacks pnl_harvest
+ls sessions/*/reports/pnl.json          # the trace, with the wanted list inside
+```
+
+---
+
+## 4. Capture attacks
 
 ### `pmkid` — client-less PMKID harvest
 
@@ -195,7 +304,7 @@ replay of an old one.
 
 ---
 
-## 4. Online and semi-online attacks
+## 5. Online and semi-online attacks
 
 ### `wps_pixie` — Pixie-Dust
 
@@ -310,7 +419,7 @@ laptop gives you nothing. Track it with `tracker` first if the traffic is sporad
 
 ---
 
-## 5. WPA3 and RSN: the two honest attacks
+## 6. WPA3 and RSN: the two honest attacks
 
 A WPA3 assessment is where most tools start lying. SAE is a password-authenticated key
 exchange: the commit/confirm exchange contains no material that can be checked against
@@ -372,12 +481,16 @@ listen to.
 
 ---
 
-## 6. Rogue infrastructure and denial-of-service tests
+## 7. Rogue infrastructure, disconnects and denial-of-service tests
 
-Three attacks here transmit as an access point or a flood, and all three are opt-in
-twice over: they are out of the default set, and the planner skips them in
-`--stealth` mode regardless of the configuration. Each produces a **finding**, not a
-password, and the report says exactly that.
+Every attack here transmits, and every one of them is opt-in twice over: out of the
+default set, and skipped by the planner in `--stealth` mode regardless of the
+configuration. They divide into three kinds — impersonation (`evil_twin`, `karma`,
+`rogue_radius`), disconnection (`eapol_logoff`) and denial of service (`deauth_flood`,
+`auth_flood`, `probe_flood`, `beacon_flood`) — and each produces a **finding**, not a
+password. The report says exactly that, and the denial-of-service tests are the ones to
+argue about before running: they are the only attacks here whose value is entirely in
+what the *defender* does about them.
 
 ### `evil_twin` — serve the SSID and see who prefers it
 
@@ -410,6 +523,77 @@ client has the real BSSID cached and stayed with it. Hidden networks are refused
 (there is no name to serve) and 802.1X networks are refused with a pointer to
 `rogue_radius` (a PSK twin cannot answer a supplicant's EAP exchange).
 
+### `karma` — answer every probe, learn which stations trust a name
+
+**What it is.** A station that has ever joined a network broadcasts probes for it
+whenever it is not connected — in the clear, including on WPA3. Karma answers *every*
+probe with a beacon for whatever name was just asked for, which means the network exists
+only because the client asked for it. A station that then associates has proved it
+trusts the name without knowing anything else about it; a station that does not is the
+modern behaviour, and it is reported as such.
+
+**How wifipilot runs it.** `hostapd-mana` with `enable_mana=1`, `mana_loud=1` and a
+credential output file, on the target's channel, for a bounded window. `hostapd-mana` is
+the only tool that implements this — plain `hostapd` cannot answer probes it does not
+expect — so a missing package is reported as *why the attack cannot run* rather than
+silently substituted. The config is written into the session directory, the process is
+stopped in a `finally` block, and everything the daemon printed is parsed with the same
+patterns the operator can read (`patterns()` exposes them):
+
+* `AP-STA-CONNECTED` — a station associated with a network it named;
+* `SSID=…` inside a probe line — the names being asked for, which is the intelligence
+  the attack also produces when nobody joins.
+
+**Reading the result.** Two findings, and they are very different:
+
+* **stations associated** (`high`) — these clients do not verify the identity of a
+  network beyond its name. Nothing about their traffic is decrypted by this attack
+  (the twin has no PSK), so the deliverable is the list of stations plus the list of
+  names they will follow, which is exactly the input a targeted `evil_twin` needs.
+* **probes answered, nobody joined** (`medium`) — the clients ignore a network they are
+  not configured for, which is the correct behaviour. The harvested SSID list is still
+  intelligence, and it is the honest half of the report: *we answered 40 probes and
+  nobody was fooled*.
+
+**Failure modes.** `no probe requests were seen` means nothing in range is looking for
+a network: run it on a busy channel, or after `pnl_harvest` says which names are being
+asked for. An 802.1X site is refused by the plan validator (a Karma AP cannot complete
+an EAP exchange — `rogue_radius` is the right attack), and `--stealth` skips it
+entirely, because beaconing for every name in range is the opposite of stealth.
+
+### `eapol_logoff` — the disconnect nobody authenticates
+
+**What it is.** 802.11w protects deauthentication and disassociation frames. It does not
+protect EAPOL-Logoff, because a Logoff is not a management frame: it is an 802.1X
+packet, three fields long (version, type, length), with no cryptographic material and no
+way to authenticate it in the original design. A supplicant that receives one is
+supposed to tear its port down. So a site that deployed PMF believing it had solved
+"clients can be disconnected" has a gap, and this attack measures it: *does this client
+stop when it receives an unauthenticated Logoff from the AP it is talking to?*
+
+**How wifipilot runs it.** wifipilot builds the frames itself (`wifipilot/rawtx.py`) and
+sends a handful per client with `AF_PACKET` injection: both shapes, plain data and QoS
+data — some drivers drop the un-QoS'd frame for an associated station — and never more
+than `frames_per_client × max_clients` frames in one attempt. It then watches for
+reassociation: a station that re-appears as a fresh association inside the observation
+window accepted the Logoff. `logoff_preview(bssid, client)` prints exactly what would be
+sent, without sending anything, which is what the CLI and the UI show before the first
+frame leaves the card.
+
+**Reading the result.**
+
+* **clients re-associated** (`high`) — the Logoff was accepted. The finding is a
+  client-side behaviour: supplicant configurations differ, and the ones that ignore
+  Logoff are the ones to note as *not* vulnerable.
+* **frames delivered, no response** (`medium`) — the client ignored it, or the deployment
+  is WPA3-only with clients that only believe authenticated disconnects. Both are
+  acceptable, and neither is a password.
+
+**What it is *not*.** A Logoff never produces a 4-way handshake, so it is not a capture
+technique and will not feed a cracker; the temptation to bolt it onto a handshake attack
+should be resisted. It is a one-shot disconnect test with a bounded frame count, and the
+report wording reflects that.
+
 ### `deauth_flood` — is 802.11w actually deployed?
 
 **What it is.** A broadcast deauthentication flood (`mdk4 d`, or aireplay-ng when mdk4
@@ -429,6 +613,46 @@ the monitor interface not being on the target's channel; an operator running it 
 production network "to see what happens". The last one is a process problem, and the
 warning in the log is written for exactly that.
 
+### `auth_flood` — the association table, and who is watching it
+
+**What it is.** Every authentication frame forces the AP to allocate state for a station
+that does not exist. An authentication flood sends them by the thousand from random
+source addresses, which fills that table until either the AP stops accepting real
+clients or its firmware starts evicting the oldest entries. It is a denial-of-service
+test with a specific question attached: *is there a limit, and does anything notice when
+it is reached?* It is also a useful control for the deauth flood — an AP that ignores a
+deauth flood but falls over on an auth flood is not resilient, it is lucky.
+
+**How wifipilot runs it.** `mdk4 a` for at most 45 s, on the target's channel, with the
+frame count reported from what the tool prints. The deliverable is the finding
+(`high`): the association table is a finite resource that this deployment does not
+protect. Nothing is cracked, and the module says so in the note it attaches to the
+result.
+
+**Reading the result.** A site where real clients keep working through the flood has
+answer the question with "yes"; a site where they do not has a finding worth a
+paragraph in the report. Either way the honest framing — and the one the module uses —
+is *this is a deliberate denial-of-service test*, with the duration and the frame count
+recorded.
+
+### `probe_flood` — clients, not access points
+
+**What it is.** A flood of probe requests with random SSIDs. Unlike the other floods,
+the target of this one is not the AP: probe requests are handled by every client in
+range, and some drivers and supplicants react — they wake up, they add the network to a
+scan list, occasionally they expose a bug. The finding (`medium`) is whether the site's
+monitoring notices a storm of probes at all, because a flood of probes is also what a
+misconfigured client fleet looks like, which is exactly why it is hard to alert on.
+
+**How wifipilot runs it.** `mdk4 p` for at most 45 s on the target's channel, frame count
+reported as for the other floods. Lower severity than the deauth and auth floods because
+probe requests are broadcast by every station anyway; the difference here is volume.
+
+**Reading the result.** Treat this as a detection-quality measurement, not an outage
+test: nobody's traffic stops. The report should say what the monitoring did (or did
+not) show, and the answer "no alert in 45 s" is a finding about the *site*, not about
+the tool.
+
 ### `beacon_flood` — is beacon-flood detection in place?
 
 **What it is.** `mdk4 b` fills the channel with fake beacons, which puts hundreds of
@@ -442,7 +666,7 @@ the finding to write up (with the caveat that the test itself was disruptive).
 
 ---
 
-## 7. Surveys (and why they are attacks)
+## 8. Surveys (and why they are attacks)
 
 A survey changes what the engagement knows, which is what an attack does. wifipilot
 files them under attacks because the campaign loop has to schedule them like any other
@@ -533,19 +757,23 @@ makes *every* attack behave like this one: deauth helpers become no-ops.
 
 ---
 
-## 8. What each attack costs
+## 9. What each attack costs
 
 | Attack | Frames per attempt | Time | Risk to the network | Windows/IDS visibility |
 |---|---|---|---|---|
 | `passive` | 0 | scan window | none | low |
 | `rogue_ap` | 0 | <1 s (local analysis) | none | none |
+| `ie_audit` | 0 | <1 s per AP (reads a capture) | none | none |
 | `pmf_audit` | 0 | <1 s per AP | none | none |
+| `pnl_harvest` | 0 | <1 s per capture | none | none |
 | `enterprise` | 0 | until a client authenticates | none | low |
 | `tracker` | 0 | as long as you follow | none | low |
 | `saewolf` | 0 | until a client authenticates | none | low |
 | `hidden_ssid` | 0 (or 1 wildcard probe) | until a client joins | none | low |
 | `pmkid` | association requests | seconds to minutes | none | medium |
 | `evil_twin` | a twin AP, beaconing | seconds after a client tries | **high** (impersonation) | **high** |
+| `karma` | a beacon per probed name | as long as the window allows | **high** (impersonation) | **high** |
+| `eapol_logoff` | 3 frames per client (≤18) | <1 s per client | a blip per client that accepts | low (a handful of frames) |
 | `rogue_radius` | a twin AP + association attempts | seconds after a client tries | **high** (impersonation) | **high** |
 | `wps_pixie` | one WPS exchange | seconds | low | medium |
 | `pmkid_flood` | deauth bursts every few seconds | until a PMKID lands | clients reconnect repeatedly | **high** |
@@ -556,17 +784,22 @@ makes *every* attack behave like this one: deauth helpers become no-ops.
 | `wep_ivs` | ARP replay flood | minutes | network saturated | **high** |
 | `wep_p0841` | injected ARP flood | minutes | network saturated | **high** |
 | `deauth_flood` | thousands of deauth frames/second | ≤60 s, capped | **every client of the AP is disconnected** | **maximum** |
+| `auth_flood` | thousands of auth frames/second | ≤45 s, capped | the AP's association table fills | **maximum** |
+| `probe_flood` | thousands of probe requests/second | ≤45 s, capped | clients wake up, scan lists fill | **maximum** |
 | `beacon_flood` | hundreds of fake beacons/second | ≤45 s, capped | phantom networks in every scan list | **maximum** |
 | `wps_pin` | thousands of EAP-WSC exchanges | hours, may brick WPS | lock-out | **high** |
 
 Times come from `wp.benchmark()` and the target's own history, not from a fixed
 promise, so the estimate in the UI reflects the machine actually running the sweep. The
-flood caps are hard limits in the attack classes (60 s and 45 s) *and* in the planner:
-the shortest of `attack_timeout`, the class cap and the operator's patience wins.
+flood caps are hard limits in the attack classes (60 s for the deauth flood, 45 s for
+the other three) *and* in the planner: the shortest of `attack_timeout`, the class cap
+and the operator's patience wins. `eapol_logoff` is bounded a different way — three
+frames per client and at most six clients per attempt — because the whole point of that
+attack is that it is *not* a flood.
 
 ---
 
-## 9. Interpreting failures
+## 10. Interpreting failures
 
 | Message | What it actually means | What to do |
 |---|---|---|
@@ -589,6 +822,11 @@ the shortest of `attack_timeout`, the class cap and the operator's patience wins
 | `no packet to work with` | a WEP enabler found nothing to work from | run `wep_p0841` first, or wait for traffic; check `aireplay-ng -9` |
 | `mdk4 missing` | the flood has no engine and will not run | install mdk4, or use `handshake` for a targeted deauth |
 | `<flood> produced no output` | the monitor interface is probably not on the target channel | re-check `wifipilot scan`, then retry |
+| `no beacons to read` | `ie_audit` had no capture and no scanner state | run `passive` for a window first, or point it at a pcap |
+| `no probe requests in range` | nothing is looking for a network yet | run `pnl_harvest` on a busier channel, or after `tracker` has seen stations |
+| `the Logoff was not accepted` | the client ignored it, which is correct behaviour | report it as *not vulnerable*; do not retry — it never yields a handshake |
+| `no probe requests were seen` (Karma) | beacons went out and nothing asked for anything | check the channel; run after `pnl_harvest` says which names are wanted |
+| `already cracked, no reason to disrupt it` | the plan asked for a flood on a network whose key is known | nothing to do; the validator dropped the action deliberately |
 | `not a WPA3 network, there is no SAE exchange` | `saewolf` was scheduled against a PSK-only AP | the planner will not do it; an LLM plan that asks for it is dropped with this reason |
 
 Every one of these is also a *finding-ish* event in the session log, so the report can
@@ -596,7 +834,7 @@ state that a target was skipped deliberately and why.
 
 ---
 
-## 10. Where the AI fits
+## 11. Where the AI fits
 
 The advisor never touches the radio and never invents a result. It receives the target
 list (now including each station's probed network list and signal history), the

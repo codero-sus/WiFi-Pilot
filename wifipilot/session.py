@@ -222,6 +222,22 @@ class Session:
                 return ap.clients[mac]
         return None
 
+    @property
+    def clients(self) -> "Dict[str, Client]":
+        """Every station in the session, keyed by MAC, across all APs.
+
+        A station can appear on more than one AP (it roamed, or two BSSIDs of the same
+        network saw it); the entry with the most probes wins, because that is the one
+        the PNL harvest and the tracker want.
+        """
+        out: Dict[str, Client] = {}
+        for ap in self.aps.values():
+            for mac, client in ap.clients.items():
+                existing = out.get(mac)
+                if existing is None or len(client.probes) > len(existing.probes):
+                    out[mac] = client
+        return out
+
     def sorted_aps(self, key: str = "score") -> List[AccessPoint]:
         aps = list(self.aps.values())
         if key == "signal":
@@ -284,6 +300,31 @@ class Session:
                     else f"Saved to {cap.path}") + (f" (tool: {cap.tool})" if cap.tool else ""),
         ))
         self.append_report_entry("capture", cap.to_dict())
+        return cap
+
+    def add_artifact(self, cap: Capture) -> Capture:
+        """Record a capture that is *evidence*, not loot.
+
+        :meth:`add_capture` is for material that can be cracked, and it announces a
+        loot finding.  For a file an operator only reads — the pcap a configuration
+        audit decoded, the JSON a PNL harvest wrote — that announcement would be a
+        lie, so this registers the same file in the same places (the AP's capture
+        list, the report index, the event bus) without the loot claim.  Artifacts
+        are deliberately not ``valid``, so they can never appear in the loot table.
+        """
+        ap = self.ap(cap.bssid)
+        if ap is None:
+            ap, _ = self.upsert_ap(cap.bssid, cap.essid)
+        if not cap.essid and ap.essid:
+            cap.essid = ap.essid
+        cap.valid = False
+        if not cap.found_in:
+            cap.found_in = "demo" if self.demo else "attack"
+        ap.captures.append(cap)
+        ap.remember("artifact", f"{cap.kind} written by {cap.tool or 'wifipilot'}",
+                    path=cap.path)
+        self.bus.publish(EK.CAPTURE_NEW, {"bssid": cap.bssid, **cap.to_dict()})
+        self.append_report_entry("artifact", cap.to_dict())
         return cap
 
     def start_attempt(self, attack: str, bssid: str, tool: str = "", command: str = "",
