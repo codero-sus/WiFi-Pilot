@@ -284,7 +284,16 @@ class Config:
             # rogue infrastructure: bounded on purpose (these are disruptive)
             "evil_twin": max(self.scan_time * 4, 180.0),
             "deauth_flood": max(self.scan_time, 30.0),
+            "auth_flood": max(self.scan_time, 30.0),
+            "probe_flood": max(self.scan_time, 30.0),
             "beacon_flood": max(self.scan_time, 30.0),
+            # the read-only element/probe audits finish as fast as the capture reads
+            "ie_audit": max(self.scan_time, 15.0),
+            "pnl_harvest": max(self.scan_time, 15.0),
+            # a Logoff burst is three frames per client: it needs no window at all
+            "eapol_logoff": max(self.scan_time, 10.0),
+            # Karma is a conversation with whatever is probing around
+            "karma": max(self.scan_time * 4, 180.0),
             # WEP injection techniques: enough time to hold a packet exchange
             "wep_chopchop": self.wep_timeout,
             "wep_fragment": self.wep_timeout,

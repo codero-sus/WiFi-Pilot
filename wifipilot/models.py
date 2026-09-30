@@ -35,6 +35,12 @@ ATTACK_NAMES = (
     "deauth_flood",   # denial-of-service / WIDS detection test
     "beacon_flood",   # beacon-flood / WIDS detection test
     "pmkid_flood",    # active PMKID hunt: deauth to force M1 with a PMKID
+    "eapol_logoff",   # unauthenticated disconnect (PMF does not cover EAPOL)
+    "ie_audit",       # decode the elements airodump's CSV throws away
+    "pnl_harvest",    # what clients are asking for, and which names are not on air
+    "karma",          # answer every probe request and see who trusts the name
+    "auth_flood",     # authentication flood: association-table exhaustion test
+    "probe_flood",    # probe flood: hidden-SSID disclosure test
     "wep_chopchop",   # KoreK chopchop: keystream without the key
     "wep_fragment",   # fragmentation attack: PRGA for injection
     "wep_hirte",      # client-oriented fragmentation
@@ -222,8 +228,10 @@ class AccessPoint:
                 out.append(name)
 
         # read-only: these change what we know and transmit nothing
+        add("ie_audit")
         add("pmf_audit")
         add("hidden_ssid", not (self.essid or "").strip())
+        add("pnl_harvest")
         add("tracker", bool(self.clients))
         add("rogue_ap")
         enterprise = (self.encryption in ("WPA-ENTERPRISE", "WPA2-ENTERPRISE",
@@ -237,6 +245,7 @@ class AccessPoint:
             add("pmkid", not self.has_pmkid)
             add("pmkid_flood", bool(self.clients) and not self.has_pmkid)
             add("handshake", not self.sae and not self.has_handshake)
+            add("eapol_logoff", bool(self.clients) and not self.pmf)
         if self.wps and self.wps_open:
             add("wps_pixie")
             add("wps_pin")
@@ -248,7 +257,10 @@ class AccessPoint:
             add("wep_hirte", bool(self.clients))
         # rogue infrastructure and the denial-of-service tests, last
         add("evil_twin", bool((self.essid or "").strip()) and not enterprise)
+        add("karma", not enterprise)
         add("deauth_flood")
+        add("auth_flood")
+        add("probe_flood")
         add("beacon_flood")
         add("passive")
         return out
@@ -541,6 +553,10 @@ class SessionStats:
     twins_run: int = 0                 # evil twins that lured at least one station
     floods_run: int = 0                # denial-of-service tests run
     wep_enablers: int = 0              # WEP injection techniques that succeeded
+    ie_audits: int = 0                 # beacon-element configuration audits run
+    pnl_harvests: int = 0              # preferred-network-list harvests
+    logoffs: int = 0                   # EAPOL-Logoff attempts delivered
+    karma_runs: int = 0                # Karma attempts run
     stations_tracked: int = 0          # stations followed for a signal trend
     probing_clients: int = 0           # clients whose PNL was read out of a capture
     pmk_hits: int = 0                  # captures "cracked" from the PMK cache

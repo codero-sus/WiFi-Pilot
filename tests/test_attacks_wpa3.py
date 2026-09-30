@@ -134,7 +134,9 @@ def test_all_ten_new_attacks_are_registered_and_documented():
         assert name in ATTACK_NAMES, name
         assert name in DEFAULT_ORDER, name
     catalog = {entry["name"]: entry for entry in attack_catalog()}
-    assert len(catalog) == 21
+    # the batch this file covers added ten attacks to the eleven before it; later
+    # batches add more, so the assertion is that *these* are in the catalogue
+    assert len(catalog) >= 21 and set(NEW_ATTACKS) <= set(catalog)
     assert all(entry["label"] and entry["description"] and entry["tool"]
                for entry in catalog.values())
     # read-only first, disruptive last: the catalogue is a plan, not an inventory
@@ -530,7 +532,10 @@ def test_the_web_front_end_serves_the_new_catalog(tmp_path):
     catalog = engine.snapshot()["attacks"]
     names = {entry["name"] for entry in catalog}
     assert set(NEW_ATTACKS) <= names
-    assert len(catalog) == 21
+    # every attack the registry ships is in the web catalogue (27 at the time of
+    # writing; later batches may add more, and this test is about *this* batch)
+    assert len(catalog) == len(DEFAULT_ORDER)
+    assert len(catalog) >= 21
     assert all("available" in entry and "enabled" in entry for entry in catalog)
     # the toggle state the UI shows is the config's own list, nothing else
     assert all(entry["enabled"] == (entry["name"] in engine.config.attacks)

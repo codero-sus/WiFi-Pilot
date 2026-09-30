@@ -62,7 +62,9 @@ class _FloodAttack(Attack):
     def _command(self, ctx: AttackContext, ap: AccessPoint) -> List[str]:
         binary = registry.path("mdk4") or "mdk4"
         args = [binary, ctx.monitor, self.mode]
-        if ap.channel and self.mode in ("d", "b"):
+        if ap.channel:
+            # mdk4 takes the channel for every mode (a/b/d/p/m); without it the tool
+            # floods whatever the interface happens to be tuned to
             args += ["-c", str(ap.channel)]
         if self.mode == "d":
             args += ["-t", ap.bssid]
@@ -111,14 +113,16 @@ class _FloodAttack(Attack):
                                                      "the deliverable is the finding, "
                                                      "not a password")})
 
+    #: a believable simulated rate per second, by mode (frames get bigger as the
+    #: mode letter gets later: deauth 26 bytes, auth 30, probe 30, beacon 100+)
+    demo_rate = {"d": 2200, "a": 1500, "p": 1100, "b": 900}
+
     def _demo(self, ctx: AttackContext, ap: AccessPoint, attempt: Attempt,
               seconds: float) -> AttackOutcome:
         sent = 0
         started = time.time()
         step = 0
-        # a believable rate: a deauth flood is thousands of frames per second, a
-        # beacon flood rather fewer (each frame is much bigger)
-        rate = 2200 if self.mode == "d" else 900
+        rate = self.demo_rate.get(self.mode, 800)
         while time.time() - started < min(seconds, 12) and not ctx.want_stop():
             step += 1
             sent += rate + int(time.time() * 13) % 300
@@ -180,6 +184,45 @@ class DeauthFloodAttack(_FloodAttack):
     finding_detail = ("every client of this SSID could be disconnected at will, which "
                       "means a WIDS/WIPS with 802.11w is *not* in place on this "
                       "network.")
+
+
+class AuthFloodAttack(_FloodAttack):
+    name = "auth_flood"
+    label = "Authentication flood (state exhaustion test)"
+    tool = "mdk4 a"
+    description = ("Send open-system authentication frames from randomised addresses and "
+                   "watch the AP stay up: the finding is whether the association table "
+                   "is finite, because that is what an attacker who can transmit unau"
+                   "thenticated management frames can fill.")
+    mode = "a"
+    max_seconds = 45.0
+    warning = ("an authentication flood fills the AP's association table; clients may "
+               "be refused while it runs")
+    finding_title = "Authentication frames are processed without rate limiting"
+    finding_severity = "high"
+    finding_detail = ("the AP answered authentication frames from addresses that do not "
+                      "exist, which means its association table can be filled from the "
+                      "air.  Mitigation is 802.11w (PMF) plus a WIPS that rate-limits "
+                      "management frames.")
+
+
+class ProbeFloodAttack(_FloodAttack):
+    name = "probe_flood"
+    label = "Probe flood (hidden-SSID disclosure test)"
+    tool = "mdk4 p"
+    description = ("Sweep a large dictionary of SSIDs as directed probe requests: a "
+                   "misconfigured AP answers probes for the very SSID it hides in its "
+                   "beacons.  The finding is the name it gives away, which then feeds "
+                   "the twin and Karma attacks.")
+    mode = "p"
+    max_seconds = 45.0
+    warning = ("a probe flood sends a large number of probe requests with a dictionary "
+               "of names; it is noisy and aimed at hidden networks")
+    finding_title = "Probe flood transmitted (hidden-SSID disclosure test)"
+    finding_severity = "medium"
+    finding_detail = ("directed probe requests were sent for names the site did not "
+                      "advertise; any name answered is disclosed by the AP itself and "
+                      "makes the hidden network easy to imitate.")
 
 
 class BeaconFloodAttack(_FloodAttack):

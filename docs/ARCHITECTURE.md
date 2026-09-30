@@ -262,7 +262,7 @@ against the PMKID or the EAPOL MIC.
 
 ## 15. Non-transmitting intelligence (and the PMK cache)
 
-Six of wifipilot's attacks never touch the radio in a way anyone can complain
+Eight of wifipilot's attacks never touch the radio in a way anyone can complain
 about, and they share one idea: *the information is already on air or already on
 disk, and reading it changes what the engagement knows*.  (The rogue infrastructure in
 the next section is the deliberate exception: those ask the question the read-only
@@ -293,6 +293,26 @@ tools can only imply.)
   `_add_finding_once`, because reading the whole neighbourhood in one pass must not
   report the same neighbour eleven times, and each AP it reads is marked
   `pmf_checked` so the planner schedules it exactly once.
+* **`ie_audit`** (`attacks/audit.py`, `ies.py`) — the element-level audit.  Where
+  `wpa3.py` reads the RSN bits a capture cares about, `ies.py` decodes *every* element
+  a beacon-like frame carries, per BSSID: the RSN cipher/AKM suites and TKIP flag, the
+  MFPC/MFPR capabilities, the WPS element (version, lock state, configuration methods,
+  model and manufacturer) and the vendor elements that hide WPS/WMM/WPA1 behind a
+  four-byte vendor id, HT/VHT/HE/EHT capability and channel width, 802.11r mobility
+  domain and 802.11k/v capability, the country element, rates, BSS load and TIM.
+  `ie_findings()` turns that into thirteen severity-sorted findings, each naming the
+  element it came from, and the attack writes what it learned back onto the session
+  (`wps_locked`, `pmf_required`, channel width, …) so the planner decides from elements
+  rather than from a guess.  The pcap it decoded is registered through
+  `Session.add_artifact()` — visible in the report, excluded from loot, because an
+  audit file is evidence and cannot be cracked.
+* **`pnl_harvest`** (`attacks/audit.py`, `sniff.probe_requests`) — the preferred network
+  list, out loud: which stations probe for which SSIDs, and which of those names no AP
+  is currently serving.  Findings are the per-name `pnl_missing_network` and a single
+  neighbourhood-wide `pnl_disclosure` (sixty clients leaking a history is one problem,
+  not sixty findings); the measurements go to `reports/pnl.json`, ranked by how many
+  stations asked, which is the machine-readable target list the twin and Karma stages
+  consume.
 * **`saewolf`** (`attacks/wpa3.py`, `wpa3.py`) — captures the SAE commit/confirm
   exchange and reports the group, whether it completed, and whether the network also
   advertises PSK. The decoder walks the authentication frames itself (an authentication
@@ -323,11 +343,37 @@ two-half attack against 10⁷ for a blind sweep.
 ## 16. The radio is a last resort
 
 The attacks that transmit do so deliberately, one at a time, and each one stops itself.
-Four of them make the same point from different ends: `enterprise` reads the
-certificate, `rogue_radius` tests whether anybody checks it, `evil_twin` asks whether
-clients prefer the SSID to the real BSSID, and the WEP enablers do the minimum needed
-to make the harvest possible. All of them exist because "we captured a handshake" says
-nothing about whether the network is reachable.
+They make the same point from different ends: `enterprise` reads the certificate,
+`rogue_radius` tests whether anybody checks it, `evil_twin` asks whether clients prefer
+the SSID to the real BSSID, `karma` asks whether they will follow a name that exists
+only because they said it, and the WEP enablers do the minimum needed to make the
+harvest possible.  All of them exist because "we captured a handshake" says nothing
+about whether the network is reachable.
+
+Three of them are bounded in the code rather than by policy, because the bound *is* the
+technique:
+
+* **`eapol_logoff`** (`attacks/logoff.py`, `rawtx.py`) — builds the frames itself.
+  `rawtx.frame_control` packs the first frame-control byte the same way `pcap.py`
+  decodes it (`(type << 2) | (subtype << 4)`), the data envelope is FromDS with
+  addr1 = client and addr2 = BSSID, and the EAPOL body is three fields with no
+  authentication in it.  The attack sends `frames_per_client` (3) per station for at
+  most `max_clients` (6) stations, then watches the session for a reassociation whose
+  `first_seen` is inside the observation window.  A Logoff cannot produce a 4-way
+  handshake, so the module is explicit that it is not a capture technique; the frames
+  are also offered as a preview (`logoff_preview`) so the UI can show what would be sent
+  before anything is.
+* **`karma`** (`attacks/karma.py`) — `hostapd-mana` with `enable_mana=1`, or nothing:
+  plain `hostapd` cannot answer a probe it did not expect, so a missing package is a
+  stated reason rather than a silent substitution.  The daemon's own output is parsed
+  with module-level compiled patterns (`patterns()` exposes them for the tests), the
+  config is written into the session directory, and the process is stopped in a
+  `finally` block like the twin's.
+* **the floods** (`attacks/flood.py`) — one `_FloodAttack` base, four modes
+  (`d`/`a`/`p`/`b`), each with its own `max_seconds` (60 s for the deauth flood, 45 s for
+  the rest) and its own simulated rate, so the "fastest thing in the tool" is still
+  something with a ceiling.  Each one reports frames, seconds and a note saying the
+  deliverable is the finding, never a password.
 
 `evil_twin` (`attacks/twin.py`) generates a hostapd config in the session directory
 (the target's SSID on `config.twin_interface` or the monitor interface), runs
@@ -415,6 +461,13 @@ work went — nothing else was allowed to get slower:
 * **benchmarks measure the real path** (`benchmarks/`, `make bench`): real
   captures, real handshakes, wrong candidates only, and the artifact (frame
   count, MiB, candidate space) printed next to every number.
+* **the offline decoders are cheap enough to run on every poll.** The element walk is
+  offset-based and allocation-light: decoding a 174-byte beacon with WPS, HT, VHT,
+  country, extended-capabilities and mobility elements costs 28.6 µs
+  (~35,000 beacons/s), so a 660-frame neighbourhood read is 16 ms and `ie_audit` is
+  effectively free next to the capture it reads.  Frame building is cheaper still —
+  4.2 µs per EAPOL-Logoff frame (~238,000 frames/s), which is why `eapol_logoff` can
+  afford to preview the exact frames it will send.
 * **counts are counts.** The built-in engine reports the candidates it actually
   derived, and its log line says how many it took to crack, so an early hit
   cannot be presented as a full sweep: the end-to-end benchmark stops at

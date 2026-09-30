@@ -339,6 +339,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_eap.add_argument("--limit", type=int, default=4,
                        help="how many certificates to decode (default 4)")
 
+    p_decode = sub.add_parser("decode", parents=[common],
+                              help="decode a capture's information elements (read-only)")
+    p_decode.add_argument("capture", help="capture to read (pcap/pcapng)")
+    p_decode.add_argument("--no-low", action="store_true",
+                          help="hide the low-severity housekeeping findings")
+    p_decode.add_argument("--limit", type=int, default=40,
+                          help="how many networks to print (default 40)")
+
     p_reveal = sub.add_parser("reveal", parents=[common],
                               help="name the hidden networks in a capture (read-only)")
     p_reveal.add_argument("capture", nargs="?", default="",
@@ -1211,6 +1219,64 @@ def command_reveal(args, config: Config, console) -> int:
     console.print(table)
     console.print(f"  {len(revealed)} name(s) recovered, {len(rows)} BSSID(s) with a name "
                   f"[dim](read-only: nothing was transmitted)[/dim]")
+    return 0
+
+
+def command_decode(args, config: Config, console) -> int:
+    """Decode the information elements of a capture — the offline half of ie_audit.
+
+    Nothing is transmitted and nothing is required but the file: the same decoder the
+    ``ie_audit`` attack runs over a live capture, pointed at a pcap an operator already
+    has.  Findings are printed worst first, because that is the order they matter in.
+    """
+    from .ies import capture_beacons, ie_findings, vendor_breakdown
+
+    path = _expand(args.capture)
+    if not os.path.exists(path):
+        console.print(f"[red]no such file: {path}[/red]")
+        return 1
+    result = capture_beacons(path)
+    networks = list(result.get("networks") or [])[:max(1, int(args.limit))]
+    findings = ie_findings(networks, include_low=not args.no_low)
+    vendors = vendor_breakdown(networks)
+    if args.json:
+        print(json.dumps({"capture": path, "frames": result.get("frames", 0),
+                          "networks": networks, "findings": findings,
+                          "vendors": vendors}, indent=2))
+        return 0 if networks else 1
+    if not networks:
+        console.print("[yellow]no beacon-like frames in that capture: nothing an AP said "
+                      "about itself was recorded[/yellow]")
+        return 1
+    console.print(f"[bold]information elements[/bold] [dim]({Path(path).name}, "
+                  f"{result.get('frames', 0)} frame(s))[/dim]")
+    table = Table(box=None)
+    for column in ("BSSID", "SSID", "CH", "PMF", "WPS", "elements"):
+        table.add_column(column)
+    for entry in networks:
+        facts = entry.get("facts") or {}
+        wps = facts.get("wps") or {}
+        wps_state = "locked" if wps.get("locked") else ("open" if wps.get("present")
+                                                       else "-")
+        pmf = ("required" if facts.get("pmf_required") else
+               "capable" if facts.get("pmf_capable") else "none")
+        highlights = [name.upper() for name in ("vht", "he", "eht") if facts.get(name)]
+        elements = ", ".join(["/".join((facts.get("rsn") or {}).get("akm") or [])] +
+                             highlights + ([facts["country"]] if facts.get("country")
+                                           else []))
+        table.add_row(entry.get("bssid", ""), entry.get("essid", ""),
+                      str(facts.get("channel", 0) or ""), pmf, wps_state,
+                      elements or "-")
+    console.print(table)
+    for finding in findings:
+        colour = {"high": "red", "medium": "yellow", "low": "dim"}.get(
+            finding["severity"], "dim")
+        console.print(f"  [{colour}]{finding['severity']}[/{colour}] "
+                      f"{finding['kind']} — {finding['title']}")
+    console.print(f"  {len(networks)} network(s), {len(findings)} finding(s)"
+                  + (f", vendor elements: {', '.join(row['vendor'] for row in vendors[:4])}"
+                     if vendors else "")
+                  + " [dim](read-only: nothing was transmitted)[/dim]")
     return 0
 
 
@@ -2468,6 +2534,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "survey": command_survey,
         "eap": command_eap,
         "reveal": command_reveal,
+        "decode": command_decode,
         "pins": command_pins,
         "pmk": command_pmk,
         "targets": command_targets,
