@@ -1,7 +1,28 @@
 # AI providers: Ollama (local) and OpenRouter (cloud)
 
-wifipilot's "auto think" needs a model. There are two ways to give it one, and you
-choose per run, per config file, or from the web UI:
+wifipilot's "auto think" needs a model. It does not need to have one: the deterministic
+planner runs every engagement on its own, and the advisor is an additive extra. This page is
+about the two ways to give it a model.
+
+**Turning it off is one switch with several spellings** (all identical):
+
+```bash
+wifipilot --no-ai attack -d 45m   # --disable-ai and --offline are aliases
+wifipilot ai off [--save]         # switch it off; --save persists ai_provider="none"
+wifipilot ai on [ollama]          # ...and back on
+WIFIPILOT_NO_AI=1 wifipilot web   # this shell only (also true/yes/on)
+```
+```python
+import wifipilot as wp
+wp.ai(disable=True)               # wp.ai(disable=False) restores the previous provider
+```
+
+While it is off nothing is probed, no daemon is asked for a model list, and `status`,
+`models`, `pull`, `use` and `ask` all answer "off" instead of trying. The dashboard shows
+`AI: off · deterministic`, the web header shows `ai: off · deterministic planner`, and the
+advisor tab is greyed out with a single button to bring it back.
+
+Choose a provider per run, per config file, or from the web UI:
 
 | | **Ollama** (default) | **OpenRouter** |
 |---|---|---|
@@ -23,8 +44,9 @@ wifipilot --provider openrouter --model openai/gpt-4o-mini attack -d 45m
 wifipilot ai use openai/gpt-4o-mini --provider openrouter --save   # persist the choice
 ```
 
-If no model is reachable, nothing breaks: the deterministic planner in
-`wifipilot/planner.py` takes over, and every plan is labelled `heuristic`.
+If no model is reachable — or you switched it off — nothing breaks: the deterministic
+planner in `wifipilot/planner.py` does the job, and every plan is labelled `heuristic`
+(or `planner`, in the dashboard, when the advisor was disabled on purpose).
 
 ---
 

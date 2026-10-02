@@ -58,7 +58,9 @@ triggered by an empty plan, two or more consecutive failures, three or more new
 access points, the plan interval elapsing, or the plan finishing. When no model is
 available — no Ollama daemon, no OpenRouter key, out of credit, over budget, rate
 limited, or an answer that will not parse — `planner.py`'s deterministic planner
-takes over seamlessly, and the plan is labelled `heuristic`.
+takes over seamlessly, and the plan is labelled `heuristic`. Disable the advisor outright
+(`wp.ai(disable=True)`, `--no-ai`/`--disable-ai`, `WIFIPILOT_NO_AI=1`) and the same planner
+is simply the only planner.
 
 **Everything is observable.** Every step publishes an event to the bus
 (`session.start`, `ap.new`, `attack.start`, `capture.new`, `crack.found`,
@@ -202,7 +204,10 @@ unsubscribe = wp.subscribe(on_event, kinds=[wp.EK.AP_NEW, wp.EK.CRACK_FOUND])
 wp.attack(..., on_event=on_event)      # or scoped to a single call
 ```
 
-### AI providers from a script
+### The advisor (optional) from a script
+
+Nothing below is required. The deterministic planner runs the whole engagement on its own;
+these calls only add a model on top, and one of them takes it away again.
 
 ```python
 wp.set_provider("ollama", model="qwen2.5:7b")          # local, private, free
@@ -210,11 +215,26 @@ wp.set_provider("openrouter", model="openai/gpt-4o-mini",
                 ai_budget=0.50, redact_identifiers=True)  # cloud, opt-in, capped
 wp.providers(probe=True)      # what is configured and whether it answers
 wp.advisor_status()           # provider, model, spend, quota
-wp.configure(provider="none") # deterministic planner only
+
+# ...and the off switch, which is a single idea with three spellings:
+wp.ai(disable=True)           # no model is called; nothing leaves this machine
+wp.ai(disable=False)          # restore the provider that was in use before
+wp.ai(provider="ollama")      # or pick one explicitly (auto|ollama|openrouter|none)
+wp.ai(model="qwen2.5:7b")     # just change the model
+wp.ai()                       # no arguments: report the current state
+# -> {"ok", "changed", "disabled", "enabled", "provider", "reason",
+#     "configured_provider", "env_off", "model", "previous", "note"}
 ```
 
-The advisor is optional. `provider="none"` (or no daemon/key) means the
-heuristic planner runs the engagement; nothing else changes.
+`wp.set_provider("none")` is exactly `wp.ai(disable=True)`, so the two entry points can never
+disagree — including for a live engine, whose `advisor`, `session.auto_think` and config are
+updated in one place. The same switch is available from a shell as `wifipilot --no-ai` /
+`--disable-ai` / `--offline` / `ai off`, and from the environment as `WIFIPILOT_NO_AI=1`.
+
+While the advisor is off, `Config.ai_off()` is true, `advisor.status()["disabled"]` is true,
+`advisor.check()` returns False without probing, `advisor.models()` returns `[]` without
+asking a daemon, and `wp.ai()` reports `note: "deterministic planner only: no model is
+called, nothing leaves this machine"`.
 
 ### Errors
 

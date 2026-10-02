@@ -39,11 +39,20 @@ One card per capture: kind, target, tool, EAPOL count, the recovered PSK, a **do
 (the API refuses any path outside the loot/session directories) and a one-click crack button.
 Passwords verified by MIC/PMKID recomputation are labelled as such.
 
-### AI advisor
+### AI advisor *(optional tab)*
 
-* **Model provider** — switch between `auto`, `ollama` (local, private) and `openrouter`
-  (cloud) at runtime. The header badge always shows which provider is planning and whether it
-  is reachable.
+The tab is deliberately de-emphasised: it carries a muted "optional" label, and while the
+advisor is off the header badge reads `ai: off · deterministic planner`, a banner explains
+that the rule-based planner is deciding, and every control that would need a model (think,
+chat, model picker, `ollama pull`, OpenRouter key) is disabled. A single **turn the advisor
+on** button — or the `off` button next to the provider picker — flips it either way.
+
+* **Model provider** — switch between `auto`, `ollama` (local, private), `openrouter`
+  (cloud) and `disabled` (rules only) at runtime. The header badge always shows which
+  provider is planning and whether it is reachable. Choosing `disabled`, `POST
+  /api/ai/toggle {"disabled": true}` and `wifipilot ai off` are the same action; while it is
+  off, `/api/ai/think`, `/api/ai/chat` and `/api/ai/models` answer "disabled" without
+  contacting anything.
 * **Provider status** — reachability, endpoint, selected model, plan counts, call/error
   counters, average latency, tokens and spend.
 * **Model picker** — the live catalogue of the active provider (installed Ollama models, or
@@ -99,7 +108,7 @@ POST /api/mode                POST /api/scan       POST /api/campaign
 POST /api/attack              POST /api/cancel     POST /api/crack
 POST /api/rescan              POST /api/targets
 POST /api/ai/think            POST /api/ai/chat    POST /api/ai/model
-POST /api/ai/pull             POST /api/ai/toggle
+POST /api/ai/pull             POST /api/ai/toggle {"autothink"|"enabled"|"disabled"}
 GET  /api/ai/models           POST /api/ai/provider   POST /api/ai/key
 GET  /api/report              GET  /api/export     GET  /api/file
 GET  /api/events              WS   /ws

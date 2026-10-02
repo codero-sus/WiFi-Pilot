@@ -42,6 +42,7 @@ from .util import (C, banner, human_bytes, human_duration, mac_norm, oui_vendor,
 # --------------------------------------------------------------------------- #
 
 try:
+    from rich import box as rich_box
     from rich.console import Console, Group
     from rich.live import Live
     from rich.panel import Panel
@@ -107,8 +108,12 @@ def _global_arguments(parser: argparse.ArgumentParser, suppress: bool = False) -
     add(parser, "--json", action="store_true", help="machine readable output")
 
     # -- ai ----------------------------------------------------------------
-    ai = parser.add_argument_group("AI advisor (local Ollama or OpenRouter)")
-    add(ai, "--no-ai", action="store_true", help="disable the AI advisor entirely")
+    ai = parser.add_argument_group("advisor (optional — wifipilot needs no model)")
+    add(ai, "--no-ai", "--disable-ai", dest="no_ai", action="store_true",
+                    help="never call a model: deterministic planner only "
+                         "(same as ai_provider=none or WIFIPILOT_NO_AI=1)")
+    add(ai, "--offline", dest="no_ai", action="store_true",
+                    help="alias for --no-ai: nothing leaves the machine but the radio")
     add(ai, "--provider", default="",
                     choices=["", "auto", "ollama", "openrouter", "none"],
                     help="model provider: auto (prefer local Ollama), ollama, openrouter, none")
@@ -132,8 +137,8 @@ def _global_arguments(parser: argparse.ArgumentParser, suppress: bool = False) -
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=TOOL_NAME,
-        description="AI-piloted WiFi auditing — a wifite alternative for Linux, with a "
-                    "local (Ollama) or cloud (OpenRouter) LLM advisor and a web UI.",
+        description="WiFi auditing for Linux — a wifite alternative with a web UI and "
+                    "an optional local (Ollama) or cloud (OpenRouter) advisor.",
         epilog=LEGAL_NOTICE,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -408,7 +413,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_tools = sub.add_parser("tools", parents=[common], help="show tool availability and capabilities")
     p_tools.add_argument("--force", action="store_true", help="re-probe instead of using cache")
 
-    p_ai = sub.add_parser("ai", parents=[common], help="AI advisor utilities (Ollama, OpenRouter)")
+    p_ai = sub.add_parser("ai", parents=[common],
+                          help="optional advisor: status, models, providers, off/on, "
+                               "pull, use, ask (no model is required to run wifipilot)")
     ai_sub = p_ai.add_subparsers(dest="ai_command", metavar="ACTION")
     p_ai.add_argument("--report", default="",
                       help="load access points from a previous JSON export for context")
@@ -428,6 +435,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_use.add_argument("--save", action="store_true", help="persist the choice to wifipilot.json")
     p_ask = ai_sub.add_parser("ask", parents=[common], help="ask the advisor about an engagement")
     p_ask.add_argument("question", nargs="+", help="your question")
+    p_ai_off = ai_sub.add_parser(
+        "off", parents=[common],
+        help="stop using a model entirely (the deterministic planner takes over)")
+    p_ai_off.add_argument("--save", action="store_true",
+                          help="persist ai_provider=none to wifipilot.json")
+    p_ai_on = ai_sub.add_parser("on", parents=[common],
+                                help="re-enable the advisor (auto, or NAME)")
+    p_ai_on.add_argument("provider_name", nargs="?", default="",
+                         choices=["", "auto", "ollama", "openrouter"],
+                         help="which provider to use (default: auto)")
+    p_ai_on.add_argument("--save", action="store_true", help="persist the choice")
+    p_ai_toggle = ai_sub.add_parser("toggle", parents=[common],
+                                    help="switch the advisor off, or back on as it was")
+    p_ai_toggle.add_argument("--save", action="store_true", help="persist the choice")
 
     p_config = sub.add_parser("config", parents=[common], help="show or write the configuration")
     p_config.add_argument("--write", default="", help="write the effective config to this file")
@@ -570,6 +591,7 @@ class Dashboard:
         session = self.engine.session
         status = self.engine.status
         advisor = self.engine.advisor
+        stats = session.stats
 
         header = Text()
         mode = "SIMULATION" if session.demo else ("LIVE · authorised" if session.authorized else "LIVE · not authorised")
@@ -581,13 +603,43 @@ class Dashboard:
         header.append(f"  uptime: {human_duration(session.stats.uptime)}", style="dim")
         header.append(f"  loot: {session.stats.loot}", style="bold green")
         header.append(f"  PSKs: {session.stats.passwords}", style="bold magenta")
+        cfg = self.engine.config
         header.append("  AI: ", style="dim")
-        if advisor.available:
+        if cfg.ai_off():
+            # the honest label: there is no model in the loop, by choice
+            header.append("off", style="dim")
+            header.append(" · deterministic", style="dim italic")
+        elif advisor.available:
             header.append(f"{advisor.model or 'ready'}", style="bold magenta")
-        elif self.engine.config.ollama.enabled:
+            if stats.llm_calls:
+                header.append(f" ·{stats.llm_calls} calls", style="dim magenta")
+        elif cfg.ollama.enabled or cfg.openrouter.enabled:
             header.append("offline → heuristics", style="yellow")
         else:
-            header.append("disabled", style="dim")
+            header.append("off", style="dim")
+
+        vitals = Text()
+
+        def vital(label: str, value: Any, style: str = "white") -> None:
+            vitals.append(f" {label} ", style="dim")
+            vitals.append(str(value), style=f"bold {style}")
+
+        clients = sum(len(ap.clients) for ap in session.aps.values())
+        captures = len(session.all_captures()) if hasattr(session, "all_captures") else 0
+        vital("APs", len(session.aps), "cyan")
+        vital("clients", clients, "cyan")
+        vital("attacks", f"{stats.attacks_run} run / {stats.attacks_failed} failed",
+              "green" if not stats.attacks_failed else "yellow")
+        vital("captures", captures, "bold green" if captures else "white")
+        vital("handshakes", stats.handshakes, "green")
+        vital("PMKIDs", stats.pmkids, "green")
+        vital("keys", stats.passwords, "magenta")
+        vital("audits", stats.ie_audits + stats.pnl_harvests, "white")
+        if cfg.ai_off():
+            vital("decisions", "deterministic", "dim")
+        else:
+            vital("decisions", "model + planner", "magenta")
+            vital("model calls", f"{stats.llm_calls} · {stats.llm_tokens} tok", "magenta")
 
         table = Table(box=None, pad_edge=False, expand=True, show_edge=False)
         for column, justify in (("SSID", "left"), ("BSSID", "left"), ("CH", "right"),
@@ -641,11 +693,14 @@ class Dashboard:
         advisor_note = ""
         plan = advisor.last_plan
         if plan is not None:
-            advisor_note = f"{'AI' if plan.source == 'llm' else 'heuristic'} plan: {plan.summary()}"
+            who = "AI" if plan.source == "llm" else ("planner" if cfg.ai_off() else "heuristic")
+            advisor_note = f"{who} plan: {plan.summary()}"
         footer.append(" " + (advisor_note or status.detail or "")[:160], style="dim")
-        return Group(Panel(header, box=None, padding=(0, 0)), table,
-                     Panel(Group(bar, progress_line), box=None, padding=(0, 0)) if HAVE_RICH else Text(""),
-                     Panel(logs, title="[dim]events[/dim]", box=None, padding=(0, 0)),
+        block = rich_box.MINIMAL if HAVE_RICH else None
+        return Group(Panel(header, box=block, padding=(0, 0)),
+                     Panel(vitals, box=block, padding=(0, 0)), table,
+                     Panel(Group(bar, progress_line), box=block, padding=(0, 0)) if HAVE_RICH else Text(""),
+                     Panel(logs, title="[dim]events[/dim]", box=block, padding=(0, 0)),
                      footer)
 
     def log(self, event: Event) -> None:
@@ -882,11 +937,14 @@ def command_web(args, config: Config, console) -> int:
     if not demo and not config.authorized:
         console.print("[yellow]Live mode without authorisation: the UI will refuse to run "
                       "attacks until you tick the authorisation box.[/yellow]")
-    host = args.host or config.web_host
+    host = args.host or config.web_host or "0.0.0.0"
     port = args.port or config.web_port
     provider, _ = config.active_provider(probe=False)
-    ai_line = f"provider: {provider}"
-    if provider == "openrouter":
+    if config.ai_off():
+        ai_line = "advisor: off · deterministic planner (no model, nothing leaves the box)"
+    else:
+        ai_line = f"advisor: {provider} (optional)"
+    if provider == "openrouter" and not config.ai_off():
         ai_line += (f" · model {config.openrouter.model}"
                     + (" · identifiers pseudonymised"
                        if config.openrouter.redact_identifiers else
@@ -900,7 +958,7 @@ def command_web(args, config: Config, console) -> int:
         f"mode: {'simulation' if demo else 'live'}\n"
         f"{ai_line}",
         border_style="cyan"))
-    if provider == "openrouter":
+    if provider == "openrouter" and not config.ai_off():
         console.print("[yellow]Cloud provider: SSIDs, BSSIDs, MACs and recovered PSKs of this "
                       "engagement are sent to openrouter.ai"
                       + (" (pseudonymised)" if config.openrouter.redact_identifiers else "")
@@ -2265,6 +2323,59 @@ def command_ai(args, config: Config, console) -> int:
     advisor.configure(config.ai_provider)
     action = args.ai_command or "status"
 
+    if config.ai_off() and action in ("status", "models", "pull", "use", "ask"):
+        # "off" is not a failure state, and it is not a reason to reach for the
+        # network either: report it and stop
+        if args.json:
+            print(json.dumps({"ok": True, "disabled": True, "provider": "none",
+                              "action": action,
+                              "note": "advisor disabled; the deterministic planner "
+                                      "is in use"},
+                             indent=2))
+            return 0 if action == "status" else 1
+        console.print("[bold]advisor: off[/bold] — "
+                      + ("no model is in use." if action == "status"
+                         else f"`{action}` needs a model, and none is in use.")
+                      + " The deterministic planner does the deciding.")
+        console.print("[dim]turn it on with `wifipilot ai on` (or drop --no-ai / "
+                      "WIFIPILOT_NO_AI).[/dim]")
+        return 0 if action == "status" else 1
+
+    if action in ("off", "on", "toggle"):
+        # the switch itself: no provider is probed on the way here, and "off" writes
+        # nothing but the one field, so it cannot be talked out of it
+        if action == "off" or (action == "toggle" and not config.ai_off()):
+            config.ai_provider = "none"
+        elif action == "on":
+            config.ai_provider = (getattr(args, "provider_name", "") or "auto").strip().lower()
+        else:                                   # toggle, and AI is currently off
+            config.ai_provider = "auto"
+        if getattr(args, "save", False):
+            path = config.save()
+            console.print(f"[dim]saved to {path}[/dim]")
+        disabled = config.ai_off()
+        env_off = str(os.environ.get("WIFIPILOT_NO_AI", "")).strip().lower() in (
+            "1", "true", "yes", "on")
+        payload = {"ok": True, "disabled": disabled, "ai_provider": config.ai_provider,
+                   "enabled": config.ai_enabled(), "env_off": env_off,
+                   "resolution": config.active_provider(probe=False)[1]}
+        if args.json:
+            print(json.dumps(payload, indent=2))
+            return 0
+        if disabled:
+            console.print("[bold]advisor: off[/bold] — the deterministic planner is "
+                          "doing the deciding. No model is called, and nothing about "
+                          "the engagement leaves this machine.")
+            console.print("[dim]turn it back on with `wifipilot ai on` (or "
+                          "`wp.ai(disable=False)` in Python).[/dim]")
+        else:
+            console.print(f"[bold]advisor: on[/bold] — provider "
+                          f"[magenta]{payload['resolution']}[/magenta]")
+        if env_off:
+            console.print("[yellow]note: WIFIPILOT_NO_AI is set in this shell, so the "
+                          "advisor stays off until you unset it.[/yellow]")
+        return 0
+
     if action == "status":
         available = advisor.check(force=True, announce=False)
         payload = advisor.status()
@@ -2298,7 +2409,7 @@ def command_ai(args, config: Config, console) -> int:
             if payload.get("allowance"):
                 lines.insert(5, f"allowance: {payload['allowance']}")
         lines.append(f"last error: [red]{payload['last_error'] or '—'}[/red]")
-        console.print(Panel("\n".join(lines), title="AI advisor", border_style="magenta"))
+        console.print(Panel("\n".join(lines), title="advisor (optional)", border_style="magenta"))
         if not available:
             console.print(f"[yellow]{advisor._offline_message()}[/yellow]")
         return 0

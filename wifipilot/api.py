@@ -53,7 +53,8 @@ from .util import (PLATFORM_OVERRIDE_ENV, is_linux, mac_norm, oui_vendor,
 __all__ = [
     "ALL", "ALL_ATTACKS", "MODES", "WifiPilotError", "PlatformError", "AuthorizationError", "BusyError",
     "TargetError", "CampaignError", "Run", "ScanResult", "CampaignResult",
-    "configure", "config", "demo", "authorize", "set_provider", "providers", "advisor_status",
+    "configure", "config", "demo", "authorize", "ai", "set_provider", "providers",
+    "advisor_status",
     "scan", "attack", "crack", "analyze", "export", "suggest_masks", "loot", "report",
     "strategies", "targets", "select", "selected", "note", "notes", "tag", "history",
     "vendor", "identify", "passwords", "advice", "benchmark", "hash_stats",
@@ -512,6 +513,104 @@ def authorize(note: str = "", confirmed: bool = True) -> Config:
     return config
 
 
+#: the provider an operator was using before they turned the advisor off, so
+#: ``wp.ai(disable=False)`` can put it back rather than guessing
+_AI_PREVIOUS: Dict[str, str] = {}
+
+
+def _apply_ai_state(config: Config) -> None:
+    """Push the current AI switch into a live engine (if there is one)."""
+    engine = _CTX.engine
+    if engine is None:
+        return
+    with _CTX.lock:
+        try:
+            engine.config.ai_provider = config.ai_provider
+            engine.advisor.configure(config.ai_provider, announce=False)
+            engine.session.auto_think = config.autothink_enabled() if config.ai_enabled() \
+                else False
+        except Exception:                                      # pragma: no cover
+            pass
+
+
+def ai(disable: Optional[bool] = None, provider: str = "", model: str = "") -> Dict[str, Any]:
+    """Turn the optional AI advisor off — or back on — and report what happened.
+
+    The advisor is a convenience, never a dependency: with it off, wifipilot runs on
+    the deterministic planner, and nothing is probed, called or sent anywhere.  Three
+    equivalent ways to say "off":
+
+    * ``wp.ai(disable=True)`` — this function, for scripts;
+    * ``wifipilot --no-ai`` / ``--disable-ai`` — the command line (also ``wifipilot
+      ai off``);
+    * ``WIFIPILOT_NO_AI=1`` — the environment, for CI or a machine that should never
+      run a model.
+
+    ``wp.ai(disable=False)`` restores the provider that was in use before the last
+    disable (``auto`` if there was none), ``provider=`` selects a specific one, and
+    calling with no arguments just reports the current state.
+    """
+    cfg = config()
+    requested = (provider or "").strip().lower()
+    if requested and requested not in ("auto", "ollama", "openrouter", "none"):
+        raise WifiPilotError(f"unknown provider {provider!r} "
+                             f"(expected auto|ollama|openrouter|none)")
+    if requested == "none" and disable is None:
+        disable = True                      # provider="none" and disable=True are one thing
+    env_off = str(os.environ.get("WIFIPILOT_NO_AI", "")).strip().lower() in (
+        "1", "true", "yes", "on")
+
+    changed = False
+    if disable is True:
+        if not cfg.ai_off():
+            _AI_PREVIOUS["provider"] = cfg.ai_provider
+        changed = cfg.ai_provider != "none"
+        cfg.ai_provider = "none"
+    elif disable is False:
+        restore = requested or _AI_PREVIOUS.pop("provider", "") or "auto"
+        if restore.lower() in ("none", "off", "disabled"):
+            restore = "auto"
+        changed = cfg.ai_provider != restore
+        cfg.ai_provider = restore
+    elif requested:
+        changed = cfg.ai_provider != requested
+        cfg.ai_provider = requested
+        _AI_PREVIOUS.pop("provider", None)
+    if changed:
+        _apply_ai_state(cfg)
+    if model:
+        chosen = cfg.llm_config()
+        if chosen is not None and hasattr(chosen, "model"):
+            chosen.model = model
+        if _CTX.engine is not None:
+            try:
+                _CTX.engine.advisor.use_model(model)
+            except Exception:                                  # pragma: no cover
+                pass
+        changed = True
+    off = bool(cfg.ai_off())
+    resolved, reason = (("none", "AI advisor disabled") if off
+                        else cfg.active_provider(probe=False))
+    if off and env_off:
+        reason = ("AI advisor disabled by WIFIPILOT_NO_AI — unset it in this shell to "
+                  "re-enable the advisor")
+    status = {
+        "ok": True, "changed": changed,
+        "disabled": off, "enabled": bool(cfg.ai_enabled()),
+        "provider": resolved, "reason": reason,
+        "configured_provider": cfg.ai_provider,
+        "env_off": env_off,
+        "model": getattr(cfg.llm_config(), "model", "") or "",
+        "previous": _AI_PREVIOUS.get("provider", ""),
+        "note": ("deterministic planner only: no model is called, nothing leaves "
+                 "this machine" if off else
+                 "AI advisor available" + (" (local)" if resolved == "ollama"
+                                           else " (cloud)" if resolved == "openrouter"
+                                           else "")),
+    }
+    return status
+
+
 def set_provider(provider: str = "auto", model: str = "", **kwargs: Any) -> Dict[str, Any]:
     """Choose the AI provider (``auto``/``ollama``/``openrouter``/``none``).
 
@@ -524,11 +623,17 @@ def set_provider(provider: str = "auto", model: str = "", **kwargs: Any) -> Dict
         raise ValueError("provider must be auto, ollama, openrouter or none")
     if provider == "openrouter":
         kwargs.setdefault("redact_identifiers", True)
+    cfg = config()
+    if provider == "none" and not cfg.ai_off():
+        # remember what we are about to turn off, so wp.ai(disable=False) can put it
+        # back — configure() below would overwrite ai_provider before ai() sees it
+        _AI_PREVIOUS["provider"] = cfg.ai_provider
     configure(provider=provider, model=model or None, **kwargs)
-    if _CTX.engine is not None:
-        _CTX.engine.advisor.configure(provider, announce=False)
-        if model:
-            _CTX.engine.advisor.use_model(model)
+    # one switch for both entry points: wp.set_provider("none") and wp.ai(disable=True)
+    # must mean exactly the same thing, including for a live engine
+    ai(provider=provider)
+    if model:
+        ai(model=model)
     return advisor_status()
 
 

@@ -65,7 +65,7 @@
   "web_host": "0.0.0.0",
   "web_port": 8787,
   "web_open_browser": false,
-  "_ai": "Two providers. ai_provider: auto (prefer local Ollama) | ollama | openrouter | none. Ollama only accepts loopback hosts unless allow_remote_host is set — anything else sends engagement data off the machine. OpenRouter is a cloud service: it stays disabled until you enable it AND provide a key, identifiers are pseudonymised by default and max_cost_usd caps the spend.",
+  "_ai": "Optional. No model is required: with ai_provider \"none\" (or --no-ai/--disable-ai, WIFIPILOT_NO_AI=1, wp.ai(disable=True)) wifipilot runs the deterministic planner and never opens a socket to a model. Otherwise: auto (prefer local Ollama) | ollama | openrouter. Ollama only accepts loopback hosts unless allow_remote_host is set — anything else sends engagement data off the machine. OpenRouter is a cloud service: it stays disabled until you enable it AND provide a key, identifiers are pseudonymised by default and max_cost_usd caps the spend.",
   "ai_provider": "auto",
   "ollama": {
     "enabled": true,

@@ -174,13 +174,21 @@ function renderHeader(state) {
   $('#paths').textContent = session.state_dir ? ` · session: ${session.state_dir}` : '';
 
   const ai = state.advisor || {};
+  const off = ai.disabled || ai.provider === 'none' || !!(state.config || {}).ai_disabled;
   const aiBadge = $('#ai-badge');
-  const providerNames = { ollama: 'ollama', openrouter: 'openrouter (cloud)', none: 'off' };
-  aiBadge.textContent = `ai: ${providerNames[ai.provider] || ai.provider || '—'}`
-    + (ai.model ? ` · ${ai.model}` : '');
-  aiBadge.className = 'badge ' + (ai.available
-    ? (ai.cloud ? 'badge-live' : 'badge-llm')
-    : 'badge-idle');
+  if (off) {
+    aiBadge.textContent = 'ai: off · deterministic planner';
+    aiBadge.className = 'badge badge-off';
+  } else {
+    const providerNames = { ollama: 'ollama', openrouter: 'openrouter (cloud)', none: 'off' };
+    aiBadge.textContent = `ai: ${providerNames[ai.provider] || ai.provider || '—'}`
+      + (ai.model ? ` · ${ai.model}` : '') + (ai.cloud ? ' · cloud' : '');
+    aiBadge.className = 'badge ' + (ai.available
+      ? (ai.cloud ? 'badge-live' : 'badge-llm')
+      : 'badge-idle');
+  }
+  const tab = $('#tab-btn-ai');
+  if (tab) tab.classList.toggle('tab-muted', off);
 }
 
 function sigClass(signal) {
@@ -272,16 +280,22 @@ function renderAdvisor(state) {
   const ai = state.advisor || {};
   const policy = ai.policy || {};
   const config = state.config || {};
-  const labels = { ollama: 'Ollama (local)', openrouter: 'OpenRouter (cloud)', none: 'disabled' };
+  const off = ai.disabled || ai.provider === 'none' || !!config.ai_disabled;
+  const labels = { ollama: 'Ollama (local)', openrouter: 'OpenRouter (cloud)', none: 'off' };
   const providerLabel = labels[ai.provider] || ai.provider || '—';
-  const reach = ai.available
-    ? '<span class="ok">online</span>'
-    : `<span class="dim">offline${ai.last_error ? ' — ' + escapeHtml(ai.last_error) : ''}</span>`;
+  const reach = off ? '<span class="dim">no model in use</span>'
+    : (ai.available
+      ? '<span class="ok">online</span>'
+      : `<span class="dim">offline${ai.last_error ? ' — ' + escapeHtml(ai.last_error) : ''}</span>`);
   const rows = [
-    ['provider', `<b>${escapeHtml(providerLabel)}</b> ${ai.cloud ? '<span class="tag tag-wep">cloud</span>' : '<span class="tag tag-ok">local</span>'}`],
-    ['endpoint', `${reach} <span class="dim">${escapeHtml(ai.host || '')}</span>`],
-    ['model', escapeHtml(ai.model || '—')],
-    ['auto-think', (state.session || {}).auto_think ? 'enabled' : 'disabled'],
+    ['provider', off
+      ? '<b>off</b> <span class="tag tag-ok">deterministic planner</span>'
+      : `<b>${escapeHtml(providerLabel)}</b> ${ai.cloud ? '<span class="tag tag-wep">cloud</span>' : '<span class="tag tag-ok">local</span>'}`],
+    ['endpoint', off ? '<span class="dim">nothing is contacted</span>'
+      : `${reach} <span class="dim">${escapeHtml(ai.host || '')}</span>`],
+    ['model', off ? '<span class="dim">—</span>' : escapeHtml(ai.model || '—')],
+    ['auto-think', off ? '<span class="dim">n/a</span>'
+      : ((state.session || {}).auto_think ? 'enabled' : 'disabled')],
     ['plans', `${ai.plan_count || 0} by model · ${ai.fallback_count || 0} by heuristics`],
     ['calls / errors', `${ai.calls || 0} / ${ai.errors || 0}`],
     ['avg latency', ai.avg_latency ? `${ai.avg_latency}s` : '—'],
@@ -322,14 +336,34 @@ function renderAdvisor(state) {
     budgetBox.value = Number(policy.max_cost_usd).toFixed(2);
   }
 
-  $('#ai-privacy').innerHTML = ai.cloud
-    ? 'Cloud provider: <b>engagement data leaves this machine</b>'
-      + (policy.redact_identifiers ? ' (identifiers pseudonymised).' : ' (identifiers sent verbatim).')
-      + ' Switch back to Ollama to keep everything local.'
-    : 'Everything runs on this machine through Ollama. Nothing is sent to a remote service '
-      + 'unless you switch to OpenRouter, which is off by default.';
+  const offNote = $('#ai-off-note');
+  if (offNote) offNote.hidden = !off;
+  const quickOff = $('#btn-ai-off');
+  if (quickOff) quickOff.hidden = off;
+  const openrouterCard = $('#card-openrouter');
+  if (openrouterCard) openrouterCard.classList.toggle('card-off', off);
+  const chatCard = $('#card-chat');
+  if (chatCard) chatCard.classList.toggle('card-off', off);
+  for (const id of ['#btn-think', '#btn-chat', '#inp-chat', '#sel-model', '#btn-model',
+                    '#btn-models-refresh', '#inp-pull', '#btn-pull', '#inp-or-key',
+                    '#btn-or-key', '#chk-or-consent']) {
+    const node = $(id);
+    if (node) node.disabled = off;
+  }
+  $('#row-pull').style.display = off ? 'none' : ((ai.provider || 'ollama') === 'ollama' ? '' : 'none');
 
-  renderModelOptions(ai);
+  $('#ai-privacy').innerHTML = off
+    ? 'The advisor is <b>off</b>. No model is called and nothing about this engagement '
+      + 'leaves this machine — the deterministic planner scores targets and picks attacks. '
+      + 'Turn it back on from the provider picker above whenever you want a second opinion.'
+    : (ai.cloud
+      ? 'Cloud provider: <b>engagement data leaves this machine</b>'
+        + (policy.redact_identifiers ? ' (identifiers pseudonymised).' : ' (identifiers sent verbatim).')
+        + ' Switch back to Ollama to keep everything local.'
+      : 'Everything runs on this machine through Ollama. Nothing is sent to a remote service '
+        + 'unless you switch to OpenRouter, which is off by default.');
+
+  if (!off) renderModelOptions(ai);
   if (ai.last_plan) renderPlan(ai.last_plan);
 }
 
@@ -337,6 +371,7 @@ let MODEL_CACHE = [];
 
 function renderModelOptions(ai) {
   const select = $('#sel-model');
+  if (!select) return;
   const current = (ai || {}).model || '';
   const search = ($('#inp-model-search').value || '').toLowerCase();
   const freeOnly = $('#chk-free').checked;
@@ -520,9 +555,20 @@ function wire() {
   $('#btn-stop').onclick = () => api('/api/campaign', { action: 'stop' });
   $('#btn-cancel').onclick = () => api('/api/cancel', {});
   $('#btn-rescan').onclick = () => api('/api/rescan', { seconds: 20 });
-  $('#btn-think').onclick = () => api('/api/ai/think', {}).then((r) => r && r.plan && renderPlan(r.plan));
+  $('#btn-think').onclick = () => api('/api/ai/think', {}).then((r) => {
+    if (r && r.disabled) { toast('advisor is off — the deterministic planner is already deciding'); return; }
+    if (r && r.plan) renderPlan(r.plan);
+  });
   $('#btn-recheck').onclick = () => fetch('/api/tools?force=true').then((r) => r.json()).then(() => api('/api/state', null, 'GET'));
   $('#btn-model').onclick = () => api('/api/ai/model', { model: $('#sel-model').value });
+  $('#btn-ai-off').onclick = () => {
+    api('/api/ai/toggle', { disabled: true });
+    toast('advisor off — the deterministic planner is deciding');
+  };
+  $('#btn-ai-toggle').onclick = () => {
+    api('/api/ai/toggle', { disabled: false });
+    toast('advisor on — auto (local Ollama first)');
+  };
   $('#btn-provider').onclick = () => {
     const provider = $('#sel-provider').value;
     if (provider === 'openrouter' && !$('#chk-or-consent').checked) {
@@ -645,9 +691,20 @@ function sendChat() {
   const input = $('#inp-chat');
   const message = input.value.trim();
   if (!message) return;
+  const ai = (SNAPSHOT || {}).advisor || {};
+  if (ai.disabled || ai.provider === 'none') {
+    toast('advisor is off — turn it on to ask a model; the planner needs no prompting', true);
+    return;
+  }
   appendChat('user', message);
   input.value = '';
-  api('/api/ai/chat', { message });
+  api('/api/ai/chat', { message }).then((r) => {
+    if (r && r.disabled) {
+      toast(r.note || 'advisor is off', true);
+      appendChat('system', 'The advisor is off, so no model answered. The deterministic '
+        + 'planner is still choosing attacks.');
+    }
+  });
 }
 
 function parseDuration(text) {

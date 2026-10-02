@@ -1,4 +1,4 @@
-"""wifipilot -- an AI-piloted alternative to wifite.
+"""wifipilot -- a wifite alternative, with an optional model-driven advisor.
 
 wifipilot automates the boring parts of authorised WiFi auditing:
 
@@ -8,8 +8,12 @@ wifipilot automates the boring parts of authorised WiFi auditing:
 * WEP IV harvesting
 * offline cracking orchestration (aircrack-ng / hashcat) with wordlist + rule
   intelligence
-* **auto-think**: a local LLM served by Ollama plans the engagement, adapts when
-  an attack fails and explains itself in plain language
+* **optional auto-think**: a local LLM served by Ollama (or OpenRouter, opt-in) can
+  plan the engagement, adapt when an attack fails and explain itself in plain
+  language — and it can be switched off completely (`wp.ai(disable=True)`,
+  `--no-ai`/`--disable-ai`, `WIFIPILOT_NO_AI=1`), in which case the deterministic
+  planner does the same job with no model in the loop at all.  "AI" is short for
+  *advisor*, and the advisor is optional by design
 * a live web UI (FastAPI + WebSocket) that mirrors the whole session
 
 It is also a library: the public API is re-exported here, so a script can drive
@@ -40,7 +44,7 @@ __all__ = [
     "ALL", "ALL_ATTACKS", "MODES", "WifiPilotError", "PlatformError", "AuthorizationError",
     "BusyError",
     "TargetError", "Run", "ScanResult", "CampaignResult",
-    "configure", "config", "demo", "authorize", "set_provider", "providers",
+    "configure", "config", "demo", "authorize", "ai", "set_provider", "providers",
     "advisor_status", "scan", "attack", "crack", "analyze", "export", "suggest_masks",
     "strategies", "targets", "select", "selected", "note", "notes", "tag", "history",
     "vendor", "identify", "passwords", "advice", "benchmark", "hash_stats",
@@ -80,7 +84,7 @@ from .api import (  # noqa: E402  (import at the end: api.py imports config/mode
     vendor, identify, passwords, advice, benchmark, hash_stats, merge_hashes,
     rescue_capture, wordlist_stats, expand_wordlist, rules_info, loot_manifest,
     verify_loot, survey, probes, pins, reveal, eap, decode, pmk_verify, pmk_convert,
-    pmk_cache,
+    pmk_cache, ai,
     providers, report, reset, scan, session, set_provider, status, stop, subscribe,
 )
 

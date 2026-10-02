@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>wifipilot · AI-piloted WiFi auditing</title>
+<title>wifipilot · WiFi auditing (wifite alternative)</title>
 <link rel="stylesheet" href="/static/style.css" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>" />
 </head>
@@ -13,13 +13,13 @@
     <span class="logo">📡</span>
     <div>
       <h1>wifipilot</h1>
-      <p class="tagline">AI-piloted WiFi auditing <span class="dim">· wifite alternative · authorised use only</span></p>
+      <p class="tagline">WiFi auditing <span class="dim">· wifite alternative · web UI · authorised use only</span></p>
     </div>
   </div>
   <div class="status-group">
     <span id="mode-badge" class="badge badge-demo">simulation</span>
     <span id="phase-badge" class="badge badge-idle">idle</span>
-      <span id="ai-badge" class="badge badge-idle" title="active AI provider">ai: —</span>
+      <span id="ai-badge" class="badge badge-off" title="the advisor is optional; off means the deterministic planner decides">ai: —</span>
     <span id="conn-badge" class="badge badge-conn">connecting…</span>
     <span class="kpi"><b id="kpi-aps">0</b><small>APs</small></span>
     <span class="kpi"><b id="kpi-clients">0</b><small>clients</small></span>
@@ -49,7 +49,7 @@
 <nav class="tabs">
   <button class="tab active" data-tab="targets">Targets <span id="tab-count-targets" class="pill">0</span></button>
   <button class="tab" data-tab="loot">Loot <span id="tab-count-loot" class="pill">0</span></button>
-  <button class="tab" data-tab="ai">AI advisor</button>
+  <button class="tab" data-tab="ai" id="tab-btn-ai">AI advisor <span class="dim">· optional</span></button>
   <button class="tab" data-tab="log">Log</button>
   <button class="tab" data-tab="settings">Tools &amp; settings</button>
 </nav>
@@ -93,6 +93,12 @@
 
   <!-- ---------------------------------------------------------------- -->
   <section id="tab-ai" class="tabpane">
+    <div id="ai-off-note" class="banner banner-off" hidden>
+      <span><b>The advisor is off.</b> The deterministic planner is scoring targets and
+      picking attacks on its own — no model is called and nothing about this engagement
+      leaves this machine. Everything else in wifipilot works exactly the same.</span>
+      <button id="btn-ai-toggle" class="btn btn-primary">turn the advisor on</button>
+    </div>
     <div class="grid ai-grid">
       <div class="card">
         <h3>Model provider</h3>
@@ -104,6 +110,7 @@
             <option value="none">disabled — planner heuristics only</option>
           </select>
           <button id="btn-provider" class="btn">switch</button>
+          <button id="btn-ai-off" class="btn btn-quiet" title="stop using a model entirely">off</button>
         </div>
         <div id="ai-status" class="kv"></div>
         <div class="row">
@@ -144,14 +151,14 @@
         <code>wifipilot.json</code> (mode 600) and is never sent back to this page. Prefer the
         <code>OPENROUTER_API_KEY</code> environment variable or a key file in production.</p>
       </div>
-      <div class="card">
+      <div class="card" id="card-plan">
         <h3>Last plan <span id="plan-source" class="badge badge-idle">—</span></h3>
         <div id="plan-reasoning" class="reasoning">No plan yet. Start a campaign or press “Think now”.</div>
         <ul id="plan-actions" class="actions"></ul>
         <div id="plan-dropped" class="dropped"></div>
       </div>
     </div>
-    <div class="card chat-card">
+    <div class="card chat-card" id="card-chat">
       <h3>Ask the advisor about this engagement</h3>
       <div id="chat-log" class="chat-log"></div>
       <div class="row">
