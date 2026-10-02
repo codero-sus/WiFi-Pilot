@@ -388,7 +388,14 @@ class Advisor:
 
     def models(self, force: bool = False, query: str = "", limit: int = 0,
                free_only: bool = False) -> List[Dict[str, Any]]:
-        """The model catalogue of the active provider (for pickers and `ai models`)."""
+        """The model catalogue of the active provider (for pickers and `ai models`).
+
+        Disabled means disabled: with no provider there is nothing to list and
+        nothing to ask, so this returns empty instead of probing a daemon.
+        """
+        if self.provider == "none" or not bool(getattr(self.config, "enabled", False)):
+            self.models_error = "advisor disabled"
+            return []
         client = self.client
         if isinstance(client, OpenRouterClient):
             models = client.list_models(force=force, query=query, limit=limit,
@@ -525,7 +532,15 @@ class Advisor:
                 self.config, "allow_insecure_base_url", False)
             policy["provider_routing"] = dict(getattr(self.config, "provider_routing", {}) or {})
         info = self.key_info() if self.is_cloud() else {}
+        # a disabled advisor must not touch the network — not even to ask a daemon
+        # which models it has: "off" means off
+        switched_off = False
+        session_config = getattr(self.session, "config", None)
+        if session_config is not None and hasattr(session_config, "ai_off"):
+            switched_off = bool(session_config.ai_off())
+        quiet = self.provider == "none" or not bool(getattr(self.config, "enabled", False))
         return {
+            "disabled": switched_off,
             "provider": self.provider,
             "provider_reason": self.provider_reason,
             "provider_label": {
@@ -534,11 +549,11 @@ class Advisor:
             }.get(self.provider, self.provider),
             "cloud": self.is_cloud(),
             "enabled": bool(getattr(self.config, "enabled", False)),
-            "available": self.available,
+            "available": bool(self.available and not quiet),
             "host": self.client.host,
             "model": self.model,
-            "models": [m.to_dict() for m in self.client.list_models()],
-            "models_error": getattr(self.client, "models_error", ""),
+            "models": [] if quiet else [m.to_dict() for m in self.client.list_models()],
+            "models_error": "" if quiet else getattr(self.client, "models_error", ""),
             "auto_think": self.session.auto_think,
             "plan_count": self.plan_count,
             "fallback_count": self.fallback_count,
@@ -735,6 +750,15 @@ class Advisor:
     # -- internals ---------------------------------------------------------
     def _offline_message(self) -> str:
         """Operator-facing help text when the active provider cannot answer."""
+        switched_off = False
+        session_config = getattr(self.session, "config", None)
+        if session_config is not None and hasattr(session_config, "ai_off"):
+            switched_off = bool(session_config.ai_off())
+        if self.provider == "none" or switched_off:
+            return ("The advisor is off — no model is being used, and that is a valid way "
+                    "to run: the deterministic planner scores targets and picks attacks.\n"
+                    "  wifipilot ai on              # turn the advisor back on\n"
+                    "  wifipilot --provider ollama  # ...with a local model")
         if self.provider == "openrouter":
             key = getattr(self.config, "api_key_env", "OPENROUTER_API_KEY")
             return (f"OpenRouter is not usable ({self.last_error or 'unavailable'}).\n"

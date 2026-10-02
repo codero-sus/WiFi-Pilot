@@ -1,6 +1,6 @@
 # wifipilot 📡
 
-**An AI-piloted WiFi auditing tool — a modern alternative to `wifite`, in Python, for Linux, with a local- or cloud-LLM advisor and a web UI.**
+**A WiFi auditing tool — a modern alternative to `wifite`, in Python, for Linux, with a web UI and an optional local- or cloud-LLM advisor.**
 
 `wifipilot` automates the boring, error-prone parts of an authorised wireless assessment:
 it finds the targets, decides which attack is worth the time, runs it, cracks what it
@@ -10,11 +10,22 @@ captures, and explains every decision in plain language.
 and the aircrack-ng suite; there is no supported macOS or Windows build, and
 `wifipilot` refuses to run on anything but Linux.
 
-**Two model providers.** By default the advisor is a local model served by
-[Ollama](https://ollama.com) and nothing about the engagement leaves the machine. If you
-would rather use a bigger model, [OpenRouter](https://openrouter.ai) is supported — opt-in
-only, with an API key, a spend cap, and engagement identifiers pseudonymised before they
-are sent. See [docs/AI-PROVIDERS.md](docs/AI-PROVIDERS.md).
+**No model required.** wifipilot decides what to do with a deterministic planner: target
+scoring, attack selection, failure triage and cracking strategy are all rule-based, offline
+and completely free. If you *want* a second opinion, an **optional** advisor can add a model
+on top — a local one served by [Ollama](https://ollama.com) (nothing leaves the machine) or,
+opt-in with an API key and a spend cap, [OpenRouter](https://openrouter.ai). With the advisor
+off, wifipilot never opens a socket to anything but your radio.
+
+```bash
+wifipilot --no-ai attack -d 30m        # --disable-ai and --offline say the same thing
+wifipilot ai off                        # switch it off for good (persist with --save)
+WIFIPILOT_NO_AI=1 wifipilot web         # ...or for one shell, e.g. in CI
+```
+```python
+import wifipilot as wp
+wp.ai(disable=True)                     # deterministic planner only, nothing sent anywhere
+```
 
 ```
   ██╗    ██╗██╗███████╗██╗██████╗ ██╗██╗      ██████╗ ████████╗
@@ -23,7 +34,7 @@ are sent. See [docs/AI-PROVIDERS.md](docs/AI-PROVIDERS.md).
   ██║███╗██║██║██╔══╝  ██║██╔═══╝ ██║██║     ██║   ██║   ██║
   ╚███╔███╔╝██║██║     ██║██║     ██║███████╗╚██████╔╝   ██║
    ╚══╝╚══╝ ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝╚══════╝ ╚═════╝    ╚═╝
-  AI-piloted wifi auditing · wifite alternative · authorised use only
+  wifi auditing · wifite alternative · authorised use only
 ```
 
 > ⚠️ **Authorised use only.** Active wireless attacks disrupt service and are illegal
@@ -42,7 +53,7 @@ are sent. See [docs/AI-PROVIDERS.md](docs/AI-PROVIDERS.md).
 - [Quickstart (no hardware required)](#quickstart-no-hardware-required)
 - [Real engagement](#real-engagement)
 - [The web UI](#the-web-ui)
-- [The AI advisor (Ollama or OpenRouter)](#the-ai-advisor-ollama-or-openrouter)
+- [Optional: the advisor (Ollama or OpenRouter)](#optional-the-advisor-ollama-or-openrouter)
 - [Attacks](#attacks) — [reference for every attack](docs/ATTACKS.md)
 - [Cracking](#cracking)
 - [CLI reference](#cli-reference)
@@ -130,9 +141,13 @@ aircrack-ng suite properly) and rebuilds everything around it:
 - **benchmark**: `wifipilot benchmark` measures this machine's candidate rate and turns it into
   ETAs — no radio, no target, safe to run anywhere
 
-**Intelligence (optional, two providers)**
-- **auto-think**: the advisor re-reads a compact situation report every N seconds and picks
-  the next actions with reasoning
+**Intelligence (optional — off, local or cloud; all three work)**
+- **deterministic planner**: scores every target, picks the attack order, triages failures and
+  re-plans when a capture fails. It is the default brain and it needs no model, no network and
+  no key — this is what runs with `--no-ai`/`--disable-ai`, `wifipilot ai off`, or
+  `WIFIPILOT_NO_AI=1`
+- **auto-think** (only with a provider enabled): the advisor re-reads a compact situation
+  report every N seconds and picks the next actions with reasoning
 - **failure triage**: natural-language diagnosis of why an attack failed and what to do next
 - **chat**: ask about the running engagement ("what is the biggest risk we found?")
 - **local by default** (Ollama): free, offline, nothing leaves the machine
@@ -140,8 +155,8 @@ aircrack-ng suite properly) and rebuilds everything around it:
   identifier redaction — SSIDs, BSSIDs, client MACs and recovered PSKs become
   `ssid-1`/`bssid-1`/`mac-1`/`psk-1` before they are sent, and are mapped back before the
   plan runs
-- deterministic fallback planner whenever the model is missing, out of credit, rate limited
-  or incoherent — the tool never stalls on the AI
+- deterministic fallback planner whenever the model is disabled, missing, out of credit,
+  rate limited or incoherent — the tool never stalls on the AI, and never asks for one
 
 **Scriptable**
 - `import wifipilot as wp` — `wp.attack(target=all, mode="force")`, `wp.scan()`, `wp.crack()`,
@@ -240,13 +255,26 @@ sudo apt install wpasupplicant # client-side checks
 Minimum for a live run: `aircrack-ng` (provides `airmon-ng`, `airodump-ng`, `aireplay-ng`).
 Everything else unlocks extra attacks. **No tools and no radio? Use `--demo`.**
 
-Optional AI advisor — local (default):
+**Nothing above is required to use wifipilot**: the deterministic planner runs the whole
+engagement without a model. If you want the optional advisor, a local model is the default:
 
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
 ollama pull llama3.1:8b        # or qwen2.5:7b / mistral:7b — anything 3–14B works
 wifipilot ai status
 ```
+
+...and the three equivalent ways to turn the advisor off again:
+
+| where | how |
+| --- | --- |
+| CLI | `wifipilot --no-ai …`, `wifipilot --disable-ai …`, `wifipilot --offline …`, or `wifipilot ai off [--save]` |
+| Python | `wp.ai(disable=True)` — `wp.ai(disable=False)` restores the previous provider |
+| environment | `WIFIPILOT_NO_AI=1` (also `true`/`yes`/`on`) |
+
+`wifipilot ai on`, `wp.ai(provider="ollama")` and `wifipilot ai toggle` switch it back.
+While it is off, `wifipilot ai status` says so instead of probing, `wifipilot ai models`
+returns nothing instead of calling a daemon, and the web UI greys the advisor tab out.
 
 Or cloud, if you would rather not run a model locally:
 
@@ -352,9 +380,11 @@ wifipilot web --demo --open   # simulation + opens your browser
   score, who decided) with per-row attack/crack buttons and a detail drawer showing clients
   and full attack history.
 * **Loot** — every capture with its verification status, recovered PSK, and download links.
-* **AI advisor** — Ollama status, model picker, `ollama pull` from the browser, the last plan
-  with its reasoning and the actions the safety validator rejected, plus a chat panel with
-  one-click prompts.
+* **AI advisor** *(optional — greyed out and inert when the advisor is off, with a one-click
+  "turn it back on" banner)* — Ollama status, model picker, `ollama pull` from the browser, the
+  last plan with its reasoning and the actions the safety validator rejected, plus a chat panel
+  with one-click prompts. The header badge reads `ai: off · deterministic planner` while it is
+  disabled, and every button that would need a model is disabled with it.
 * **Log** — the live event stream and progress bar, identical to the CLI.
 * **Tools & settings** — dependency report with install hints, interface capabilities, attack
   toggles, wordlists, engagement settings.
@@ -366,13 +396,18 @@ proxy or an SSH tunnel (`ssh -L 8787:localhost:8787 box`).
 > The UI binds `0.0.0.0` by default so containers and tunnels work out of the box. On an
 > untrusted network, bind loopback instead: `wifipilot web --host 127.0.0.1`.
 
-## The AI advisor (Ollama or OpenRouter)
+## Optional: the advisor (Ollama or OpenRouter)
 
-Two providers, one advisor. Switching is a flag, a config key, or a click in the web UI:
+**Skip this section if you do not want a model in the loop.** Everything above works without
+it; this is the extra. Two providers, one advisor. Switching is a flag, a config key, a
+click in the web UI, or one line of Python (`wp.ai(disable=True)`):
 
 ```bash
 wifipilot ai providers                      # what is configured / what is missing
 wifipilot ai status                         # active provider, model, quota, spend
+wifipilot ai off                            # stop using a model (add --save to remember)
+wifipilot ai on [ollama|openrouter|auto]    # ...and switch it back on
+wifipilot ai toggle                         # flip it, whatever it currently is
 wifipilot ai models [--search qwen] [--free]
 wifipilot ai use openai/gpt-4o-mini --provider openrouter --save
 wifipilot ai ask "which target first?" --report sessions/…/reports/report.json
@@ -585,6 +620,7 @@ wifipilot loot    verify   [--dir DIR]
 
 wifipilot tools  [--force]
 wifipilot ai     status|models|providers|use MODEL|pull MODEL|ask "…"
+                 |off|on [auto|ollama|openrouter]|toggle   [--save]
                  [--provider auto|ollama|openrouter|none] [--report export.json]
 wifipilot config [--write FILE] [--init]
 
@@ -595,7 +631,8 @@ global:  -c/--config  -i/--interface  -m/--monitor  --demo  -y/--i-am-authorized
 ai:      --provider auto|ollama|openrouter|none  --model NAME  --ollama-host URL
          --openrouter-key KEY  --openrouter-base-url URL
          --ai-redact / --no-ai-redact  --ai-budget USD  --no-ai
-         --think-interval 30s
+         --disable-ai (alias of --no-ai)  --offline (alias of --no-ai)
+         --think-interval 30s          # all of this is optional; see "Optional: the advisor"
 ```
 
 `--json` is supported on every command and keeps stdout machine-readable (human progress
@@ -620,6 +657,7 @@ See [wifipilot.example.json](wifipilot.example.json) for the annotated version. 
   "output_dir": "loot",
   "session_dir": "sessions",
   "ai_provider": "auto",         // auto | ollama | openrouter | none
+                                 // "none" = no model at all (--no-ai/--disable-ai, wp.ai(disable=True))
   "ollama": {                    // local, private, free (the default)
     "enabled": true,
     "host": "http://127.0.0.1:11434",
@@ -825,9 +863,13 @@ The suite is organised by concern rather than by module:
 | `test_openrouter*.py` | the AI layer, with a fake transport and against a local mock of the real API |
 | `test_session.py`, `test_web.py`, `test_cli.py` | the session/report layer, web API and CLI |
 | `test_api.py` | the importable module surface — `import wifipilot as wp` behaves as documented |
+| `test_ai_optional.py` | the off switch: `wp.ai(disable=True)`, the CLI aliases, `WIFIPILOT_NO_AI`, and a disabled advisor that never opens a socket |
 | `test_engine_demo.py`, `test_platform.py`, `test_advisor.py` | end-to-end simulated campaigns, driver/platform guards, Ollama advisor |
 
-The AI layer is tested twice: once with a faked transport, and once against a local mock of
+The advisor is optional and tested that way: `test_ai_optional.py` asserts that with the
+switch off nothing is probed, no client method is reached, and the CLI, the HTTP API and the
+dashboard all report the deterministic planner instead. The AI layer itself is tested twice:
+once with a faked transport, and once against a local mock of
 OpenRouter's API that speaks the real wire format (`/models`, `/key`, `/chat/completions` with
 SSE streaming), so request construction, auth headers, streaming, error classification, cost
 accounting and identifier redaction are all exercised without touching the internet.
@@ -848,7 +890,10 @@ traffic. `wifipilot --demo scan` proves the pipeline works when the radio does n
 **"no handshake captured"** — no clients to deauth (use `pmkid` instead), PMF/802.11w active
 (targets ignore deauth), or the client is asleep. The advisor's triage says which.
 
-**Ollama: "cannot reach …"** — `ollama serve`, then `ollama pull llama3.1:8b`.
+**Ollama: "cannot reach …"** — the model is optional, so this is a note rather than a
+failure: the deterministic planner keeps running. To use a model, `ollama serve` then
+`ollama pull llama3.1:8b`; to stop the note and never touch a model again,
+`wifipilot ai off --save` (or `--no-ai`, or `WIFIPILOT_NO_AI=1`).
 The tool keeps working with the deterministic planner meanwhile.
 
 **"it runs on Linux only" / I'm on macOS** — correct, and deliberate: `wifipilot` needs

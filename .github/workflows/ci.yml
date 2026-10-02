@@ -44,6 +44,14 @@ jobs:
       - name: Scriptable API tests
         run: python -m pytest tests/test_api.py -q
 
+      - name: The advisor is optional (off switch, aliases, no-socket promise)
+        run: |
+          python -m pytest tests/test_ai_optional.py -q
+          python -m wifipilot --no-ai --json ai status | grep -q '"disabled": true'
+          python -m wifipilot --disable-ai --json ai status | grep -q '"provider": "none"'
+          WIFIPILOT_NO_AI=1 python -c "import wifipilot as wp; assert wp.ai()['disabled'] is True"
+          python -c "import wifipilot as wp; wp.ai(disable=True); assert wp.ai()['disabled']; wp.ai(disable=False); assert not wp.ai()['disabled']"
+
       - name: Attack decoders and gates (elements, raw frames, planner)
         run: python -m pytest tests/test_attacks_more.py -q
 

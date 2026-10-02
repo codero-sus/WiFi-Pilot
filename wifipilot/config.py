@@ -133,18 +133,6 @@ class OpenRouterConfig:
             return ""
         return f"set ({len(key)} chars, {self.key_source()})"
 
-    def ai_enabled(self) -> bool:
-        """True when *any* usable provider is configured (no network probe)."""
-        provider, _ = self.active_provider(probe=False)
-        return provider != "none"
-
-    def think_interval_seconds(self) -> float:
-        """Autonomous re-plan interval of the active provider (0 = never)."""
-        cfg = self.llm_config()
-        if cfg is None:
-            return 0.0
-        return float(getattr(cfg, "think_interval", 45.0) or 0.0)
-
     def autothink_enabled(self) -> bool:
         return bool(self.enabled and self.enable_autothink)
 
@@ -316,8 +304,24 @@ class Config:
         return self.ollama if self.ollama.enabled else (
             self.openrouter if self.openrouter.enabled else self.ollama)
 
+    def ai_off(self) -> bool:
+        """True when the operator asked for no AI at all.
+
+        Three ways to say it, all equivalent: ``ai_provider="none"``, ``--no-ai`` /
+        ``--disable-ai`` (which set that field), or ``WIFIPILOT_NO_AI=1`` in the
+        environment (useful for CI, and for anyone who never wants a model in the
+        loop).  The switch is checked before anything is probed or called, so a
+        disabled advisor never opens a socket.
+        """
+        if (self.ai_provider or "").strip().lower() in ("none", "off", "disabled"):
+            return True
+        return str(os.environ.get("WIFIPILOT_NO_AI", "")).strip().lower() in (
+            "1", "true", "yes", "on")
+
     def ai_enabled(self) -> bool:
         """True when *any* usable provider is configured (no network probe)."""
+        if self.ai_off():
+            return False
         provider, _ = self.active_provider(probe=False)
         return provider != "none"
 
@@ -340,6 +344,9 @@ class Config:
     def active_provider(self, probe: bool = False) -> tuple:
         """(provider, reason) — see :func:`wifipilot.llm.select_provider`."""
         from .llm import select_provider
+        if self.ai_off():
+            return "none", ("AI advisor disabled "
+                            "(ai_provider=none, --no-ai/--disable-ai or WIFIPILOT_NO_AI)")
         return select_provider(self.ai_provider, self.ollama, self.openrouter, probe=probe)
 
     def to_dict(self, redact_secrets: bool = False) -> Dict[str, Any]:
@@ -351,6 +358,7 @@ class Config:
             data["openrouter"]["key_source"] = self.openrouter.key_source()
             data["openrouter"]["key_hint"] = self.openrouter.key_hint()
         data["ai_provider_resolved"] = self.active_provider(probe=False)[0]
+        data["ai_disabled"] = self.ai_off()
         return data
 
     @classmethod
@@ -359,7 +367,7 @@ class Config:
         ollama_data = data.pop("ollama", None) or {}
         openrouter_data = data.pop("openrouter", None) or {}
         # pseudo-keys returned by to_dict(redact_secrets=True) are not config fields
-        for key in ("ai_provider_resolved",):
+        for key in ("ai_provider_resolved", "ai_disabled"):
             data.pop(key, None)
         known = {f.name for f in fields(cls)}
         clean = {k: v for k, v in data.items() if k in known}
@@ -391,7 +399,8 @@ class Config:
         return self
 
     def save(self, path: Optional[str] = None) -> str:
-        target = Path(path or CONFIG_NAME)
+        # same precedence as load(): an explicit path, then WIFIPILOT_CONFIG, then ./
+        target = Path(path or os.environ.get(CONFIG_ENV) or CONFIG_NAME)
         write_json(target, self.to_dict())
         try:
             # the file can contain an API key: keep it out of other users' reach

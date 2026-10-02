@@ -69,7 +69,14 @@ Tool output is a claim; wifipilot checks it.
 * Verified crypto is what makes the simulation mode honest: `synth.py` builds captures with
   real PBKDF2/PTK/CMAC values, so demo mode exercises the same verification path as live mode.
 
-## 4. The LLM is an advisor, never an authority
+## 4. The LLM is an advisor, never an authority — and it is optional
+
+The rule-based planner is the product; the model is a garnish. `Config.ai_off()` is the one
+switch behind `wp.ai(disable=True)`, `--no-ai`/`--disable-ai`/`--offline`, `wifipilot ai off`
+and `WIFIPILOT_NO_AI=1`, and everything downstream of it is inert: `ai_enabled()` is false,
+`active_provider()` returns `none` without probing, `advisor.check()` short-circuits before
+the client is touched, `advisor.models()` returns `[]`, the CLI `ai` subcommands report
+"off" instead of calling out, the web API answers `disabled` and the UI greys the tab.
 
 `llm.py` holds the transports — a local Ollama server and OpenRouter's OpenAI-compatible
 gateway — behind one `LLMClient` interface (stdlib `urllib` only, no extra dependency).

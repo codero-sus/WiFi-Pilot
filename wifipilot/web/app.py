@@ -118,7 +118,7 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
                     state.engine.shutdown(timeout=6)
 
     app = FastAPI(title="wifipilot", version="0.1.0",
-                  description="AI-piloted WiFi auditing — authorised use only",
+                  description="WiFi auditing · wifite alternative · authorised use only",
                   lifespan=lifespan)
     app.state.ctx = state
     app.add_middleware(
@@ -545,8 +545,12 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
     @app.post("/api/ai/think")
     async def api_think():
         engine = engine_or_404()
+        if config.ai_off():
+            return {"ok": False, "disabled": True, "plan": None,
+                    "note": "the advisor is off — the deterministic planner is already "
+                            "deciding; nothing is sent to a model"}
         plan = engine.request_think()
-        return {"ok": True, "plan": plan.to_dict()}
+        return {"ok": True, "disabled": False, "plan": plan.to_dict()}
 
     @app.post("/api/ai/chat")
     async def api_chat(payload: Dict[str, Any] = Body(...)):
@@ -554,6 +558,10 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
         message = (payload.get("message") or "").strip()
         if not message:
             raise HTTPException(status_code=400, detail="message required")
+        if config.ai_off():
+            return {"ok": False, "disabled": True, "streaming": False,
+                    "note": "the advisor is off — no model is called. Re-enable it with "
+                            "the provider picker (or `wifipilot ai on`)"}
         engine.bus.publish(EK.ADVISOR_CHAT, {"role": "user", "kind": "chat", "message": message})
 
         def worker() -> None:
@@ -571,6 +579,10 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
         """The model catalogue of the active (or requested) provider."""
         engine = engine_or_404()
         advisor = engine.advisor
+        if config.ai_off():
+            return {"provider": "none", "models": [], "error": "", "disabled": True,
+                    "note": "advisor disabled: no model is in use", "configured": False,
+                    "redact": False}
         wanted = (provider or "").strip().lower()
         if wanted in ("ollama", "openrouter") and wanted != advisor.provider:
             client = build_client(wanted, config.ollama, config.openrouter, engine.bus)
@@ -630,9 +642,12 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
         advisor.configure(provider, announce=True)
         engine.session.auto_think = config.autothink_enabled()
         engine.bus.publish(EK.SESSION_INFO, {"config": config.to_dict(redact_secrets=True),
-                                             "action": "provider-changed",
+                                             "action": ("advisor-off" if provider == "none"
+                                                        else "provider-changed"),
                                              "provider": advisor.provider})
-        return {"ok": True, "provider": advisor.provider, "advisor": advisor.status()}
+        return {"ok": True, "provider": advisor.provider, "disabled": config.ai_off(),
+                "note": ("advisor off: deterministic planner only" if config.ai_off() else ""),
+                "advisor": advisor.status()}
 
     @app.post("/api/ai/key")
     async def ai_key(payload: Dict[str, Any] = Body(default={})):
@@ -683,10 +698,22 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
         if "enabled" in payload:
             config.ollama.enabled = bool(payload["enabled"])
             engine.advisor.config = config.ollama
+        if "disabled" in payload:                    # the single switch, web flavoured
+            if payload["disabled"]:
+                config.ai_provider = "none"
+            else:
+                config.ai_provider = "auto"
+                # "turn the advisor on" has to turn something on: --no-ai switched the
+                # local provider off, so switch it back on and let auto resolve it
+                config.ollama.enabled = True
+            engine.advisor.configure(config.ai_provider, announce=False)
+            engine.session.auto_think = config.autothink_enabled()
         engine.bus.publish(EK.SESSION_INFO, {
             "auto_think": engine.session.auto_think, "ollama_enabled": config.ollama.enabled,
         })
         return {"ok": True, "auto_think": engine.session.auto_think,
+                "disabled": config.ai_off(), "provider": engine.advisor.provider,
+                "configured_provider": config.ai_provider,
                 "ollama_enabled": config.ollama.enabled}
 
     # ------------------------------------------------------------------ #

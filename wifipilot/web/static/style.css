@@ -194,3 +194,24 @@ footer { padding: .8rem 1.1rem 2rem; font-size: .74rem; border-top: 1px solid va
 .card-active { border-color: rgba(255, 176, 32, 0.55); }
 .chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: inherit; }
 .warn { color: #ffb020; }
+
+/* ------------------------------------------------- advisor off (optional AI) */
+.badge-off {
+  background: var(--bg-3); color: var(--dim); border-color: var(--line);
+  font-style: italic;
+}
+.tab-muted { opacity: .62; }
+.tab-muted.active { opacity: 1; }
+.banner-off {
+  display: flex; flex-wrap: wrap; gap: .6rem; align-items: center;
+  justify-content: space-between;
+  background: rgba(120, 140, 170, 0.10);
+  border: 1px solid rgba(120, 140, 170, 0.35);
+  border-radius: 6px; padding: 8px 10px; margin: 6px 0 10px; font-size: 12px;
+}
+.banner-off[hidden] { display: none; }
+.card-off { opacity: .55; filter: grayscale(.45); }
+.card-off:hover { opacity: .8; }
+.btn-quiet { background: transparent; color: var(--dim); border: 1px solid var(--line); }
+.btn-quiet:hover { color: #fff; border-color: var(--accent); }
+button:disabled, input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
