@@ -210,6 +210,19 @@ function lootTags(ap) {
   return bits.join(' ') || '<span class="dim">—</span>';
 }
 
+function attackTitle(a) {
+  const bits = [a.description || a.label];
+  const meta = [];
+  if (a.category_label) meta.push(`category ${a.category_label}`);
+  if (a.noise) meta.push(`noise ${a.noise}`);
+  if (a.impact) meta.push(`impact ${a.impact}`);
+  if (a.offline) meta.push('no radio needed');
+  if (a.requires && a.requires.length) meta.push(`needs ${a.requires.join(', ')}`);
+  if (meta.length) bits.push('', meta.join(' · '));
+  if (a.detection) bits.push('', `blue team: ${a.detection}`);
+  return bits.join('\n');
+}
+
 function renderTargets(state) {
   const filter = ($('#inp-filter').value || '').toLowerCase();
   const body = $('#tbl-targets tbody');
@@ -483,10 +496,24 @@ function renderSettings(state) {
     ['loot dir', session.output_dir || config.output_dir || 'loot'],
   ].map(([k, v]) => `<b>${k}</b><span>${escapeHtml(String(v))}</span>`).join('');
 
+  // Grouped by the same category the catalogue reports, so 54 chips stay readable
+  // and the noise/impact a click is about to make is one hover away.
   const attacks = state.attacks || [];
-  $('#attack-toggles').innerHTML = attacks.map((a) => `
-    <button class="chip ${a.enabled ? 'on' : ''}" data-toggle-attack="${a.name}"
-      title="${escapeHtml(a.description)}">${escapeHtml(a.label)}${a.available ? '' : ' (unavailable)'}</button>`).join('');
+  const groups = new Map();
+  for (const a of attacks) {
+    const key = a.category_label || a.category || 'attacks';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(a);
+  }
+  $('#attack-toggles').innerHTML = [...groups.entries()].map(([label, items]) => `
+    <div class="attack-group" data-category="${escapeHtml(items[0].category || '')}">
+      <div class="attack-group-head">${escapeHtml(label)}
+        <span class="dim">${items.filter((a) => a.enabled).length}/${items.length}</span></div>
+      <div class="chips">${items.map((a) => `
+        <button class="chip ${a.enabled ? 'on' : ''}" data-toggle-attack="${a.name}"
+          title="${escapeHtml(attackTitle(a))}">${escapeHtml(a.label)}${a.offline ? ' · offline' : ''}${a.available ? '' : ' (unavailable)'}</button>`).join('')}</div>
+    </div>`).join('')
+    || '<span class="dim">no attacks registered</span>';
 
   $('#wordlists').innerHTML = (state.wordlists || []).map((w) => `
     <span class="chip" title="${escapeHtml(w.path)}">${escapeHtml(w.name)}${w.builtin ? ' · bundled' : ''}</span>`).join('')
