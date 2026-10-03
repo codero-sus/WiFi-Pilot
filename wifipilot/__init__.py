@@ -1,4 +1,4 @@
-"""wifipilot -- a wifite alternative, with an optional model-driven advisor.
+"""wifipilot -- an AI-piloted alternative to wifite.
 
 wifipilot automates the boring parts of authorised WiFi auditing:
 
@@ -8,12 +8,14 @@ wifipilot automates the boring parts of authorised WiFi auditing:
 * WEP IV harvesting
 * offline cracking orchestration (aircrack-ng / hashcat) with wordlist + rule
   intelligence
-* **optional auto-think**: a local LLM served by Ollama (or OpenRouter, opt-in) can
-  plan the engagement, adapt when an attack fails and explain itself in plain
-  language — and it can be switched off completely (`wp.ai(disable=True)`,
-  `--no-ai`/`--disable-ai`, `WIFIPILOT_NO_AI=1`), in which case the deterministic
-  planner does the same job with no model in the loop at all.  "AI" is short for
-  *advisor*, and the advisor is optional by design
+* **auto-think**: a local LLM served by Ollama (or OpenRouter, opt-in) plans the
+  engagement, adapts when an attack fails and explains itself in plain language —
+  *AI-piloted* means the model proposes and wifipilot disposes; every plan is
+  validated before it reaches the radio
+* **optional by design, off by one switch**: `wp.ai(disable=True)`,
+  `--no-ai`/`--disable-ai`/`--offline` or `WIFIPILOT_NO_AI=1` hands the piloting
+  back to the deterministic planner, which does the same job with no model in the
+  loop at all and never opens a socket to one
 * a live web UI (FastAPI + WebSocket) that mirrors the whole session
 
 It is also a library: the public API is re-exported here, so a script can drive

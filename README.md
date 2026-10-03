@@ -1,6 +1,6 @@
 # wifipilot 📡
 
-**A WiFi auditing tool — a modern alternative to `wifite`, in Python, for Linux, with a web UI and an optional local- or cloud-LLM advisor.**
+**An AI-piloted WiFi auditing tool — a modern alternative to `wifite`, in Python, for Linux, with a web UI and an optional local- or cloud-LLM advisor you can switch off completely.**
 
 `wifipilot` automates the boring, error-prone parts of an authorised wireless assessment:
 it finds the targets, decides which attack is worth the time, runs it, cracks what it
@@ -10,12 +10,13 @@ captures, and explains every decision in plain language.
 and the aircrack-ng suite; there is no supported macOS or Windows build, and
 `wifipilot` refuses to run on anything but Linux.
 
-**No model required.** wifipilot decides what to do with a deterministic planner: target
-scoring, attack selection, failure triage and cracking strategy are all rule-based, offline
-and completely free. If you *want* a second opinion, an **optional** advisor can add a model
-on top — a local one served by [Ollama](https://ollama.com) (nothing leaves the machine) or,
-opt-in with an API key and a spend cap, [OpenRouter](https://openrouter.ai). With the advisor
-off, wifipilot never opens a socket to anything but your radio.
+**AI-piloted, never AI-dependent.** The pilot is the advisor: it proposes the plan, and
+wifipilot validates and executes it — the model never touches the radio. No model is required
+to run. The deterministic planner scores targets, picks attacks, triages failures and chooses
+cracking strategy on its own, offline and free; the **optional** advisor adds a model on top —
+a local one served by [Ollama](https://ollama.com) (nothing leaves the machine) or, opt-in
+with an API key and a spend cap, [OpenRouter](https://openrouter.ai). With the advisor off,
+wifipilot never opens a socket to anything but your radio.
 
 ```bash
 wifipilot --no-ai attack -d 30m        # --disable-ai and --offline say the same thing
@@ -34,7 +35,7 @@ wp.ai(disable=True)                     # deterministic planner only, nothing se
   ██║███╗██║██║██╔══╝  ██║██╔═══╝ ██║██║     ██║   ██║   ██║
   ╚███╔███╔╝██║██║     ██║██║     ██║███████╗╚██████╔╝   ██║
    ╚══╝╚══╝ ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝╚══════╝ ╚═════╝    ╚═╝
-  wifi auditing · wifite alternative · authorised use only
+  AI-piloted wifi auditing · wifite alternative · authorised use only
 ```
 
 > ⚠️ **Authorised use only.** Active wireless attacks disrupt service and are illegal
@@ -52,6 +53,7 @@ wp.ai(disable=True)                     # deterministic planner only, nothing se
 - [Use it as a library](#use-it-as-a-library)
 - [Quickstart (no hardware required)](#quickstart-no-hardware-required)
 - [Real engagement](#real-engagement)
+- [The terminal UI](#the-terminal-ui)
 - [The web UI](#the-web-ui)
 - [Optional: the advisor (Ollama or OpenRouter)](#optional-the-advisor-ollama-or-openrouter)
 - [Attacks](#attacks) — [reference for every attack](docs/ATTACKS.md)
@@ -66,7 +68,23 @@ wp.ai(disable=True)                     # deterministic planner only, nothing se
 - [Testing](#testing)
 - [FAQ / troubleshooting](#faq--troubleshooting)
 - [Roadmap](#roadmap)
+- [Documentation](#documentation)
 - [License](#license)
+
+---
+
+## Documentation
+
+| document | what is in it |
+| --- | --- |
+| [docs/ATTACKS.md](docs/ATTACKS.md) | all 27 attacks: what each answers, what it costs, what it puts on the air, how to read the result, and its failure modes |
+| [docs/TUI.md](docs/TUI.md) | the terminal dashboard: every panel, the three `AI:` states, the plain-text fallback, `--json` behaviour |
+| [docs/web-ui.md](docs/web-ui.md) | the browser UI screen by screen, its controls, and the full REST/WebSocket surface |
+| [docs/PYTHON-API.md](docs/PYTHON-API.md) | the pipeline and the library surface: `import wifipilot as wp`, run objects, hooks, the advisor switch |
+| [docs/AI-PROVIDERS.md](docs/AI-PROVIDERS.md) | the two model providers, key handling, costs, the privacy model — and how to turn all of it off |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | modules, data flow, the three front ends, the safety model, performance work |
+| [docs/ETHICS-AND-LEGAL.md](docs/ETHICS-AND-LEGAL.md) | the authorisation gate and the law, before you point this at anything |
+| [CHANGELOG.md](CHANGELOG.md) | what changed, batch by batch |
 
 ---
 
@@ -141,13 +159,13 @@ aircrack-ng suite properly) and rebuilds everything around it:
 - **benchmark**: `wifipilot benchmark` measures this machine's candidate rate and turns it into
   ETAs — no radio, no target, safe to run anywhere
 
-**Intelligence (optional — off, local or cloud; all three work)**
+**Intelligence (AI-piloted, and optional — off, local or cloud; all three work)**
 - **deterministic planner**: scores every target, picks the attack order, triages failures and
-  re-plans when a capture fails. It is the default brain and it needs no model, no network and
-  no key — this is what runs with `--no-ai`/`--disable-ai`, `wifipilot ai off`, or
-  `WIFIPILOT_NO_AI=1`
-- **auto-think** (only with a provider enabled): the advisor re-reads a compact situation
-  report every N seconds and picks the next actions with reasoning
+  re-plans when a capture fails. It needs no model, no network and no key — it is what runs
+  when nothing else is available, and equally what runs on purpose with
+  `--no-ai`/`--disable-ai`, `wifipilot ai off`, `wp.ai(disable=True)` or `WIFIPILOT_NO_AI=1`
+- **auto-think** (with a provider enabled): the advisor — the *pilot* — re-reads a compact
+  situation report every N seconds and proposes the next actions with reasoning
 - **failure triage**: natural-language diagnosis of why an attack failed and what to do next
 - **chat**: ask about the running engagement ("what is the biggest risk we found?")
 - **local by default** (Ollama): free, offline, nothing leaves the machine
@@ -165,6 +183,12 @@ aircrack-ng suite properly) and rebuilds everything around it:
 **Reporting**
 - JSON session export, Markdown engagement report, JSONL event journal, loot directory
 - web UI: live target table, loot cards, plan viewer, chat, tool diagnostics
+
+**Two front ends, one engine**
+- **terminal dashboard** (`docs/TUI.md`): target table ranked by planner score, live vitals
+  (APs, clients, attacks run/failed, captures, handshakes, PMKIDs, keys, audits), progress,
+  event tail, and an `AI:` segment that says exactly who is deciding — with a plain-text
+  fallback for pipes, logs and no-rich installs
 
 ### New ways in (added on top of the classic attacks)
 
@@ -347,8 +371,11 @@ sudo wifipilot scan -t 45             # passive discovery only
 # 1) dry run without transmitting
 sudo wifipilot -y --attacks passive attack -d 10m
 
-# 2) full campaign, AI-planned
+# 2) full campaign, AI-piloted
 sudo wifipilot -y --model qwen2.5:7b attack -d 45m
+
+# ...or the same campaign with no model in the loop at all
+sudo wifipilot -y --no-ai attack -d 45m
 
 # 3) constrain the scope to specific BSSIDs and be gentle
 sudo wifipilot -y --stealth -b AA:BB:CC:DD:EE:FF attack -d 20m
@@ -359,13 +386,37 @@ What happens next:
 1. the adapter is put into monitor mode (`airmon-ng`, falling back to `iw`), interfering
    services are stopped, and the original MAC/channel is restored on exit;
 2. targets are discovered and scored (signal, encryption, WPS state, clients, prior failures);
-3. the advisor picks actions — with a reason for each — and they run in priority order;
+3. the advisor picks actions — with a reason for each — and they run in priority order
+   (with the advisor off, the deterministic planner picks the same actions, minus the prose);
 4. every capture is validated before it is believed;
 5. whenever a handshake/PMKID lands, the cracker tries it (targeted candidates first);
 6. at the end: `loot/` holds the captures, `sessions/<id>/` holds the journal and report,
    and a Markdown report is written for the client.
 
 Press `Ctrl+C` once for a clean stop (interface restored, report written).
+
+## The terminal UI
+
+Anything long-running gets a live dashboard instead of a wall of scrolling text:
+
+```
+  SIMULATION   phase: attacking  iface: —  uptime: 4m12s  loot: 2  PSKs: 1  AI: off · deterministic
+  APs 11 clients 23 attacks 12 run / 2 failed captures 3 handshakes 1 PMKIDs 1 keys 1 audits 0 decisions deterministic
+
+SSID                  BSSID                    CH   SIG  SEC          WPS          CLI  LOOT       BY     NEXT
+HOME-2F4A             d0:9e:12:9d:36:cc         6   -39  WPA2         unlocked       3  HS PMKID   llm    handshake/crack
+```
+
+The **`AI:` segment is the honest one** — `AI: qwen2.5:7b ·3 calls` when a model is planning,
+`AI: offline → heuristics` when a configured provider is not answering, and
+`AI: off · deterministic` when you switched it off. The vitals strip below it repeats the
+distinction (`decisions deterministic` vs `decisions model + planner`), the target table is
+ranked by the planner's score with loot, selector and next-attack columns, and the event panel
+is the same bus the web UI reads. No rich/no colour/`--json`? The same information streams as
+plain lines on stderr, so pipes and logs stay clean.
+
+There are no keyboard controls by design: an accidental keystroke must never fire a radio.
+Full reference: [docs/TUI.md](docs/TUI.md).
 
 ## The web UI
 
@@ -923,6 +974,8 @@ and stops rather than burning hours; `wps_pin` is off by default for exactly thi
 - [x] Evil twin (`evil_twin`) and the capped denial-of-service detection tests
 - [x] Enterprise (802.1X) capture + identity harvesting (passive survey — see `attacks/enterprise.py`)
 - [x] Rogue RADIUS/hostapd-mana driven credential capture for authorised 802.1X engagements
+- [x] The advisor is optional: one switch, three spellings, and a UI that says which brain
+      is piloting (`wp.ai(disable=True)`, `--no-ai`/`--disable-ai`, `WIFIPILOT_NO_AI=1`)
 - [ ] Multi-adapter support (dedicated deauth + capture radios)
 - [ ] Attack scheduling by time window, and a "resume session" flag
 - [ ] Landscape/PDF report templates for client deliverables

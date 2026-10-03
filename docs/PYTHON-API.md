@@ -2,7 +2,9 @@
 
 Two halves: **the pipeline** (what the tool actually does to a network) and **the
 library surface** (`import wifipilot as wp`, which drives that pipeline from your
-own Python).
+own Python). The other references are [ATTACKS.md](ATTACKS.md) for the attack set,
+[TUI.md](TUI.md) and [web-ui.md](web-ui.md) for the two front ends, and
+[AI-PROVIDERS.md](AI-PROVIDERS.md) for the optional advisor and its off switch.
 
 ---
 

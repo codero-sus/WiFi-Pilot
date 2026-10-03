@@ -19,6 +19,24 @@ to start without `--i-am-authorized` (or the UI checkbox, or `authorized=true`).
 
 ---
 
+## Contents
+
+| section | attacks |
+| --- | --- |
+| [1. The table](#1-the-table) | the quick reference: what each attack needs and costs |
+| [2. Choosing an attack](#2-choosing-an-attack) | how the planner (and you) should pick |
+| [3. Read-only intelligence](#3-read-only-intelligence) | `ie_audit`, `pnl_harvest` — transmit nothing |
+| [4. Capture attacks](#4-capture-attacks) | `pmkid`, `pmkid_flood`, `handshake` |
+| [5. Online and semi-online](#5-online-and-semi-online-attacks) | `wps_pixie`, `wps_pin`, the five WEP attacks |
+| [6. WPA3 and RSN](#6-wpa3-and-rsn-the-two-honest-attacks) | `saewolf`, `pmf_audit` |
+| [7. Rogue infrastructure and DoS tests](#7-rogue-infrastructure-disconnects-and-denial-of-service-tests) | `evil_twin`, `karma`, `eapol_logoff`, the four floods |
+| [8. Surveys](#8-surveys-and-why-they-are-attacks) | `hidden_ssid`, `rogue_ap`, `enterprise`, `rogue_radius`, `tracker`, `passive` |
+| [9. What each attack costs](#9-what-each-attack-costs) | runtime, noise, prerequisites |
+| [10. Interpreting failures](#10-interpreting-failures) | the message → cause → next step table |
+| [11. Where the AI fits](#11-where-the-ai-fits) | proposals, validation, and what happens with the advisor off |
+
+---
+
 ## 1. The table
 
 | Attack | Family | Transmits | Needs | Answers | Default |
@@ -840,10 +858,16 @@ The advisor never touches the radio and never invents a result. It receives the 
 list (now including each station's probed network list and signal history), the
 capabilities, the recent attempts and their outcomes, and returns a plan
 (which attack against which BSSID, and a one-line reason) plus a short diagnosis when
-an attack fails. The heuristic planner in `wifipilot/planner.py` produces the same
-shape of answer with no model at all, and is what runs when Ollama is not around — so
-the attack set is fully usable offline, and the LLM only changes the order and the
-commentary.
+an attack fails. The deterministic planner in `wifipilot/planner.py` produces the same
+shape of answer with no model at all, and it is what runs when no provider is reachable —
+**or when you switched the advisor off** (`--no-ai`/`--disable-ai`/`--offline`,
+`wifipilot ai off`, `wp.ai(disable=True)`, `WIFIPILOT_NO_AI=1`).
 
-See [AI-PROVIDERS.md](AI-PROVIDERS.md) for the advisor itself, and
-[ARCHITECTURE.md](ARCHITECTURE.md) for how a plan becomes an attempt.
+So: the attack set is fully usable offline, and the advisor changes only the ordering and
+the commentary. AI-piloted means the model proposes; wifipilot validates every action
+against the registry and the live session and then executes it, one at a time. Turn it off
+and the pilot is the planner — the attacks behave identically.
+
+See [AI-PROVIDERS.md](AI-PROVIDERS.md) for the advisor itself (including the off switch),
+[ARCHITECTURE.md](ARCHITECTURE.md) for how a plan becomes an attempt, and
+[TUI.md](TUI.md) for how the dashboard shows which of the two is deciding.

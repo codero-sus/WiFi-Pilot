@@ -118,7 +118,7 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
                     state.engine.shutdown(timeout=6)
 
     app = FastAPI(title="wifipilot", version="0.1.0",
-                  description="WiFi auditing · wifite alternative · authorised use only",
+                  description="AI-piloted WiFi auditing · wifite alternative · authorised use only",
                   lifespan=lifespan)
     app.state.ctx = state
     app.add_middleware(

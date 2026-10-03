@@ -137,8 +137,9 @@ def _global_arguments(parser: argparse.ArgumentParser, suppress: bool = False) -
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=TOOL_NAME,
-        description="WiFi auditing for Linux — a wifite alternative with a web UI and "
-                    "an optional local (Ollama) or cloud (OpenRouter) advisor.",
+        description="AI-piloted WiFi auditing for Linux — a wifite alternative with a "
+                    "web UI and an optional local (Ollama) or cloud (OpenRouter) "
+                    "advisor that can be switched off completely.",
         epilog=LEGAL_NOTICE,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
