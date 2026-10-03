@@ -323,3 +323,44 @@ def test_web_page_ships_the_off_controls(clean_env):
     assert 'id="btn-ai-off"' in html
     assert "deterministic planner" in js and "badge-off" in js
     assert "badge-off" in css and "card-off" in css
+
+
+# --------------------------------------------------------------------------- #
+# the "AI-piloted" identity and the documentation set
+# --------------------------------------------------------------------------- #
+
+def test_ai_piloted_branding_is_back(clean_env):
+    """The tag is back everywhere an operator sees it — and it stays true when off."""
+    from pathlib import Path
+
+    from wifipilot.util import banner
+    import wifipilot as wp
+
+    root = Path(__file__).resolve().parents[1]
+    assert "AI-piloted" in banner()
+    assert "AI-piloted" in (wp.__doc__ or "")
+    assert "AI-piloted" in (root / "README.md").read_text().splitlines()[2]
+    assert "AI-piloted" in (root / "pyproject.toml").read_text()
+    assert "AI-piloted" in (root / "wifipilot" / "web" / "static" / "index.html").read_text()
+    assert "optional" in (root / "README.md").read_text()[:6000].lower()
+
+
+def test_documentation_set_is_linked_and_complete(clean_env):
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    docs = sorted(p.name for p in (root / "docs").glob("*.md"))
+    assert docs == ["AI-PROVIDERS.md", "ARCHITECTURE.md", "ATTACKS.md",
+                    "ETHICS-AND-LEGAL.md", "PYTHON-API.md", "TUI.md", "web-ui.md"]
+    assert (root / "CHANGELOG.md").exists()
+
+    readme = (root / "README.md").read_text()
+    navigation = readme[readme.index("## Documentation"):readme.index("## Why another wifite?")]
+    for name in docs:
+        assert f"docs/{name}" in navigation, name
+    assert "CHANGELOG.md" in navigation
+
+    attacks = (root / "docs" / "ATTACKS.md").read_text()
+    assert "## Contents" in attacks and "#11-where-the-ai-fits" in attacks
+    for name in ("TUI.md", "web-ui.md", "PYTHON-API.md", "AI-PROVIDERS.md", "ATTACKS.md"):
+        assert name in (root / "docs" / "ARCHITECTURE.md").read_text(), name

@@ -1,5 +1,9 @@
 # The web UI
 
+The browser front end for wifipilot: same engine, same event bus, same planner and the same
+optional advisor as the terminal dashboard (see [TUI.md](TUI.md) for the console view, and
+[PYTHON-API.md](PYTHON-API.md) for driving the engine from Python).
+
 ```bash
 wifipilot web --demo --open      # explore safely, opens http://127.0.0.1:8787
 sudo wifipilot -y web            # live, after confirming authorisation
@@ -39,7 +43,7 @@ One card per capture: kind, target, tool, EAPOL count, the recovered PSK, a **do
 (the API refuses any path outside the loot/session directories) and a one-click crack button.
 Passwords verified by MIC/PMKID recomputation are labelled as such.
 
-### AI advisor *(optional tab)*
+### AI advisor *(optional tab — the "AI-piloted" part, and it can be off)*
 
 The tab is deliberately de-emphasised: it carries a muted "optional" label, and while the
 advisor is off the header badge reads `ai: off · deterministic planner`, a banner explains

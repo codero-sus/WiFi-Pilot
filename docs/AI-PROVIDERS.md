@@ -1,5 +1,11 @@
 # AI providers: Ollama (local) and OpenRouter (cloud)
 
+**Why "AI-piloted" and "optional" are not a contradiction.** The pilot is the advisor: it
+proposes which attack to run against which target, and wifipilot validates the proposal
+against the attack registry and the live session before anything reaches the radio. A pilot
+that is switched off is simply a plane flown by its deterministic autopilot — the name
+describes what the tool *can* do, not a requirement to run a model.
+
 wifipilot's "auto think" needs a model. It does not need to have one: the deterministic
 planner runs every engagement on its own, and the advisor is an additive extra. This page is
 about the two ways to give it a model.

@@ -154,7 +154,8 @@ planner/LLM ──► validate_plan ──► Engine.run_attack ──► Attack
 
 ## 8. Three front ends, one engine
 
-`cli.py`, `web/app.py` and `api.py` are peers: each one builds a
+`cli.py` (the command line and its live dashboard — see [TUI.md](TUI.md)),
+`web/app.py` (the browser UI) and `api.py` (the library) are peers: each one builds a
 :class:`~wifipilot.config.Config`, creates a :class:`~wifipilot.engine.Engine`,
 and consumes the same event bus.  Nothing in the engine knows which front end is
 driving it, which is why the API gets the dashboard's behaviour for free — the
@@ -164,6 +165,12 @@ The API adds only what a library needs and a UI does not: one campaign per proce
 (a second call raises `BusyError` instead of fighting over the radio), setup errors
 raised to the caller instead of rendered to a panel, and result objects
 (`Run`/`ScanResult`/`CampaignResult`) that are JSON-serialisable.
+
+Each front end has its own reference: [TUI.md](TUI.md) for the terminal dashboard
+(panels, the `AI:` states, the plain-text fallback), [web-ui.md](web-ui.md) for the browser
+UI and its REST/WebSocket surface, [PYTHON-API.md](PYTHON-API.md) for the library, and
+[ATTACKS.md](ATTACKS.md) for the attack set they all drive. The optional advisor they share
+is documented in [AI-PROVIDERS.md](AI-PROVIDERS.md).
 
 ## 9. Linux-only by construction
 
