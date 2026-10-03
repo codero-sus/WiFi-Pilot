@@ -37,6 +37,10 @@ milestones rather than published releases.
   power-save bit, EAPOL-Start, probe request/response, CSA beacon, SSID-confusion beacon,
   ARP request/reply and deterministic spoofed stations), and `describe()` now names
   null-data frames instead of calling everything "data".
+* **Web UI**: the attack chips are grouped by category with an enabled counter per group,
+  the offline ones are suffixed `· offline`, and each tooltip carries the description,
+  `category · noise · impact`, the tools it needs and what a defender sees — 54 chips are
+  only usable if the page tells you what a click does.
 * **Planner**: `allow()` gained the gates for every new family — DoS never in stealth,
   lures need a monitor interface, the broadcast handshake is opt-in even in `"force"`,
   offline analyses never need a capability — and the plan orders offline work first.
