@@ -178,6 +178,10 @@ class Config:
     ])
     #: follow one station only (``tracker``; empty means "pick the best one")
     client_mac: str = ""
+    #: handshake capture with a *broadcast* deauth (``handshake_broadcast``): the
+    #: single-client burst is the default because it is quieter, and dropping every
+    #: client on the channel at once is a different act from deauthing one station
+    broadcast_handshake: bool = False
     #: the interface the evil twin binds to; empty means "the monitor interface"
     twin_interface: str = ""
     #: ask the AP for the name of a hidden network with a directed probe (the
@@ -288,6 +292,40 @@ class Config:
             "wep_hirte": self.wep_timeout,
             "wep_p0841": self.wep_timeout,
             "passive": self.scan_time,
+            # -- offline analysis: file work, so the budget is about the file ----
+            "loot_audit": max(self.scan_time, 60.0),
+            "eapol_audit": max(self.scan_time, 30.0),
+            "wep_audit": max(self.scan_time, 30.0),
+            "pixie_offline": max(self.scan_time, 60.0),
+            "eap_md5_crack": max(self.scan_time, 120.0),
+            "rogue_detect": max(self.scan_time, 45.0),
+            "twin_detect": max(self.scan_time, 45.0),
+            "roam_audit": max(self.scan_time, 30.0),
+            "wps_lockout_audit": max(self.scan_time, 20.0),
+            # a sweep is the one offline attack whose budget is the cracker's own
+            "crack_sweep": max(self.crack_timeout, 120.0),
+            # -- capture ----------------------------------------------------------
+            # the broadcast handshake is the blunt variant: same window as handshake
+            "handshake_broadcast": self.handshake_timeout,
+            "hcxdump_capture": max(self.pmkid_timeout, 120.0),
+            # -- surveys and lures ------------------------------------------------
+            "sae_group_audit": max(self.scan_time * 2, 45.0),
+            "karma_detect": max(self.scan_time * 2, 30.0),
+            "csa_attack": max(self.scan_time * 2, 30.0),
+            "ssid_confusion": max(self.scan_time * 2, 30.0),
+            "ssid_bruteforce": max(self.scan_time * 2, 30.0),
+            "ap_isolation_audit": max(self.scan_time, 30.0),
+            # -- WPS --------------------------------------------------------------
+            "wps_ap_pin": max(self.wps_timeout, 90.0),
+            "wps_lockout_probe": max(self.wps_timeout, 90.0),
+            "wps_pbc": max(self.wps_timeout, 60.0),
+            # -- the in-process floods: capped short by the classes themselves ----
+            "assoc_flood": max(self.scan_time, 30.0),
+            "null_data_flood": max(self.scan_time, 30.0),
+            "eapol_start_flood": max(self.scan_time, 30.0),
+            "sae_commit_flood": max(self.scan_time, 30.0),
+            "tkip_michael": max(self.scan_time, 10.0),
+            "wids_confusion": max(self.scan_time, 25.0),
         }.get(attack, self.attack_timeout or 60.0)
 
     # -- ai providers -------------------------------------------------- #

@@ -95,6 +95,9 @@ def _global_arguments(parser: argparse.ArgumentParser, suppress: bool = False) -
     add(parser, "--reveal-with-probe", action="store_true",
                         help="let hidden-SSID discovery ask for the name with a directed "
                              "probe (the only part of it that transmits)")
+    add(parser, "--broadcast-handshake", action="store_true",
+                        help="let the planner use the broadcast variant of the handshake "
+                             "capture (drops every client of the AP at once instead of one)")
     add(parser, "--no-pmk-cache", action="store_true",
                         help="do not reuse PMKs learned earlier for the same ESSID")
     add(parser, "-w", "--wordlist", action="append", default=[],
@@ -240,6 +243,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_vendor.add_argument("--oui-stats", action="store_true", help="show the OUI registry size")
     p_vendor.add_argument("--import-oui", default="", metavar="FILE",
                           help="merge an IEEE oui.txt into the registry")
+
+    p_attacks = sub.add_parser("attacks", parents=[common],
+                               help="the attack catalogue: what each one costs and shows")
+    p_attacks.add_argument("--category", default="", metavar="NAME",
+                           help="only this category (offline, survey, capture, wps, "
+                                "wep, enterprise, rogue, dos)")
+    # (a global --offline already exists and switches the advisor off, so this one
+    #  is named for what it selects: attacks that need no radio at all)
+    p_attacks.add_argument("--no-radio", dest="only_offline", action="store_true",
+                           help="only the attacks that transmit nothing at all")
+    p_attacks.add_argument("--noise", default="", metavar="LEVEL",
+                           help="only attacks at this noise level (silent, quiet, "
+                                "moderate, loud, extreme)")
 
     p_bench = sub.add_parser("benchmark", parents=[common],
                              help="measure this machine's candidate rate (no radio)")
@@ -517,6 +533,8 @@ def apply_cli_config(args: argparse.Namespace) -> Config:
             config.attacks = [*config.attacks, "wps_pin"]
     if getattr(args, "reveal_with_probe", False):
         config.reveal_with_probe = True
+    if getattr(args, "broadcast_handshake", False):
+        config.broadcast_handshake = True
     if getattr(args, "no_pmk_cache", False):
         config.pmk_cache = False
     if getattr(args, "client", ""):
@@ -2243,6 +2261,65 @@ def _export_path(out: str, capture: str, suffix: str) -> str:
     return out
 
 
+def command_attacks(args, config: Config, console) -> int:
+    """The catalogue, grouped by what an attack costs and what it produces.
+
+    This is the same table the planner, the web UI and the advisor prompt read
+    (``wifipilot.attacks.attack_catalog``): one source, so the CLI cannot describe an
+    attack differently from the report that ran it.
+    """
+    from .attacks import (IMPACT_STYLE, NOISE_STYLE, OFFLINE_ATTACKS, attack_catalog,
+                          category_label)
+
+    entries = attack_catalog()
+    if args.category:
+        wanted = args.category.strip().lower()
+        entries = [entry for entry in entries
+                   if str(entry["category"]) == wanted
+                   or category_label(str(entry["category"])).lower() == wanted]
+    if args.noise:
+        entries = [entry for entry in entries if entry["noise"] == args.noise.strip().lower()]
+    if args.only_offline:
+        entries = [entry for entry in entries if entry["offline"]]
+    if args.json:
+        print(json.dumps({"count": len(entries), "attacks": entries,
+                          "offline_attacks": list(OFFLINE_ATTACKS)}, indent=2))
+        return 0 if entries else 1
+    if not entries:
+        console.print("[yellow]no attack matches that filter[/yellow]")
+        return 1
+
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for entry in entries:
+        grouped.setdefault(str(entry["category"]), []).append(entry)
+    total = len(attack_catalog())
+    console.print(f"[bold]{len(entries)} of {total} attacks[/bold]"
+                  + ("  [dim](the ones that transmit nothing)[/dim]"
+                     if args.only_offline else ""))
+    for category, items in grouped.items():
+        console.print(f"\n[bold]{category_label(category)}[/bold] "
+                      f"[dim]({len(items)})[/dim]")
+        for entry in items:
+            noise = NOISE_STYLE.get(str(entry["noise"]), "")
+            impact = IMPACT_STYLE.get(str(entry["impact"]), "")
+            flags = []
+            if entry["needs_injection"]:
+                flags.append("injects")
+            if entry["default_enabled"]:
+                flags.append("on by default")
+            if entry["offline"]:
+                flags.append("no radio")
+            console.print(f"  [bold]{entry['name']:<20}[/bold] {entry['label']}")
+            console.print(f"      {noise} · {impact} · "
+                          f"{' · '.join(flags) if flags else 'opt-in'}")
+            console.print(f"      [dim]tool:[/dim] {entry['tool']}")
+            console.print(f"      [dim]defender sees:[/dim] {entry['detection']}")
+    console.print("\n[dim]every attack is described in docs/ATTACKS.md and in the "
+                  "report it produces; `--category`, `--noise` and `--no-radio` "
+                  "filter this list, `--json` returns it[/dim]")
+    return 0
+
+
 def command_tools(args, config: Config, console) -> int:
     from .deps import list_interfaces
     infos = registry.all(force=args.force)
@@ -2653,6 +2730,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "note": command_note,
         "tag": command_tag,
         "vendor": command_vendor,
+        "attacks": command_attacks,
         "benchmark": command_benchmark,
         "advice": command_advice,
         "wordlist": command_wordlist,

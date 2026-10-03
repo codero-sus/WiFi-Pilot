@@ -314,7 +314,8 @@ def build_deauth_flood(bssid: str, rounds: int = 40, broadcast: bool = True) -> 
 
 #: AKM suite selector bytes (little-endian 4-byte selectors 00-0f-ac-XX)
 _AKM_CODES = {"802.1x": 1, "psk": 2, "ft-802.1x": 3, "ft-psk": 4, "psk-sha256": 6,
-              "sae": 8, "ft-sae": 9, "owe": 18, "sae-ext": 24}
+              "sae": 8, "ft-sae": 9, "owe": 18, "sae-ext": 24, "sae-h2e": 24,
+              "h2e": 24, "sae-h2e-ext": 25}
 
 
 def rsn_element(akm: str = "psk", pmf: bool = False, pairwise: int = 4,

@@ -115,6 +115,27 @@ That uniformity is what makes the simulation possible: modules branch on `ctx.de
 packet source only (`ctx.radio` instead of a subprocess), while validation, cracking,
 reporting and UI rendering stay identical.
 
+The 54 attacks are grouped into seven modules by *what they need*, which is also how the
+tests and the docs are organised:
+
+| module | attacks | radio |
+|---|---|---|
+| `attacks/forensics.py` | 10 offline analyses (`loot_audit`, `eapol_audit`, `wep_audit`, `crack_sweep`, `eap_md5_crack`, `pixie_offline`, `rogue_detect`, `twin_detect`, `roam_audit`, `wps_lockout_audit`) | none — files only |
+| `attacks/flood.py` | four `mdk4` floods | transmit, capped |
+| `attacks/flood2.py` | six in-process floods (assoc, null-data, EAPOL-Start, SAE commit, TKIP/Michael, WIDS confusion) | transmit, capped |
+| `attacks/lure.py` | `csa_attack`, `ssid_confusion`, `ssid_bruteforce`, `karma_detect`, `ap_isolation_audit` — transmit a lie, then *read the capture back* for the answer | transmit + listen |
+| `attacks/capture2.py` | `handshake_broadcast`, `hcxdump_capture` | transmit |
+| `attacks/wps2.py` | `wps_ap_pin`, `wps_lockout_probe`, `wps_pbc` | transmit |
+| `attacks/survey2.py` | `sae_group_audit` | none (reads a capture, or one short listen) |
+
+`attacks/meta.py` describes each attack for the *reader* rather than the runner: its
+category, its noise level, its impact and one sentence about what a defender sees.
+`attack_catalog()` merges the class attributes with that table, and it is the single
+source the CLI (`wifipilot attacks`), the web UI's toggles, the report and the advisor
+prompt read — so the catalogue cannot describe an attack differently from the module that
+runs it. `meta.validate()` fails the build when an attack is registered without metadata
+(see the extension checklist below).
+
 ## 6. Data flow of one action
 
 ```
@@ -140,9 +161,12 @@ planner/LLM ──► validate_plan ──► Engine.run_attack ──► Attack
 
 ## 7. Extension points
 
-* **new attack** — add a module in `attacks/`, register it in `attacks/__init__.py`, add its
-  name to `models.ATTACK_NAMES` and (if appropriate) to the default `Config.attacks`. The CLI,
-  the web UI, the plan validator and the LLM prompt pick it up automatically.
+* **new attack** — add a module in `attacks/`, register it in `attacks/__init__.py`, add an
+  entry to `attacks/meta.py` (category, noise, impact, what a defender sees), add its name to
+  `models.ATTACK_NAMES` and a place in `DEFAULT_ORDER`, and (only if it is quiet and safe) to
+  the default `Config.attacks`. The CLI, the web UI, the plan validator and the LLM prompt pick
+  it up automatically; `wifipilot attacks`, `/api/state` and the report all render the metadata.
+  `tests/test_attacks_v3.py` checks that you did not forget a step, and that the docs list it.
 * **new data source** — implement a producer that calls `session.upsert_ap()` /
   `session.add_client()` (Kismet, `iw scan`, a CSV replay, …).
 * **new UI** — subscribe to `EventBus` and read `Engine.snapshot()`.
@@ -408,11 +432,16 @@ reported as *enablers* — `stats.wep_enablers` counts them separately from
 (`_aireplay_command`), which is why the "does it need a client" question is a class
 attribute (`uses_client`) instead of a conditional.
 
-The two floods (`attacks/flood.py`) are denial of service by construction, so they are
-capped twice — the class caps at 60 s (`deauth_flood`) and 45 s (`beacon_flood`), and
-the planner refuses them entirely in stealth mode. Their deliverable is a finding about
-the *environment* (is 802.11w/WIDS really deployed?), never a password, and the log
-warning before they start says exactly what they will do to the network.
+The ten floods (`attacks/flood.py` for the `mdk4` ones, `attacks/flood2.py` for the six
+built in-process) are denial of service by construction, so they are capped twice — each
+class has its own `max_seconds` (60 s for the deauth flood, 45 s for the mdk4 set, 30 s
+for the in-process ones, 8 s for `tkip_michael`) and the planner refuses all of them in
+stealth mode. Their deliverable is a finding about the *environment* (is 802.11w/WIDS
+really deployed?), never a password, and the log warning before they start says exactly
+what they will do to the network. `flood2.py` exists because these frames are not in
+`mdk4`: association requests (the table that actually runs out), Null frames with the
+power-save bit (a data-frame attack a deauth-counting WIDS cannot see), EAPOL-Start,
+SAE commits, a corrupted-MIC TKIP replay, and deauths carrying a neighbour's BSSID.
 
 The matching decoder lives in `sniff.py` (`eap_exchange`, `x509_name`) and works on
 any capture: EAP type codes, the clear-text outer identity, and a small DER walker

@@ -4,6 +4,48 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## 54 attacks — offline analysis, lures, and metadata that the whole tool reads
+
+* **27 new attacks, 54 in total**, each one registered, described, gated and tested:
+  * **Offline (ten, no radio, no authorisation):** `loot_audit`, `eapol_audit`, `wep_audit`,
+    `crack_sweep`, `eap_md5_crack` (RFC 2759: `MD5(id ‖ password ‖ challenge)`),
+    `pixie_offline`, `rogue_detect`, `twin_detect`, `roam_audit`, `wps_lockout_audit`.
+  * **Capture:** `handshake_broadcast` (opt-in broadcast deauth) and `hcxdump_capture`
+    (the hcxdumptool → hcxpcapngtool → mode-22000 pipeline).
+  * **Lures and confusion:** `csa_attack` (channel-switch announcement, no deauth frame
+    anywhere), `ssid_confusion`, `ssid_bruteforce`, `ap_isolation_audit` (a spoofed ARP
+    between two clients) and `karma_detect` — the one attack whose target is the attacker.
+  * **WPS:** `wps_ap_pin` (vendor-derived static AP PIN), `wps_lockout_probe` (three wrong
+    PINs, then stop: does the AP lock out?) and `wps_pbc` (push-button enrolment through
+    `wpa_supplicant`).
+  * **WPA3:** `sae_group_audit` — groups, SAE-EXT-KEY/H2E, PMF and transition mode, read
+    from a capture with no radio time.
+  * **Denial of service (six more, all built in-process, no mdk4):** `assoc_flood`,
+    `null_data_flood` (power-save buffers, invisible to deauth-counting WIDS rules),
+    `eapol_start_flood`, `sae_commit_flood` (Dragonblood clogging), `tkip_michael`
+    (two corrupted frames, sixty seconds of TKIP silence) and `wids_confusion`
+    (attribution pointed at a neighbour).
+* **`wifipilot/attacks/meta.py`**: category, noise (`silent`→`extreme`), impact
+  (`none`→`loot`) and a "what a defender sees" sentence for every attack. The CLI, the
+  web UI (`/api/state`), the report and the advisor prompt all read `attack_catalog()`,
+  and `validate()` fails the build if an attack is registered without metadata.
+* **`wifipilot attacks`**: the catalogue as a command (`--json`, `--category`, `--noise`,
+  `--no-radio`), and `wp.catalogue(...)` in the library API.
+* **Offline by design**: the ten analyses need no monitor interface, no root and no
+  authorisation gate; `mode="offline"` runs them and nothing else.
+* **Frames**: ten new builders in `rawtx.py` (auth/assoc/reassoc, Null data with the
+  power-save bit, EAPOL-Start, probe request/response, CSA beacon, SSID-confusion beacon,
+  ARP request/reply and deterministic spoofed stations), and `describe()` now names
+  null-data frames instead of calling everything "data".
+* **Planner**: `allow()` gained the gates for every new family — DoS never in stealth,
+  lures need a monitor interface, the broadcast handshake is opt-in even in `"force"`,
+  offline analyses never need a capability — and the plan orders offline work first.
+* **Docs**: [docs/ATTACKS.md](docs/ATTACKS.md) grew to 54 entries with sections on the
+  offline set, the lures, the new WPS/WPA3 work and the second wave of floods, plus a new
+  "reading the catalogue" section; the README table lists all 54.
+* Tests: `tests/test_attacks_v3.py` (registry ↔ metadata ↔ planner ↔ docs consistency, a
+  demo run of all 27 new attacks, and frame-level checks on the new builders).
+
 ## Unreleased
 
 ### The advisor became optional, and the UIs learned to say so

@@ -77,7 +77,7 @@ wp.ai(disable=True)                     # deterministic planner only, nothing se
 
 | document | what is in it |
 | --- | --- |
-| [docs/ATTACKS.md](docs/ATTACKS.md) | all 27 attacks: what each answers, what it costs, what it puts on the air, how to read the result, and its failure modes |
+| [docs/ATTACKS.md](docs/ATTACKS.md) | all 54 attacks: what each answers, what it costs, what it puts on the air, how to read the result, and its failure modes |
 | [docs/TUI.md](docs/TUI.md) | the terminal dashboard: every panel, the three `AI:` states, the plain-text fallback, `--json` behaviour |
 | [docs/web-ui.md](docs/web-ui.md) | the browser UI screen by screen, its controls, and the full REST/WebSocket surface |
 | [docs/PYTHON-API.md](docs/PYTHON-API.md) | the pipeline and the library surface: `import wifipilot as wp`, run objects, hooks, the advisor switch |
@@ -322,7 +322,7 @@ import wifipilot as wp
 # rehearse the whole pipeline with no radio and no risk
 wp.attack(target=all, mode="force", demo=True, duration="2m")
 
-# a real, authorised engagement; "force" runs all 27 attacks, "stealth" is listen-only
+# a real, authorised engagement; "force" runs all 54 attacks, "stealth" is listen-only
 wp.authorize("change ticket CHG-4711, client ACME Labs")
 result = wp.attack(target="Cafe Guest", mode="default", duration="45m",
                    on_event=lambda event: print(event.kind, event.data))
@@ -502,6 +502,25 @@ Details, including the full failure matrix and model recommendations:
 
 ## Attacks
 
+**54 attacks**, and the list is not a tool inventory: every entry either answers a
+question an assessment has to answer or produces loot that can be cited. They are grouped
+by what they cost (`wifipilot attacks` prints the same catalogue the planner, the web UI
+and the report read):
+
+| family | what it is | examples |
+|---|---|---|
+| **offline** | pure file analysis — no radio, no monitor interface, no authorisation | `loot_audit`, `eapol_audit`, `crack_sweep`, `eap_md5_crack`, `pixie_offline` |
+| **survey** | reads the air and decodes what is already there | `passive`, `ie_audit`, `pmf_audit`, `saewolf`, `sae_group_audit`, `hidden_ssid`, `pnl_harvest` |
+| **capture** | asks for material that can be cracked later | `pmkid`, `handshake`, `handshake_broadcast`, `hcxdump_capture`, `pmkid_flood` |
+| **wps / wep / enterprise** | the protocol-specific paths | `wps_pixie`, `wps_ap_pin`, `wps_lockout_probe`, `wps_pbc`, `wep_ivs`, the four WEP enablers, `enterprise`, `eapol_logoff` |
+| **rogue** | impersonation and lures | `evil_twin`, `karma`, `karma_detect`, `csa_attack`, `ssid_confusion`, `ssid_bruteforce`, `ap_isolation_audit`, `rogue_radius` |
+| **dos** | deliberate disruption, opt-in and time-capped, with detection as the finding | `deauth_flood`, `assoc_flood`, `null_data_flood`, `eapol_start_flood`, `sae_commit_flood`, `tkip_michael`, `wids_confusion` |
+
+Every attack carries a category, a **noise** level (how visible it is), an **impact**
+level (what changes for the site if it works) and a sentence about **what a defender
+sees**. `wifipilot attacks --json` returns the lot; `--no-radio` filters it to the ten
+attacks that transmit nothing at all.
+
 The full reference — what each attack answers, what it costs, and how to read a
 failure — is in [docs/ATTACKS.md](docs/ATTACKS.md). The short version:
 
@@ -534,6 +553,33 @@ failure — is in [docs/ATTACKS.md](docs/ATTACKS.md). The short version:
 | `rogue_radius` | eaphammer / hostapd-mana / hostapd-wpe | **yes** (impersonation) | The test the survey implies: impersonate the AP for one association attempt and see whether the client hands over a credential or "only" its identity. Output reported verbatim; the rogue service is always stopped |
 | `tracker` | airodump-ng (listen-only) | no | Follow one station: the SSIDs it really probes for, the BSSIDs it associates with, and its signal trend as you walk. Decides which name is worth impersonating, before anything transmits |
 | `passive` | airodump-ng | no | listen-only; harvests what is on air, then runs the two read-only decoders over the result (`ie_audit`, `pmf_audit`, `pnl_harvest`) |
+| `loot_audit` | wifipilot (hash22000.py) | **no** | everything the engagement holds, in one place: what is crackable, what is a duplicate, and every hash line it can produce. No radio, no authorisation, no root |
+| `eapol_audit` | wifipilot (pcap.py) | **no** | decodes the EAPOL exchanges already captured and reports what is *missing* (no ANonce, key-version mismatch, M1/M2-only pairs) before anything tries to crack them |
+| `wep_audit` | wifipilot (pcap.py) | **no** | counts IVs, unique IVs and ARP frames in a WEP capture and says whether it is crackable *now* or needs another harvest |
+| `crack_sweep` | wifipilot (crack.py) | **no** | every usable hash the session holds, swept through the cracker with a per-capture time budget; the batch version of `wifipilot crack` |
+| `eap_md5_crack` | wifipilot (sniff.py) | **no** | EAP-MD5 is the one 802.1X method whose exchange is checkable offline: `MD5(identifier ‖ password ‖ challenge)` against a wordlist |
+| `pixie_offline` | pixiewps | **no** | runs pixiewps against a WPS exchange already captured (`wps_pixie` with the radio unplugged) |
+| `rogue_detect` | wifipilot (sniff.py) | **no** | rogue and cloned-AP patterns in the captures: same ESSID, incompatible vendors, suspicious signal spreads |
+| `twin_detect` | wifipilot (sniff.py) | **no** | the twin-specific half: one name, several BSSIDs, and whether any of them moved channel mid-capture |
+| `roam_audit` | wifipilot (ies.py) | **no** | 802.11k/r/v and PMF posture — the elements that decide whether a forged CSA/deauth would land at all |
+| `wps_lockout_audit` | wifipilot (wps.py) | **no** | the lockout policy of the WPS APs already seen, from what was captured |
+| `handshake_broadcast` | airodump-ng + aireplay-ng `-0` | **yes** (every client) | the blunt handshake: deauth *all* clients at once for more chances. Opt-in (`broadcast_handshake = true`), and the report says what that costs in visibility |
+| `hcxdump_capture` | hcxdumptool + hcxpcapngtool | **yes** | the hcxtools pipeline: one bounded session, converted to hashcat mode 22000. No client needed, its own air policy, and `crack_sweep` for the next step |
+| `sae_group_audit` | wifipilot (wpa3.py) | **no** | which SAE groups the network uses (22/23/24 are the Dragonblood ones), whether a SAE-EXT-KEY AKM is advertised, and whether PMF is required |
+| `wps_ap_pin` | reaver `-p` | yes | the *static AP PIN*: vendor algorithms derive it from the BSSID, and on those devices it never changes |
+| `wps_lockout_probe` | reaver | **three frames** | three deliberately wrong PINs, then stop: does the AP lock WPS, and after how many failures? That decides whether an online walk is worth hours of radio |
+| `wps_pbc` | wpa_supplicant `wps_pbc` | yes | push-button enrolment: is a window open? Inside it, anything in range can enrol as a registrar |
+| `karma_detect` | wifipilot (rawtx.py) | yes, quietly | probe for names that *cannot* exist: a device that answers several is Karma/MANA — this one hunts the attacker |
+| `csa_attack` | wifipilot (rawtx.py) | **yes** | a forged Channel Switch Announcement in the AP's own name: clients leave the channel with no deauth frame anywhere |
+| `ssid_confusion` | wifipilot (rawtx.py) | **yes** | the same SSID from a new BSSID: do clients select a network by name alone? |
+| `ssid_bruteforce` | wifipilot (rawtx.py) | yes, patient | one directed probe per second against a hidden AP: a misconfigured AP answers for the name it hides |
+| `ap_isolation_audit` | wifipilot (rawtx.py) | yes, quietly | a spoofed ARP between two clients: if a reply comes back, the AP bridged their traffic and the "guest" network is flat |
+| `assoc_flood` | wifipilot (rawtx.py) | **yes, heavily** | association requests from thousands of fake stations: the *association* table is the resource that runs out. Built in-process — no mdk4 needed |
+| `null_data_flood` | wifipilot (rawtx.py) | **yes, heavily** | QoS Null frames with the power-save bit: the AP buffers for stations that never wake, and no deauth frame is ever sent |
+| `eapol_start_flood` | wifipilot (rawtx.py) | **yes, heavily** | EAPOL-Start from fake supplicants: 802.1X session exhaustion, the enterprise shape of the same attack |
+| `sae_commit_flood` | wifipilot (rawtx.py) | **yes, heavily** | SAE commits with random scalars: every one costs the AP a scalar multiplication before any authentication |
+| `tkip_michael` | wifipilot (rawtx.py) | **yes, extreme** | replay two captured TKIP frames with the MIC corrupted: the Michael countermeasure silences TKIP for 60 seconds. No key needed |
+| `wids_confusion` | wifipilot (rawtx.py) | **yes, extreme** | deauths carrying a *neighbour's* BSSID: anything that attributes attacks by transmitter address blames the wrong network |
 
 Only `hidden_ssid --reveal-with-probe`, `rogue_radius`, `evil_twin`, `karma`,
 `eapol_logoff`, the four floods and the classic attacks transmit anything; `rogue_ap`,
