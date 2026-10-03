@@ -17,35 +17,70 @@ ENCRYPTIONS = ("OPEN", "WEP", "WPA", "WPA2", "WPA3", "WPA2/WPA3", "OWE", "ENTERP
 WPS_STATES = ("", "unlocked", "locked", "configured", "unknown")
 CAPTURE_KINDS = ("handshake", "pmkid", "wep_ivs")
 
-#: attack primitives the planner is allowed to choose from (whitelist!)
+#: attack primitives the planner is allowed to choose from (whitelist!).  Every
+#: name here is registered in ``wifipilot.attacks.ATTACK_CLASSES`` and described in
+#: ``wifipilot.attacks.meta``; a test keeps the three lists in step.
 ATTACK_NAMES = (
+    # offline: files the session already has, no radio, no authorisation
+    "loot_audit",       # what is in the session's loot, and what is missing
+    "eapol_audit",      # decode the EAPOL exchanges already captured
+    "wep_audit",        # count IVs/ARP in a WEP capture and say what is missing
+    "crack_sweep",      # every usable hash the session holds -> the cracker
+    "eap_md5_crack",    # EAP-MD5 offline dictionary (RFC 2759)
+    "pixie_offline",    # pixiewps against a stored WPS exchange
+    "rogue_detect",     # rogue/twin infrastructure in the captures
+    "twin_detect",      # identical SSIDs, different vendors
+    "roam_audit",       # 802.11k/r/v and PMF posture
+    "wps_lockout_audit",  # lockout policy of WPS APs already seen
+    # capture
     "handshake",      # deauth + 4-way capture
+    "handshake_broadcast",  # the same, deauthenticating every client at once
     "pmkid",          # client-less PMKID (hcxdumptool / airodump --pmkid)
-    "wps_pixie",      # offline Pixie-Dust against WPS
-    "wps_pin",        # online PIN brute force / default-PIN replay
-    "wep_ivs",        # ARP-replay IV harvesting
-    "hidden_ssid",    # name a hidden network from probe responses/associations
-    "rogue_ap",       # read-only twin/attacker-infrastructure survey
-    "enterprise",     # 802.1X survey: method, identity, server certificate
-    "rogue_radius",   # impersonate the AP: will a client trust any certificate?
-    "tracker",        # follow one station: its real PNL, its signal trend
-    "saewolf",        # WPA3 SAE capture + transition-mode analysis
-    "pmf_audit",      # RSN/PMF audit: which classic attacks are still possible
-    "evil_twin",      # serve the SSID ourselves and see who prefers it
-    "deauth_flood",   # denial-of-service / WIDS detection test
-    "beacon_flood",   # beacon-flood / WIDS detection test
     "pmkid_flood",    # active PMKID hunt: deauth to force M1 with a PMKID
-    "eapol_logoff",   # unauthenticated disconnect (PMF does not cover EAPOL)
+    "hcxdump_capture",  # the hcxdumptool -> hcxpcapngtool pipeline
+    # read-only surveys
+    "passive",        # listen only, never transmit
+    "pmf_audit",      # RSN/PMF audit: which classic attacks are still possible
+    "saewolf",        # WPA3 SAE capture + transition-mode analysis
+    "sae_group_audit",  # SAE groups, H2E and PMF posture from a capture
     "ie_audit",       # decode the elements airodump's CSV throws away
     "pnl_harvest",    # what clients are asking for, and which names are not on air
-    "karma",          # answer every probe request and see who trusts the name
-    "auth_flood",     # authentication flood: association-table exhaustion test
-    "probe_flood",    # probe flood: hidden-SSID disclosure test
+    "hidden_ssid",    # name a hidden network from probe responses/associations
+    "tracker",        # follow one station: its real PNL, its signal trend
+    "rogue_ap",       # read-only twin/attacker-infrastructure survey
+    "enterprise",     # 802.1X survey: method, identity, server certificate
+    # WPS / WEP
+    "wps_pixie",      # offline Pixie-Dust against WPS
+    "wps_ap_pin",     # vendor-derived static AP PIN
+    "wps_lockout_probe",  # measure the lockout policy with three wrong PINs
+    "wps_pbc",        # push-button enrolment: is a window open?
+    "wps_pin",        # online PIN brute force / default-PIN replay
+    "wep_ivs",        # ARP-replay IV harvesting
+    "wep_p0841",      # injected ARP (P0841) so the IV harvest can run
     "wep_chopchop",   # KoreK chopchop: keystream without the key
     "wep_fragment",   # fragmentation attack: PRGA for injection
     "wep_hirte",      # client-oriented fragmentation
-    "wep_p0841",      # injected ARP (P0841) so the IV harvest can run
-    "passive",        # listen only, never transmit
+    "eapol_logoff",   # unauthenticated disconnect (PMF does not cover EAPOL)
+    # rogue infrastructure, lures, impersonation
+    "karma",          # answer every probe request and see who trusts the name
+    "karma_detect",   # probes for names that cannot exist: find a Karma device
+    "csa_attack",     # channel-switch announcement: silent eviction
+    "ssid_confusion",  # the same SSID from a new BSSID
+    "ssid_bruteforce",  # dictionary probes against a hidden network
+    "ap_isolation_audit",  # can one client reach another? (spoofed ARP)
+    "evil_twin",      # serve the SSID ourselves and see who prefers it
+    "rogue_radius",   # impersonate the AP: will a client trust any certificate?
+    # denial of service (opt-in, always, and capped in time)
+    "deauth_flood",   # denial-of-service / WIDS detection test
+    "auth_flood",     # authentication flood: association-table exhaustion test
+    "assoc_flood",    # association flood: state exhaustion, no external tool
+    "null_data_flood",  # power-save buffer exhaustion: no deauth frames at all
+    "probe_flood",    # probe flood: hidden-SSID disclosure test
+    "eapol_start_flood",  # 802.1X session exhaustion (enterprise)
+    "sae_commit_flood",  # WPA3 CPU exhaustion: commits before authentication
+    "tkip_michael",   # replay two corrupted TKIP frames: 60-second shutdown
+    "wids_confusion",  # deauths carrying a neighbour's BSSID
+    "beacon_flood",   # beacon-flood / WIDS detection test
 )
 
 STATUS_IDLE = "idle"
@@ -556,6 +591,11 @@ class SessionStats:
     ie_audits: int = 0                 # beacon-element configuration audits run
     pnl_harvests: int = 0              # preferred-network-list harvests
     logoffs: int = 0                   # EAPOL-Logoff attempts delivered
+    offline_audits: int = 0            # analyses that never transmitted anything
+    rogue_detections: int = 0          # rogue/twin patterns found in a capture
+    lure_runs: int = 0                 # channel-switch / SSID-confusion lures sent
+    wps_probes: int = 0                # WPS lockout/PIN probes answered maybe
+    wps_lockouts_missing: int = 0      # APs found without a WPS lockout policy
     karma_runs: int = 0                # Karma attempts run
     stations_tracked: int = 0          # stations followed for a signal trend
     probing_clients: int = 0           # clients whose PNL was read out of a capture

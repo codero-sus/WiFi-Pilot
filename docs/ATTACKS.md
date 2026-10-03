@@ -1,13 +1,20 @@
 # Attacks
 
-wifipilot ships **27 attacks**: every technique a WiFi assessment genuinely needs, and
-nothing that exists only to lengthen the list. The families are read-only intelligence
-(the element audit and the preferred-network-list harvest), capture (handshake, PMKID,
-the active PMKID hunt), WPS/WEP, WPA3 (which is an audit, not a crack), the surveys that
-decide what is worth attacking, and the rogue-infrastructure and denial-of-service tests
-that impersonate, disconnect or flood. What follows is the reference for each one:
+wifipilot ships **54 attacks**: every technique a WiFi assessment genuinely needs, and
+nothing that exists only to lengthen the list. The families are **offline analysis**
+(ten attacks that read files and transmit nothing at all), **surveys** (passive
+decoding: elements, RSN, PNL, SAE parameters), **capture** (handshake, PMKID, the
+active hunt, the hcxdumptool pipeline), **WPS/WEP/802.1X**, **WPA3** (which is an
+audit, not a crack), **rogue infrastructure and lures** (impersonation, channel-switch
+announcements, SSID confusion), and the **denial-of-service tests** that are opt-in,
+time-capped and honest about it. What follows is the reference for each one:
 **what question it answers, what it costs, what it puts on the air, and how to read
 the result** — including the failure modes, which are the part most tools leave out.
+
+Every attack also carries machine-readable metadata — category, noise, impact and a
+"what a defender sees" sentence — in `wifipilot/attacks/meta.py`. `wifipilot attacks`
+prints it, `/api/state` returns it, and `tests/test_attacks_v3.py` fails if an attack
+is registered without it.
 
 The one rule the whole set follows: an attack that cannot answer its question is not
 shipped. There is no "WPA3 crack" here, because SAE cannot be checked offline, and
@@ -34,6 +41,11 @@ to start without `--i-am-authorized` (or the UI checkbox, or `authorized=true`).
 | [9. What each attack costs](#9-what-each-attack-costs) | runtime, noise, prerequisites |
 | [10. Interpreting failures](#10-interpreting-failures) | the message → cause → next step table |
 | [11. Where the AI fits](#11-where-the-ai-fits) | proposals, validation, and what happens with the advisor off |
+| [12. Offline analysis](#12-offline-analysis-ten-attacks-that-transmit-nothing) | `loot_audit`, `eapol_audit`, `wep_audit`, `crack_sweep`, `eap_md5_crack`, `pixie_offline`, `rogue_detect`, `twin_detect`, `roam_audit`, `wps_lockout_audit` — no radio, no authorisation |
+| [13. Capture, lures and confusion](#13-capture-lures-and-confusion) | `handshake_broadcast`, `hcxdump_capture`, `csa_attack`, `ssid_confusion`, `ssid_bruteforce`, `karma_detect`, `ap_isolation_audit` |
+| [14. WPS and WPA3 parameters](#14-wps-and-wpa3-parameters) | `wps_ap_pin`, `wps_lockout_probe`, `wps_pbc`, `sae_group_audit` |
+| [15. The second wave of floods](#15-the-second-wave-of-floods) | `assoc_flood`, `null_data_flood`, `eapol_start_flood`, `sae_commit_flood`, `tkip_michael`, `wids_confusion` |
+| [16. Reading the catalogue](#16-reading-the-catalogue) | `wifipilot attacks`, the metadata table, and how to add an attack |
 
 ---
 
@@ -68,16 +80,44 @@ to start without `--i-am-authorized` (or the UI checkbox, or `authorized=true`).
 | `beacon_flood` | DoS test | **yes, heavily** | mdk4 | "Does this site notice a beacon flood?" | ❌ opt-in |
 | `tracker` | survey | no | airodump-ng | "Which networks does this device really trust, and where is it going?" | ✅ |
 | `passive` | survey | no | airodump-ng | "What is on air right now, with zero risk?" | ❌ situational |
+| `loot_audit` | offline | **no** | nothing | "What do we actually hold, and what is missing from it?" | ❌ safe |
+| `eapol_audit` | offline | **no** | nothing | "Is this capture a *usable* handshake, or four frames that look like one?" | ❌ safe |
+| `wep_audit` | offline | **no** | nothing | "Is this WEP capture crackable now, or does it need another harvest?" | ❌ safe |
+| `crack_sweep` | offline | **no** | a wordlist (optional) | "Sweep everything we hold through the cracker while I read the report" | ❌ safe |
+| `eap_md5_crack` | offline | **no** | nothing | "Is this 802.1X deployment using the one EAP method with an offline attack?" | ❌ safe |
+| `pixie_offline` | offline | **no** | pixiewps | "Can the WPS exchange we captured be solved with the radio unplugged?" | ❌ safe |
+| `rogue_detect` | offline | **no** | nothing | "Is there rogue or cloned infrastructure in these captures?" | ❌ safe |
+| `twin_detect` | offline | **no** | nothing | "One SSID, several BSSIDs — which of them moved?" | ❌ safe |
+| `roam_audit` | offline | **no** | nothing | "Would a forged CSA or deauth land here (802.11k/r/v, PMF)?" | ❌ safe |
+| `wps_lockout_audit` | offline | **no** | nothing | "How does this AP's WPS lockout policy read from what we already have?" | ❌ safe |
+| `handshake_broadcast` | capture | **yes** | airodump-ng + aireplay-ng, ≥1 client, `broadcast_handshake` | "The quiet handshake keeps failing — what if every client drops at once?" | ❌ opt-in |
+| `hcxdump_capture` | capture | **yes** | hcxdumptool + hcxpcapngtool | "Hand the whole problem to hcxtools and get mode-22000 lines back" | ❌ opt-in |
+| `sae_group_audit` | survey | no | a capture (or a short listen) | "Which SAE groups, is H2E advertised, and is PMF required?" | ❌ opt-in |
+| `wps_ap_pin` | WPS | yes | reaver, WPS unlocked | "Is the *static* AP PIN derived from the BSSID on this device?" | ❌ opt-in |
+| `wps_lockout_probe` | WPS | yes, 3 frames | reaver, WPS unlocked | "Does WPS lock out, and after how many wrong PINs?" | ❌ opt-in |
+| `wps_pbc` | WPS | **yes** | wpa_supplicant + wpa_cli, a managed interface | "Is a push-button window open right now?" | ❌ opt-in |
+| `karma_detect` | rogue | yes, quietly | a monitor interface | "Is something out there answering probes for names that cannot exist?" | ❌ opt-in |
+| `csa_attack` | rogue | **yes** | a monitor interface | "Will clients follow a channel-switch announcement from an AP's name?" | ❌ opt-in |
+| `ssid_confusion` | rogue | **yes** | a monitor interface | "Do these clients select a network by name alone?" | ❌ opt-in |
+| `ssid_bruteforce` | rogue | yes, patient | a monitor interface, a hidden AP | "Will the hidden AP answer for the name it is hiding?" | ❌ opt-in |
+| `ap_isolation_audit` | rogue | yes, quietly | a monitor interface, ≥2 clients | "Can one guest reach another on this 'isolated' network?" | ❌ opt-in |
+| `assoc_flood` | DoS test | **yes, heavily** | a monitor interface (no mdk4) | "Can the association table be filled, and does anything rate-limit?" | ❌ opt-in |
+| `null_data_flood` | DoS test | **yes, heavily** | a monitor interface | "Are power-save buffers bounded per station — with *no* deauth frames to see?" | ❌ opt-in |
+| `eapol_start_flood` | DoS test | **yes, heavily** | a monitor interface, 802.1X | "Can 802.1X sessions be opened from the air without limit?" | ❌ opt-in |
+| `sae_commit_flood` | DoS test | **yes, heavily** | a monitor interface, WPA3 | "Do SAE commits cost the AP CPU before anyone authenticates?" | ❌ opt-in |
+| `tkip_michael` | DoS test | **yes, extreme** | a monitor interface, TKIP or a capture | "Can two corrupted frames silence TKIP for a minute?" | ❌ opt-in |
+| `wids_confusion` | DoS test | **yes, extreme** | a monitor interface | "Can the site's monitoring be pointed at an innocent neighbour?" | ❌ opt-in |
 
 \* `pmkid` transmits only if you ask it to (the association-based path inside
 hcxdumptool); `hidden_ssid` transmits only with `--reveal-with-probe`.
 
 The last column is what `Config().attacks` contains: six quiet attacks enabled, and
-everything else — the two read-only decoders (`ie_audit`, `pnl_harvest`), the
-situational surveys and everything disruptive (`wps_pin`, `pmkid_flood`, the WEP
-enablers, the twin, Karma, the Logoff and all four floods) — opt-in, through `--attacks`,
-the web UI's checkbox list, `attacks=[...]` in the API, or `mode="force"` when you
-really do mean all of them. `❌ safe` means the attack transmits nothing at all: it
+everything else — the ten offline analyses, the two read-only decoders (`ie_audit`,
+`pnl_harvest`), the situational surveys, the lures and everything disruptive
+(`wps_pin`, `pmkid_flood`, `handshake_broadcast`, the WEP enablers, the twin, Karma, the
+Logoff and all ten floods) — opt-in, through `--attacks`, the web UI's checkbox list,
+`attacks=[...]` in the API, `mode="offline"` for the radio-less set, or `mode="force"`
+when you really do mean all of them. `❌ safe` means the attack transmits nothing at all: it
 decodes frames already on disk, so it is always safe to add to the list, and it is
 included in `mode="passive"` for exactly that reason.
 
@@ -806,6 +846,27 @@ makes *every* attack behave like this one: deauth helpers become no-ops.
 | `probe_flood` | thousands of probe requests/second | ≤45 s, capped | clients wake up, scan lists fill | **maximum** |
 | `beacon_flood` | hundreds of fake beacons/second | ≤45 s, capped | phantom networks in every scan list | **maximum** |
 | `wps_pin` | thousands of EAP-WSC exchanges | hours, may brick WPS | lock-out | **high** |
+| `loot_audit`, `eapol_audit`, `wep_audit`, `rogue_detect`, `twin_detect`, `roam_audit`, `wps_lockout_audit` | 0 | <1 s per capture (local analysis) | none | none |
+| `crack_sweep` | 0 | the wordlist's own runtime, per capture | none | none |
+| `eap_md5_crack` | 0 | seconds to minutes (local) | none | none |
+| `pixie_offline` | 0 | <1 s per exchange (pixiewps) | none | none |
+| `sae_group_audit` | 0 (reads a capture; or a short listen) | <1 s | none | none |
+| `handshake_broadcast` | broadcast deauth bursts + retries | minutes | **every client of the AP drops at once** | **maximum** |
+| `hcxdump_capture` | the tool's own policy: deauths, associations | ≤120 s, capped | clients reconnect repeatedly | **high** |
+| `wps_ap_pin` | ≤3 registrar attempts | seconds each | a logged WPS failure per candidate | low |
+| `wps_lockout_probe` | 3 EAP-WSC exchanges | seconds | may lock WPS until a reboot | low (three frames) |
+| `wps_pbc` | one enrolment attempt per window | up to the window (≤60 s here) | a new client joins if the window is open | medium |
+| `karma_detect` | 4 probe requests, one address | seconds | none (only a Karma device answers) | low |
+| `csa_attack` | 2 CSA beacons per round | ≤30 s | clients hop channels and reconnect | medium (no deauth to count) |
+| `ssid_confusion` | 3 beacons per round | ≤30 s | clients may try an impostor BSSID | medium |
+| `ssid_bruteforce` | 1 directed probe per second | ≤30 s | none | low |
+| `ap_isolation_audit` | 2 ARP frames per round | ≤30 s | none | very low |
+| `assoc_flood` | 24 association requests per round | ≤30 s, capped | the association table fills | **maximum** |
+| `null_data_flood` | 32 Null frames per round | ≤30 s, capped | buffers fill for stations that do not exist | **maximum** (and invisible to deauth rules) |
+| `eapol_start_flood` | 24 EAPOL-Starts per round | ≤30 s, capped | the authenticator holds half-open sessions | **maximum** |
+| `sae_commit_flood` | 8 commits per round | ≤30 s, capped | the AP spends CPU before authentication | **maximum** |
+| `tkip_michael` | 2 corrupted frames | <8 s | TKIP clients lose service for 60 s (the countermeasure) | **high** (it is a MIC failure by definition) |
+| `wids_confusion` | 16 deauths per round, foreign BSSID | ≤25 s, capped | clients of the target drop, the neighbour gets blamed | **maximum** |
 
 Times come from `wp.benchmark()` and the target's own history, not from a fixed
 promise, so the estimate in the UI reflects the machine actually running the sweep. The
@@ -871,3 +932,326 @@ and the pilot is the planner — the attacks behave identically.
 See [AI-PROVIDERS.md](AI-PROVIDERS.md) for the advisor itself (including the off switch),
 [ARCHITECTURE.md](ARCHITECTURE.md) for how a plan becomes an attempt, and
 [TUI.md](TUI.md) for how the dashboard shows which of the two is deciding.
+
+---
+
+## 12. Offline analysis: ten attacks that transmit nothing
+
+These ten read files the session already holds. They need no radio, no monitor
+interface, no root and — because nothing is transmitted — no authorisation prompt:
+`wp.attack(target=..., mode="offline")` runs them on a laptop that has never touched a
+wireless card, and `wifipilot attacks --no-radio` lists them. If you are building a report
+from captures you took yesterday, this is the section you want.
+
+### `loot_audit` — what do we actually hold?
+
+Walks every capture, hash file and artifact in the session, classifies each one
+(usable handshake, PMKID, WEP data, credential, plain artifact), matches duplicates by
+the *material* they contain rather than by filename, and converts everything crackable
+into a hashcat mode-22000 line. The answer to "did that engagement actually collect
+anything?" is usually less flattering than the operator remembers, which is the point:
+the report says `4 captures inventoried, 4 crackable, 5 unique hashes (1 duplicate
+merged)` instead of listing files. When the session holds several hash files it also
+produces a merged artifact (`audit/loot-audit-*.hc22000`).
+
+*Failure modes:* an empty session is a valid audit ("0 captures") and reports as such; a
+capture that yields no mode-22000 line is listed with the reason (no ESSID, no
+handshake, MIC zeroed) rather than silently skipped.
+
+### `eapol_audit` — is this handshake usable?
+
+Decodes the EAPOL exchanges in a capture and answers the question a file size cannot:
+which stations produced a *complete, checkable* pair (M1+M2 or M2+M3 with a real
+ANonce), which key version was used (HMAC-MD5, HMAC-SHA1 or AES-CMAC — i.e. whether this
+is TKIP-era or CCMP), how many retransmits there were, and what is missing. A capture
+with four frames from three stations is described here, not in the cracker's output.
+
+*Failure modes:* no EAPOL at all → "no EAPOL in this capture" (the file may hold beacons
+only); a handshake whose MIC is zeroed is reported as *uncheckable* by anyone, which is a
+finding about the capture, not about the password.
+
+### `wep_audit` — is the WEP network crackable now?
+
+Counts IVs, estimates unique IVs, counts the ARP frames that feed an ARP-replay attack,
+and applies the classic rule of thumb (a few tens of thousands of unique IVs, or ARP
+traffic to replay). "Crackable now" and "needs another five minutes of harvesting" are
+different findings, and only one of them means you have to touch the radio again.
+
+### `crack_sweep` — sweep everything through the cracker
+
+Every usable hash the session holds, one after another, with a per-capture time budget
+(`per_capture_seconds`). This is the batch version of `wifipilot crack`, and the one the
+planner reaches for when a campaign ends with loot it never got round to cracking.
+
+*Failure modes:* no wordlist (or none big enough) is reported as the reason nothing was
+recovered; a hash that no verifier can check is skipped with that stated explicitly.
+
+### `eap_md5_crack` — the one 802.1X method with an offline attack
+
+EAP-MD5 answers a challenge with `MD5(identifier ‖ password ‖ challenge)` that anyone who
+captured it can check. The attack pulls every EAP-MD5 exchange out of the session's
+captures and runs the wordlist against them. The finding is not "a password was found"
+but "this deployment is still using EAP-MD5", which is the sentence the client's auditor
+needs. EAP-TLS/PEAP/TTLS exchanges are left alone, because they cannot be attacked this
+way — say so rather than implying they can.
+
+### `pixie_offline` — pixiewps with the radio unplugged
+
+Runs `pixiewps` against a WPS exchange already captured (WPS attributes are decoded out
+of the EAP-WPS messages in the capture: PKE, both nonces, both E-hashes). The online
+`wps_pixie` attack needs a radio and a few seconds of WPS traffic; this one needs a file.
+If the session holds no exchange, the attack says what is missing instead of guessing.
+
+### `rogue_detect`, `twin_detect`, `roam_audit` — the pattern audits
+
+Three read-only sweeps over what is already captured:
+
+* `rogue_detect` — several BSSIDs behind one SSID, vendors that do not match the
+  established one, signal spreads that only make sense for a rogue transmitter.
+* `twin_detect` — the twin-specific half: one name, several BSSIDs, channel changes
+  mid-capture, and whether an impostor appeared *after* the real AP.
+* `roam_audit` — the 802.11k/r/v elements and the PMF bits, i.e. whether a forged
+  CSA or deauth would land at all. It feeds the decision to run `csa_attack`,
+  `karma` or `evil_twin`.
+
+All three report a *pattern* with the evidence attached, never an accusation: a
+neighbour's new router looks like a twin to a five-minute capture.
+
+### `wps_lockout_audit` — what does the WPS record say?
+
+Reads the WPS state the session already knows (which APs advertise WPS, which were
+locked, which gave up their PIN) and reports the posture: how many APs expose WPS, how
+many have a lockout policy, and which ones have neither. The online `wps_lockout_probe`
+answers the same question with three frames; this one answers it from the session.
+
+---
+
+## 13. Capture, lures and confusion
+
+### `handshake_broadcast` — the blunt handshake
+
+The same 4-way capture as `handshake`, with one difference that matters: the
+deauthentication is *broadcast*, so every client of the AP drops at once and several
+stations offer a fresh handshake. It is better at its job and much worse for the site —
+which is why it is not in the default set and the planner only runs it with
+`broadcast_handshake = true` (`--broadcast-handshake`), on top of the usual
+authorisation gate.
+
+*Failure modes:* no clients → the attack is skipped (there is nothing to deauth, and
+`pmkid` is the right answer); WPA3-SAE → refused, as with `handshake`, because SAE does
+not produce a crackable capture.
+
+### `hcxdump_capture` — the hcxtools pipeline
+
+Runs `hcxdumptool` against one BSSID for a bounded time with a filter file, then
+`hcxpcapngtool` to convert the result into hashcat mode 22000. It needs no client at all,
+which is its whole point, and it follows *its own* air policy (association attempts,
+deauths, its own idea of what provokes a PMKID): the report says so rather than pretending
+this is passive. The hash file it produces is what `crack_sweep` consumes next.
+
+*Failure modes:* the tool version matters — the flags changed between v6 and v7, and a
+version mismatch is reported as exactly that, not as "no PMKIDs here"; missing
+`hcxpcapngtool` is a hard failure, because nothing else converts the capture; a capture
+with no PMKID and no complete handshake produces an empty hash file and a `low` finding.
+
+### `csa_attack` — silent eviction
+
+A **Channel Switch Announcement** is how a real AP tells its clients "move to channel N
+now". It is a plain management frame: any transmitter can send it, clients in the
+transition phase obey it, and — unlike a deauthentication — there is no disconnect for a
+WIDS to count and nothing for 802.11w to protect, because the frame arrives inside a
+beacon. The attack sends the announcement in the target's own name, then moves the
+monitor to the announced channel and looks for the target's clients probing there. That
+capture is the deliverable: clients that followed, or clients that ignored it.
+
+*Failure modes:* clients that validate the transmitter ignore the frame — that is a
+*result* (report it as such); without a monitor interface there is nothing to observe
+and the report says the lure was sent but not read back.
+
+### `ssid_confusion` — the same name, a different BSSID
+
+Beaconing the target's SSID from a BSSID the network does not use tests whether clients
+select a network by name alone. A station that probes for, or associates with, that
+BSSID proves it does; a station that does not is a real result too (managed SSID lists
+and BSSID pinning work). The impostor BSSID is deterministic per target, so the report
+can be replayed.
+
+### `ssid_bruteforce` — patient probes against a hidden network
+
+Hidden networks are supposed to answer only stations that already know the name. This
+sends one directed probe per second from a station address the AP already knows, working
+through a wordlist (the session's wordlist when one is configured, a small built-in panel
+otherwise), and reads the capture for a probe response. A misconfigured AP answers for a
+name it does not have; an AP that answers with its real name discloses it in full. The
+`probe_flood` attack is the blunt version of the same idea; this one is quiet, targeted
+and stops the moment it has an answer.
+
+### `karma_detect` — hunting the hunter
+
+Sends probe requests for names that *cannot* exist from one fixed station address, then
+reads the capture. A normal AP answers nothing (it does not know those names). A device
+that answers several different made-up names is Karma/MANA behaviour — a rogue AP
+claiming every SSID a client remembers, which is how credentials get collected. This is
+the one attack in the set whose target is the attacker, and it is worth running on any
+network where the client's staff carry laptops through a lobby.
+
+### `ap_isolation_audit` — is the guest network flat?
+
+Client isolation is a configuration claim, and this is the frame that tests it: a
+spoofed ARP request from one client's address asking for another client's IP. If an ARP
+reply is relayed between them, the AP bridged their traffic — a "guest" network where
+every device is one hop from every other device, including the printer, the NAS and the
+router's own web interface. Only the *reply* counts as evidence (broadcast ARP is
+forwarded by most APs even with isolation on), and the report says so.
+
+*Failure modes:* fewer than two clients → skipped, because there is nobody to talk to.
+
+---
+
+## 14. WPS and WPA3 parameters
+
+### `wps_ap_pin` — the static AP PIN
+
+Vendor algorithms derive a device's *registrar* PIN (the AP PIN) from its BSSID. On the
+devices that shipped one, it never changes — resetting the WPS PIN does not touch it —
+so a single correct candidate hands over the PSK. The attack tries at most three
+candidates from the vendor algorithm, then stops and reports which source each one came
+from. A refusal is a real result: "the registrar PIN is unique to this device", which is
+the hardware-specific case.
+
+### `wps_lockout_probe` — three wrong PINs, then stop
+
+The single fact that decides whether an online PIN walk is worth hours of radio time is
+the lockout policy. This attack sends three deliberately wrong PINs and reads the AP's
+answer: lockout after N attempts, rate limiting, or nothing at all. Measuring a lockout
+means triggering it, so the attack stops after three attempts by design — and a site
+that ends up locked out because of it is a finding, not a side effect: report it.
+
+### `wps_pbc` — push-button enrolment
+
+`wpa_supplicant`'s own `wps_pbc` method, exactly what a phone does when the owner presses
+the button: enrol, get the credential, read it back from the supplicant. Outside the
+window it fails visibly. Inside the window — 60 to 120 seconds, and re-opened whenever
+WPS is used at all — anything with radio range can enrol as a registrar, which is why
+this is a critical finding when it succeeds and a timing result when it does not. It
+needs a *managed* interface (not a monitor one) and both `wpa_supplicant` and `wpa_cli`.
+
+### `sae_group_audit` — WPA3 parameters, read without an attack
+
+Reads the RSN element and any SAE commits in a capture (or takes a short, bounded listen
+if there is none) and reports:
+
+* **the groups in use** — a commit carries its group in the authentication frame's
+  status field, so the capture says whether the network is on group 19/20/21 (the
+  RFC 8110 set) or on 22/23/24 (the Dragonblood set: cheaper for an attacker, more
+  expensive for the AP);
+* **whether a SAE-EXT-KEY AKM (24/25) is advertised** — without it, Hash-to-Element is
+  negotiated inside the commit and this read-only audit cannot confirm it, which is
+  exactly the situation `sae_commit_flood` exploits;
+* **whether PMF is required** — capable-but-not-required still means a forged deauth,
+  disassociation or CSA lands on clients that support 802.11w without requiring it;
+* **whether a WPA2 path is still offered** (transition mode), in which case a captured
+  handshake is crackable and `handshake` is the attack that matters.
+
+It never claims a group makes SAE crackable: SAE is a PAKE, and the weaknesses here are
+availability and downgrade ones.
+
+---
+
+## 15. The second wave of floods
+
+Six more denial-of-service tests, all built in-process with `rawtx.py` (no `mdk4`), all
+off by default, all capped in time. Every one of their reports opens with the same
+sentence in different words: *the deliverable is the finding, not a password.* Their
+fragments are in the table in section 9.
+
+### `assoc_flood` — the association table
+
+Association requests from fake stations. The difference from `auth_flood` is real: an
+authentication flood makes the AP answer, but an association request makes it *allocate
+and hold state*, which is the resource that runs out first on consumer gear. The finding
+is whether anything rate-limits management frames at all.
+
+### `null_data_flood` — power-save buffers
+
+QoS Null frames with the power-management bit set, alternating awake and asleep, from
+addresses that do not exist. The AP buffers frames for stations it believes are asleep
+until its buffers run out. Because these are *data* frames carrying no payload, a WIDS
+that counts deauth/disassoc frames sees nothing at all — which is the finding.
+
+### `eapol_start_flood` — 802.1X session exhaustion
+
+EAPOL-Start frames from fake supplicants: the authenticator opens one 802.1X session per
+frame and must hold each of them until the RADIUS exchange times out. This is the
+enterprise shape of the association flood (the AP falls over before the RADIUS server
+does), and it is why 802.1X deployments need per-client rate limits and a WIPS rather
+than "strong credentials".
+
+### `sae_commit_flood` — WPA3 CPU exhaustion
+
+SAE commit frames with random scalars. Every commit costs the AP a scalar multiplication
+on the negotiated group *before* any authentication happens — the Dragonblood "clogging"
+result. Aimed at the weakest group the AP is known to advertise (groups 22/23/24 cost the
+AP more and the attacker less than 19). The mitigation is an anti-clogging token plus
+H2E, which is exactly what `sae_group_audit` reports on.
+
+### `tkip_michael` — two frames, sixty seconds
+
+A TKIP frame taken from a capture with its MIC corrupted, replayed twice. No key is
+needed: the AP decrypts with its own session key, recomputes the MIC and sees a mismatch;
+two failures inside 60 seconds start the Michael countermeasure, which silences *all*
+TKIP traffic on the AP for a minute. This was the reason TKIP was banned from 802.11n
+onward, and the usual finding is simpler and more damning than the attack: the network
+still offers TKIP.
+
+*Failure modes:* no TKIP advertised and no protected frame captured yet → skipped with
+that reason (run a capture first); a synthetic stand-in frame is used when the operator
+insists, and the report marks it as best-effort.
+
+### `wids_confusion` — blaming the neighbour
+
+Deauthentication frames whose transmitter address is a *neighbouring* AP's BSSID (up to
+three of the loudest). Clients of the target are disconnected — that part is ordinary —
+but anything that attributes management frames by address now blames an innocent network,
+and the site's first incident response goes to the wrong place. The finding is about the
+monitoring: can it tell a spoofed transmitter from a genuine one (RSSI, sequence numbers,
+a second sensor)?
+
+---
+
+## 16. Reading the catalogue
+
+Everything section 1 describes by hand is also a data structure. `wifipilot/attacks/meta.py`
+holds, for every attack, four facts: **category** (offline, capture, survey, wps, wep,
+enterprise, rogue, dos), **noise** (silent → quiet → moderate → loud → extreme),
+**impact** (none → info → degraded → outage → loot) and **what a defender sees**. The CLI,
+the web UI, the report and the advisor prompt all read the same function:
+
+```console
+$ wifipilot attacks                 # every attack, grouped by category, with its costs
+$ wifipilot attacks --no-radio      # the ten that transmit nothing
+$ wifipilot attacks --noise loud    # the ones a site will notice
+$ wifipilot attacks --json          # the same data for a script
+```
+
+```python
+from wifipilot.attacks import attack_catalog, validate, OFFLINE_ATTACKS
+catalogue = attack_catalog()        # 54 dicts: name, label, tool, requires, category,
+                                    # noise, impact, detection, offline, default_enabled
+assert validate() == []             # every attack described, no orphan metadata
+```
+
+`validate()` is the integrity check, and the test suite runs it: an attack that is
+registered without a category, a noise level, an impact level or a detection sentence
+fails the build, and so does a metadata entry for an attack that no longer exists. The
+same tests check that `docs/ATTACKS.md` and the README mention every registered attack by
+name, and that `Config().attacks` is exactly the set marked `default_enabled` — so a
+batch like this one cannot land with the registry, the planner, the UI and the docs
+disagreeing about what the tool does.
+
+**Adding an attack** is therefore: a class in `wifipilot/attacks/` (with `name`, `label`,
+`tool`, `description`, `requires`, `needs_injection`, `applies_to`), an entry in
+`ATTACK_META`, a registration in `ATTACK_CLASSES` and a place in `DEFAULT_ORDER`, the
+name in `models.ATTACK_NAMES`, gates in `planner.allow()` if it needs tools or is
+disruptive, and a row in the tables above. The tests in `tests/test_attacks_v3.py` will
+tell you which of those you forgot.

@@ -82,7 +82,7 @@ from .api import (  # noqa: E402  (import at the end: api.py imports config/mode
     ALL, ALL_ATTACKS, MODES, AuthorizationError, BusyError, CampaignResult, PlatformError, Run,
     ScanResult, TargetError, WifiPilotError, advisor_status, analyze, attack, authorize,
     config, configure, crack, current_run, demo, engine, export, is_running, loot,
-    suggest_masks, strategies, targets, select, selected, note, notes, tag, history,
+    suggest_masks, strategies, catalogue, targets, select, selected, note, notes, tag, history,
     vendor, identify, passwords, advice, benchmark, hash_stats, merge_hashes,
     rescue_capture, wordlist_stats, expand_wordlist, rules_info, loot_manifest,
     verify_loot, survey, probes, pins, reveal, eap, decode, pmk_verify, pmk_convert,

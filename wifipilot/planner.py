@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .config import Config
 from .deps import registry
+from .attacks import OFFLINE_ATTACKS
 from .models import ATTACK_NAMES, STATUS_FAILED, STATUS_SUCCESS, AccessPoint
 from .session import Session
 from .util import clamp, mac_norm
@@ -244,6 +245,45 @@ def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
                 return False
             if not caps.get("monitor") or not caps.get("airodump"):
                 return False
+        # -- offline analyses -------------------------------------------------- #
+        # these read files the session already has: no radio, no monitor interface and
+        # no authorisation, so the only gate is that the operator asked for them
+        if name in OFFLINE_ATTACKS:
+            return True
+        # -- the 2026 batch ---------------------------------------------------- #
+        if name in ("handshake_broadcast", "hcxdump_capture"):
+            if not caps.get("airodump"):
+                return False
+            if name == "hcxdump_capture" and not registry.path("hcxdumptool"):
+                return False
+            if config.stealth:
+                return False
+        if name in ("wps_ap_pin", "wps_lockout_probe", "wps_pbc"):
+            if not caps.get("wps"):
+                return False
+            if name == "wps_pbc" and not (registry.path("wpa_supplicant")
+                                          and registry.path("wpa_cli")):
+                return False
+            if config.stealth:               # stealth means listen-only, always
+                return False
+        if name == "sae_group_audit":
+            # a capture the session already holds is enough; otherwise it listens
+            if not (caps.get("airodump") or registry.path("airodump-ng")):
+                return False
+        if name in ("karma_detect", "csa_attack", "ssid_confusion", "ssid_bruteforce",
+                    "ap_isolation_audit"):
+            # lures transmit even when their analysis is quiet, so stealth excludes
+            # them and they need a monitor interface to send from
+            if config.stealth or not caps.get("monitor"):
+                return False
+            if name != "karma_detect" and not caps.get("airodump"):
+                return False
+        if name in ("assoc_flood", "null_data_flood", "eapol_start_flood",
+                    "sae_commit_flood", "tkip_michael", "wids_confusion"):
+            # denial of service: never in stealth mode, and they are built in-process,
+            # so what they need is a monitor interface and CAP_NET_RAW
+            if config.stealth or not caps.get("monitor"):
+                return False
         return True                       # rogue_ap is pure analysis: no radio
 
     if ap.cracked:
@@ -251,6 +291,24 @@ def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
     # already have loot -> crack it
     if (ap.has_handshake or ap.has_pmkid) and not config.skip_crack:
         out.append("crack")
+    # offline analyses come before anything that touches the radio: they cost no
+    # airtime, they change what we know (a revealed name, an unusable capture), and a
+    # capture that turns out to be incomplete should be known before it is trusted
+    if ap.captures:
+        if allow("eapol_audit") and (ap.has_handshake or ap.has_pmkid):
+            out.append("eapol_audit")
+        if allow("wep_audit") and ap.encryption == "WEP":
+            out.append("wep_audit")
+        if allow("pixie_offline") and ap.wps:
+            out.append("pixie_offline")
+        if allow("wps_lockout_audit") and ap.wps:
+            out.append("wps_lockout_audit")
+        if allow("loot_audit"):
+            out.append("loot_audit")
+        if allow("rogue_detect"):
+            out.append("rogue_detect")
+        if allow("twin_detect"):
+            out.append("twin_detect")
     # read-only surveys change what we know, so they run before anything noisy
     if allow("ie_audit") and not ap.pmf_checked:
         # what the AP says about itself: RSN, WPS, HT/VHT, 802.11r — the configuration
@@ -259,6 +317,11 @@ def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
     if allow("pmf_audit") and not ap.pmf_checked:
         # which classic attacks are still possible on this AP?  known before we try
         out.append("pmf_audit")
+    if allow("roam_audit") and ("WPA3" in (ap.encryption or "")
+                                or ap.sae or ap.pmf_checked):
+        # 802.11k/r/v and the PMF bits: a roaming audit is read-only and decides
+        # whether a forged CSA/deauth would land at all
+        out.append("roam_audit")
     if allow("pnl_harvest") and not ap.clients:
         # a quiet target: what are the stations around here asking for?
         out.append("pnl_harvest")
@@ -277,6 +340,9 @@ def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
         # a network whose clients do validate certificates wastes radio time
         if allow("rogue_radius") and not config.stealth:
             out.append("rogue_radius")
+        if allow("eap_md5_crack") and ap.captures:
+            # EAP-MD5 is the one 802.1X method whose exchange is checkable offline
+            out.append("eap_md5_crack")
         return _prune(out, ap)      # there is no PSK here to grab or crack
     if ap.encryption == "WEP":
         # the harvest first: it is the attack that actually recovers the key
@@ -295,12 +361,28 @@ def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
     if ap.wps and ap.wps_open:
         if allow("wps_pixie"):
             out.append("wps_pixie")
+        if allow("pixie_offline") and ap.captures:
+            # the capture the Pixie-Dust attempt just produced can be solved (again)
+            # without a radio: pixiewps only needs the exchange
+            out.append("pixie_offline")
+        if allow("wps_lockout_probe") and not ap.wps_locked:
+            # three wrong PINs answer "is an online walk viable here?" for the price
+            # of three frames, before anything expensive is started
+            out.append("wps_lockout_probe")
+        if allow("wps_ap_pin") and not ap.wps_locked:
+            out.append("wps_ap_pin")
+        if allow("wps_pbc") and not config.stealth:
+            out.append("wps_pbc")
         if allow("wps_pin") and not config.stealth:
             out.append("wps_pin")
     if ap.encryption == "WPA3" and ap.sae:
         # a WPA3-only network is not cracked with a deauth: it is captured and audited
         if allow("saewolf") and not ap.sai:
             out.append("saewolf")
+        if allow("sae_group_audit"):
+            # group choice, H2E and PMF: the parameters decide whether a commit flood
+            # is worth anything, and the audit is what reads them
+            out.append("sae_group_audit")
         return _prune(out, ap)
     if ap.encryption in ("WPA", "WPA2", "WPA2/WPA3"):
         if allow("saewolf") and ap.sae:
@@ -316,6 +398,15 @@ def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
             out.append("handshake")
         elif not ap.clients and allow("pmkid") and not ap.has_pmkid:
             out.append("pmkid")
+        if (allow("handshake_broadcast") and ap.clients and not ap.has_handshake
+                and not config.stealth and config.broadcast_handshake):
+            # the blunt variant is opt-in even in force mode: it drops every client on
+            # the channel, which is a different act from deauthing one station
+            out.append("handshake_broadcast")
+        if (allow("hcxdump_capture") and not ap.has_handshake and not ap.has_pmkid
+                and not config.stealth):
+            # the whole point of hcxdumptool is that it needs no client at all
+            out.append("hcxdump_capture")
         if ap.clients and allow("eapol_logoff") and not ap.pmf and not config.stealth:
             # a quiet disconnect for the clients a deauth would also move: it never
             # produces a handshake, so it runs *after* the capture attacks
@@ -328,6 +419,18 @@ def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
         out.append("evil_twin")
     if allow("karma") and not config.stealth:
         out.append("karma")
+    # lures: quieter than a flood, louder than a capture, and only when asked for
+    if allow("karma_detect"):
+        out.append("karma_detect")
+    if allow("ssid_bruteforce") and not (ap.essid or "").strip():
+        # a hidden network with a name worth looking for
+        out.append("ssid_bruteforce")
+    if allow("csa_attack"):
+        out.append("csa_attack")
+    if allow("ssid_confusion") and (ap.essid or "").strip():
+        out.append("ssid_confusion")
+    if allow("ap_isolation_audit") and len(ap.clients) >= 2:
+        out.append("ap_isolation_audit")
     if allow("deauth_flood") and not config.stealth:
         out.append("deauth_flood")
     if allow("auth_flood") and not config.stealth:
@@ -336,6 +439,10 @@ def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
         out.append("probe_flood")
     if allow("beacon_flood") and not config.stealth:
         out.append("beacon_flood")
+    for name in ("assoc_flood", "null_data_flood", "probe_flood", "eapol_start_flood",
+                 "sae_commit_flood", "tkip_michael", "wids_confusion"):
+        if allow(name) and not config.stealth:
+            out.append(name)
 
     return _prune(out, ap)
 

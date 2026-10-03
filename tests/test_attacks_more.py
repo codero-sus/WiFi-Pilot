@@ -903,9 +903,11 @@ def test_the_decode_command_prints_a_table_and_emits_json(tmp_path, capsys):
 # the catalog, the API surface and the documentation
 # --------------------------------------------------------------------------- #
 
-def test_the_catalog_describes_all_twenty_seven_attacks():
+def test_the_catalog_describes_every_registered_attack():
     catalog = attack_catalog()
-    assert len(catalog) == len(DEFAULT_ORDER) == 27
+    # the catalogue is generated from the registry, so the two can only disagree if
+    # an attack was registered outside DEFAULT_ORDER (which the batch tests catch)
+    assert len(catalog) == len(DEFAULT_ORDER)
     names = [entry["name"] for entry in catalog]
     assert sorted(names) == sorted(DEFAULT_ORDER)
     for entry in catalog:
@@ -936,6 +938,10 @@ def test_every_attack_the_build_ships_is_documented():
     assert "wifipilot decode" in attacks_doc, "the offline command must be documented"
     missing = [name for name in DEFAULT_ORDER if name not in readme]
     assert not missing, f"attacks missing from the README table: {missing}"
-    # and the count in the copy is the count in the registry
-    assert "27" in attacks_doc and "27" in readme
-    assert "21 attacks" not in readme
+    # and the count in the copy is the count in the registry, whatever it is
+    count = str(len(DEFAULT_ORDER))
+    assert count in attacks_doc and count in readme
+    assert f"{count} attacks" in attacks_doc or f"**{count} attacks**" in attacks_doc
+    assert f"{count} attacks" in readme
+    for stale in ("21 attacks", "27 attacks"):
+        assert stale not in readme, stale

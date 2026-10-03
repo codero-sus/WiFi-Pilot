@@ -98,7 +98,7 @@ the effective engagement settings.
 | **scope** | paste BSSIDs to restrict the campaign |
 | **simulation** | switches between live and simulated radio (rebuilds the engine) |
 | **I have written authorisation** | required for any live attack; without it the API returns 403 |
-| **Attack toggles** | the engine's catalog (in `/api/state`) lists all 27 attacks with their label, tool, description, whether they need injection, whether their tools are installed and whether they are enabled in the current config. The disruptive ones (`wps_pin`, `pmkid_flood`, `evil_twin`, `karma`, `eapol_logoff`, the four floods, the WEP enablers) start unticked, and the two read-only decoders (`ie_audit`, `pnl_harvest`) are marked read-only — tick them freely, they transmit nothing |
+| **Attack toggles** | the engine's catalog (in `/api/state`) lists all 54 attacks with their label, tool, description, **category, noise, impact and a "what a defender sees" line**, whether they need injection, whether their tools are installed and whether they are enabled in the current config. The disruptive ones (`wps_pin`, `pmkid_flood`, `handshake_broadcast`, `evil_twin`, `karma`, `eapol_logoff`, the ten floods, the WEP enablers, the lures) start unticked, and the ten offline analyses plus the read-only decoders (`ie_audit`, `pnl_harvest`, `pmf_audit`, `saewolf`) are marked as transmitting nothing — tick those freely |
 
 ## REST API
 

@@ -56,7 +56,7 @@ __all__ = [
     "configure", "config", "demo", "authorize", "ai", "set_provider", "providers",
     "advisor_status",
     "scan", "attack", "crack", "analyze", "export", "suggest_masks", "loot", "report",
-    "strategies", "targets", "select", "selected", "note", "notes", "tag", "history",
+    "strategies", "catalogue", "targets", "select", "selected", "note", "notes", "tag", "history",
     "vendor", "identify", "passwords", "advice", "benchmark", "hash_stats",
     "merge_hashes", "rescue_capture", "wordlist_stats", "expand_wordlist",
     "rules_info", "loot_manifest", "verify_loot",
@@ -88,7 +88,13 @@ MODES: Dict[str, Dict[str, Any]] = {
                 # they learn (WPS unlocked, PMF absent, which names clients want) is
                 # exactly what a passive engagement should come away with
                 "attacks": ["passive", "ie_audit", "pmf_audit", "pnl_harvest",
-                            "pmkid", "handshake", "crack"]},
+                            "saewolf", "sae_group_audit", "hidden_ssid", "tracker",
+                            "rogue_ap", "enterprise", "pmkid", "handshake", "crack"]},
+    # no radio at all: analyse (and crack) what a previous run already collected
+    "offline": {"stealth": True, "wps_pin": False,
+                "attacks": ["loot_audit", "crack_sweep", "eapol_audit", "wep_audit",
+                            "eap_md5_crack", "pixie_offline", "rogue_detect",
+                            "twin_detect", "roam_audit", "wps_lockout_audit", "crack"]},
     # grab a handshake/PMKID as fast as possible and crack it offline
     "quick": {"stealth": False, "wps_pin": False,
               "attacks": ["pmkid", "handshake", "crack"]},
@@ -1022,6 +1028,40 @@ def strategies() -> List[Dict[str, object]]:
     """The crack strategy presets, with what each one does."""
     from .crack import STRATEGIES
     return [dict(preset) for _, preset in sorted(STRATEGIES.items())]
+
+
+def catalogue(category: str = "", noise: str = "", offline_only: bool = False,
+              default_only: bool = False) -> List[Dict[str, object]]:
+    """Every attack this build ships, with what it costs and what a defender sees.
+
+    The same data the CLI's ``wifipilot attacks`` prints, the web UI's toggles are
+    built from and the planner reads: ``name``, ``label``, ``tool``, ``description``,
+    ``requires``, ``needs_injection``, ``category``, ``noise``, ``impact``,
+    ``detection``, ``offline`` and ``default_enabled``.
+
+    >>> import wifipilot as wp
+    >>> len(wp.catalogue())
+    54
+    >>> [entry["name"] for entry in wp.catalogue(offline_only=True)][:3]
+    ['loot_audit', 'eapol_audit', 'wep_audit']
+
+    Filters are exact matches on the metadata table: ``category="dos"`` for the
+    denial-of-service tests, ``noise="silent"`` for everything that transmits nothing,
+    ``offline_only=True`` for the ten attacks that need no radio at all, and
+    ``default_only=True`` for exactly what :class:`~wifipilot.config.Config` enables.
+    """
+    from .attacks import attack_catalog
+
+    entries = attack_catalog()
+    if category:
+        entries = [entry for entry in entries if entry["category"] == category]
+    if noise:
+        entries = [entry for entry in entries if entry["noise"] == noise]
+    if offline_only:
+        entries = [entry for entry in entries if entry["offline"]]
+    if default_only:
+        entries = [entry for entry in entries if entry["default_enabled"]]
+    return entries
 
 
 def _offline_session() -> Any:
