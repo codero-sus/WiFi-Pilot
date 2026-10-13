@@ -182,6 +182,19 @@ class Config:
     #: single-client burst is the default because it is quieter, and dropping every
     #: client on the channel at once is a different act from deauthing one station
     broadcast_handshake: bool = False
+    #: an address to ask about (gateway management page, DNS, SNMP): empty means guess
+    gateway_ip: str = ""
+    #: the RADIUS server to test shared secrets against (radius_secret_test)
+    radius_server: str = ""
+    radius_ports: tuple = (1812, 1645)
+    #: the lease pool a rogue DHCP server hands out, and the address it advertises
+    rogue_network: str = "192.168.213.0/24"
+    dns_sink_ip: str = ""
+    dns_port: int = 53
+    #: the port the captive portal binds
+    portal_port: int = 80
+    #: the network's DNS domain, for the WPAD audit
+    domain: str = ""
     #: the interface the evil twin binds to; empty means "the monitor interface"
     twin_interface: str = ""
     #: ask the AP for the name of a hidden network with a directed probe (the
@@ -252,7 +265,7 @@ class Config:
     def attack_timeout_for(self, attack: str) -> float:
         if self.attack_timeout > 0:
             return self.attack_timeout
-        return {
+        budget = {
             "handshake": self.handshake_timeout,
             "pmkid": self.pmkid_timeout,
             "wps_pixie": self.wps_timeout,
@@ -326,7 +339,90 @@ class Config:
             "sae_commit_flood": max(self.scan_time, 30.0),
             "tkip_michael": max(self.scan_time, 10.0),
             "wids_confusion": max(self.scan_time, 25.0),
-        }.get(attack, self.attack_timeout or 60.0)
+            # -- second wave: analysis and protocol work ---------------------------
+            # offline analysts read files: the budget is the file, not the radio
+            "capture_quality": max(self.scan_time, 20.0),
+            "hash_audit": max(self.scan_time, 30.0),
+            "wordlist_audit": max(self.scan_time, 60.0),
+            "wordlist_mine": max(self.scan_time, 30.0),
+            "crack_plan": max(self.scan_time, 45.0),
+            "vendor_fingerprint": max(self.scan_time, 20.0),
+            "beacon_timeline": max(self.scan_time, 20.0),
+            "cleartext_sniff": max(self.scan_time, 45.0),
+            "pmk_check": max(self.scan_time, 45.0),
+            "loot_manifest": max(self.scan_time, 30.0),
+            "krack_detect": max(self.scan_time, 30.0),
+            "kr00k_detect": max(self.scan_time, 30.0),
+            "fragattacks_detect": max(self.scan_time, 30.0),
+            "ft_audit": max(self.scan_time, 20.0),
+            "beacon_rate_audit": max(self.scan_time, 20.0),
+            "tsf_clone_detect": max(self.scan_time, 20.0),
+            "client_fingerprint": max(self.scan_time, 45.0),
+            # 802.1X work that reads a capture finishes when the capture does
+            "eap_identity_harvest": max(self.scan_time, 30.0),
+            "certificate_audit": max(self.scan_time, 30.0),
+            "ttls_inner_audit": max(self.scan_time, 30.0),
+            "eap_tls_version": max(self.scan_time, 30.0),
+            "mschapv2_crack": max(self.crack_timeout, 120.0),
+            # ...and the two that talk to a real server need a network budget
+            "eap_method_probe": max(self.scan_time * 2, 60.0),
+            "radius_secret_test": max(self.scan_time * 2, 60.0),
+            # capture and injection helpers: bounded by the technique they enable
+            "injection_test": max(self.scan_time, 30.0),
+            "arp_replay": max(self.wep_timeout, 60.0),
+            "pcap_replay": max(self.scan_time * 2, 45.0),
+            "mac_filter_probe": max(self.scan_time, 30.0),
+            "channel_sweep": max(self.scan_time * 2, 60.0),
+            # network-layer audits: one host, a handful of ports, so a short window
+            "ap_admin_audit": max(self.scan_time, 45.0),
+            "upnp_audit": max(self.scan_time, 30.0),
+            "snmp_audit": max(self.scan_time, 30.0),
+            "dns_audit": max(self.scan_time, 20.0),
+            "wpad_audit": max(self.scan_time, 20.0),
+            "rogue_dhcp_detect": max(self.scan_time, 30.0),
+            "arp_spoof_detect": max(self.scan_time, 30.0),
+            "ipv6_ra_audit": max(self.scan_time, 30.0),
+            # rogue services: they serve clients, so they get a service-sized budget
+            "rogue_dhcp": max(self.scan_time * 3, 90.0),
+            "dns_sink": max(self.scan_time * 3, 90.0),
+            "captive_portal": max(self.scan_time * 3, 90.0),
+            "arp_mitm": max(self.scan_time * 2, 60.0),
+            "beacon_clone": max(self.scan_time * 3, 90.0),
+            "wpa3_downgrade_twin": max(self.scan_time * 4, 180.0),
+            # frames that reconfigure a client: one exchange, then observe
+            "pmf_downgrade_probe": max(self.scan_time * 2, 60.0),
+            "btm_hijack": max(self.scan_time * 2, 60.0),
+            # the new floods are capped by their own class attributes as well
+            "disassoc_flood": max(self.scan_time, 30.0),
+            "rts_flood": max(self.scan_time, 20.0),
+            "cts_flood": max(self.scan_time, 20.0),
+            "channel_switch_flood": max(self.scan_time, 30.0),
+            "sa_query_flood": max(self.scan_time, 20.0),
+            "tdls_teardown_flood": max(self.scan_time, 20.0),
+            "probe_response_flood": max(self.scan_time, 30.0),
+            "dhcp_discover_flood": max(self.scan_time, 20.0),
+        }.get(attack)
+        if budget:
+            return budget
+        # An attack added in a batch and not named above still needs a budget, and the
+        # right one follows from what the attack *is*: a file read is bounded by the
+        # file, an active test by the scan window, a flood by its own cap.
+        try:
+            from .attacks.meta import ATTACK_META
+        except Exception:                                       # pragma: no cover
+            ATTACK_META = {}
+        meta = ATTACK_META.get(attack) or {}
+        category = meta.get("category")
+        if category == "offline":
+            return max(self.crack_timeout if meta.get("impact") == "loot"
+                       else self.scan_time, 60.0)
+        if category == "dos":
+            return max(self.scan_time, 30.0)
+        if category == "survey":
+            return max(self.scan_time * 2, 45.0)
+        if category in ("rogue", "enterprise"):
+            return max(self.scan_time * 4, 120.0)
+        return self.attack_timeout or max(self.scan_time, 60.0)
 
     # -- ai providers -------------------------------------------------- #
     def llm_config(self, provider: str = "") -> Any:

@@ -20,7 +20,7 @@ CAPTURE_KINDS = ("handshake", "pmkid", "wep_ivs")
 #: attack primitives the planner is allowed to choose from (whitelist!).  Every
 #: name here is registered in ``wifipilot.attacks.ATTACK_CLASSES`` and described in
 #: ``wifipilot.attacks.meta``; a test keeps the three lists in step.
-ATTACK_NAMES = (
+ATTACK_NAMES = [
     # offline: files the session already has, no radio, no authorisation
     "loot_audit",       # what is in the session's loot, and what is missing
     "eapol_audit",      # decode the EAPOL exchanges already captured
@@ -81,7 +81,61 @@ ATTACK_NAMES = (
     "tkip_michael",   # replay two corrupted TKIP frames: 60-second shutdown
     "wids_confusion",  # deauths carrying a neighbour's BSSID
     "beacon_flood",   # beacon-flood / WIDS detection test
-)
+    "disassoc_flood",  # the deauth flood's sibling, for WIDS rule sets
+    "rts_flood",      # medium reservation with RTS: no management frame at all
+    "cts_flood",      # CTS-to-self: the channel held silent
+    "channel_switch_flood",  # CSA beacons walk clients off the network
+    "sa_query_flood",  # PMF association-state exhaustion
+    "tdls_teardown_flood",  # direct station links torn down
+    "probe_response_flood",  # phantom scan lists
+    "dhcp_discover_flood",  # the DHCP pool walked through
+    # second-wave capture, protocol and network-layer work
+    "injection_test",  # is the card really injecting? (aireplay-ng --test)
+    "arp_replay",     # IV generation by replaying ARP
+    "pcap_replay",    # re-send a capture's frames
+    "mac_filter_probe",  # does the AP filter by address?
+    "channel_sweep",  # what is on each channel, live
+    "krack_detect",   # key-reinstallation patterns in a capture
+    "kr00k_detect",   # all-zero ciphertext (CVE-2019-15126) in a capture
+    "fragattacks_detect",  # A-MSDU/fragment exposure
+    "ft_audit",       # 802.11r fast transition posture
+    "beacon_rate_audit",  # beacon timing and interval anomalies
+    "tsf_clone_detect",  # clones spotted by their TSF timers
+    "client_fingerprint",  # devices by their probe requests
+    "eap_identity_harvest",  # 802.1X identities and realms
+    "eap_method_probe",  # which EAP methods the authenticator accepts
+    "certificate_audit",  # the RADIUS server's certificate, decoded
+    "ttls_inner_audit",  # what is inside the TLS tunnel
+    "eap_tls_version",  # deprecated TLS versions in EAP-TLS
+    "mschapv2_crack",  # MS-CHAPv2 offline dictionary (RFC 2759)
+    "radius_secret_test",  # shared-secret dictionary against RADIUS
+    "ap_admin_audit",  # management ports and pages on the gateway
+    "upnp_audit",     # SSDP discovery and port-mapping exposure
+    "snmp_audit",     # default community strings
+    "dns_audit",      # open resolver / DNSSEC
+    "wpad_audit",     # proxy auto-discovery exposure
+    "rogue_dhcp_detect",  # a second DHCP server on the segment
+    "arp_spoof_detect",  # two MACs for one address
+    "ipv6_ra_audit",  # rogue router advertisements
+    "rogue_dhcp",     # serve leases ourselves
+    "dns_sink",       # answer every name ourselves
+    "captive_portal",  # a portal page that asks for credentials
+    "arp_mitm",       # poison the gateway relationship
+    "beacon_clone",   # clone the SSID's beacons from a second radio
+    "wpa3_downgrade_twin",  # imitate WPA3 as WPA2-only
+    "pmf_downgrade_probe",  # does the AP enforce PMF?
+    "btm_hijack",     # steer a client with a forged BTM request
+    "capture_quality",  # which captures are worth cracking
+    "hash_audit",     # mode-22000 files, and what is broken about them
+    "wordlist_audit",  # what the wordlists actually contain
+    "wordlist_mine",  # target-specific candidates from the engagement's own data
+    "crack_plan",     # benchmarked time-versus-coverage plan
+    "vendor_fingerprint",  # device table: vendor, model, element fingerprint
+    "beacon_timeline",  # what changed while we watched
+    "cleartext_sniff",  # credentials read out of a capture
+    "pmk_check",      # loot that needs no cracking
+    "loot_manifest",  # chain of custody (SHA-256 manifest)
+]
 
 STATUS_IDLE = "idle"
 STATUS_QUEUED = "queued"

@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from .attacks import DEFAULT_ORDER as registry_order
+from .attacks import OFFLINE_ATTACKS
 from .config import Config
 from .engine import Engine
 from .events import Event
@@ -92,9 +93,10 @@ MODES: Dict[str, Dict[str, Any]] = {
                             "rogue_ap", "enterprise", "pmkid", "handshake", "crack"]},
     # no radio at all: analyse (and crack) what a previous run already collected
     "offline": {"stealth": True, "wps_pin": False,
-                "attacks": ["loot_audit", "crack_sweep", "eapol_audit", "wep_audit",
-                            "eap_md5_crack", "pixie_offline", "rogue_detect",
-                            "twin_detect", "roam_audit", "wps_lockout_audit", "crack"]},
+                # derived from the metadata rather than written out: a new offline
+                # attack is covered by offline mode the moment it registers, instead of
+                # the day somebody remembers to add its name to this literal
+                "attacks": ["crack"] + list(OFFLINE_ATTACKS)},
     # grab a handshake/PMKID as fast as possible and crack it offline
     "quick": {"stealth": False, "wps_pin": False,
               "attacks": ["pmkid", "handshake", "crack"]},

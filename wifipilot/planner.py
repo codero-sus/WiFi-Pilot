@@ -14,13 +14,23 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .config import Config
 from .deps import registry
-from .attacks import OFFLINE_ATTACKS
+from .attacks import DOS_ATTACKS, MDK4_FLOODS, OFFLINE_ATTACKS
 from .models import ATTACK_NAMES, STATUS_FAILED, STATUS_SUCCESS, AccessPoint
 from .session import Session
 from .util import clamp, mac_norm
 
 #: actions the planner may emit — attacks plus the two meta actions
-PLANNER_ACTIONS = tuple(ATTACK_NAMES) + ("crack", "stop")
+def planner_actions() -> tuple:
+    """Everything the planner may emit, read live.
+
+    A batch module registers its attacks *after* this module may already have been
+    imported, so the list is derived on use rather than snapshotted at import: the
+    snapshot is kept as :data:`PLANNER_ACTIONS` for callers that want one.
+    """
+    return tuple(ATTACK_NAMES) + ("crack", "stop")
+
+
+PLANNER_ACTIONS = planner_actions()
 
 MAX_ACTIONS = 6
 
@@ -182,7 +192,7 @@ def attackable_hidden(ap: AccessPoint) -> bool:
 
 def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
     """Which attack should this AP get, best first, given its current state?"""
-    enabled = [a for a in config.attacks if a in PLANNER_ACTIONS]
+    enabled = [a for a in config.attacks if a in planner_actions()]
     caps = registry.capabilities() if not config.demo else {k: True for k in (
         "aircrack", "airodump", "deauth", "monitor", "wps", "wash", "pmkid",
         "hcxtools", "hashcat", "john", "iw", "nmcli", "root", "mdk4", "hostapd",
@@ -233,10 +243,12 @@ def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
             return False
         if name in ("ie_audit", "pnl_harvest") and not caps.get("airodump"):
             return False
-        if name in ("deauth_flood", "beacon_flood", "auth_flood", "probe_flood"):
+        if name in DOS_ATTACKS and config.stealth:
             # a flood is a deliberate denial of service: never in stealth mode
-            if config.stealth or not caps.get("mdk4"):
-                return False
+            return False
+        if name in MDK4_FLOODS and not caps.get("mdk4"):
+            # ...and the four mdk4 floods need mdk4; the rest are in-process
+            return False
         if name == "rogue_radius":
             # a rogue RADIUS needs one of the impersonation tools; without them the
             # read-only enterprise survey is what is left
@@ -526,7 +538,7 @@ def validate_plan(raw: Any, session: Session, config: Optional[Config] = None,
             dropped.append(f"action {index}: not an object")
             continue
         attack = str(item.get("attack") or "").strip().lower()
-        if attack not in PLANNER_ACTIONS:
+        if attack not in planner_actions():
             dropped.append(f"action {index}: unknown attack {attack!r}")
             continue
         if attack == "stop":
@@ -575,12 +587,12 @@ def validate_plan(raw: Any, session: Session, config: Optional[Config] = None,
         if attack == "pmkid_flood" and ap.encryption in ("OPEN", "OWE", "WEP", "WPA3"):
             dropped.append(f"{bssid}: no PSK PMKID to force on {ap.encryption}")
             continue
-        if attack in ("deauth_flood", "beacon_flood", "auth_flood", "probe_flood"):
+        if attack in DOS_ATTACKS:
             if config.stealth:
                 dropped.append(f"{bssid}: {attack} is a denial of service; "
                                f"stealth mode is on")
                 continue
-            if ap.cracked and attack in ("deauth_flood", "auth_flood"):
+            if ap.cracked and attack.endswith("_flood"):
                 dropped.append(f"{bssid}: already cracked, no reason to disrupt it")
                 continue
         if attack == "eapol_logoff":
@@ -709,9 +721,10 @@ def explain_failure(attempt: Dict[str, Any], ap: Optional[AccessPoint]) -> str:
     if attack == "evil_twin":
         return ("no client tried the twin: either nothing was in range, or the client "
                 "has the real BSSID cached and stayed with it")
-    if attack in ("deauth_flood", "beacon_flood", "auth_flood", "probe_flood"):
-        return ("the flood produced no output: mdk4 did not start, or the monitor "
-                "interface is not on the target's channel")
+    if attack in DOS_ATTACKS:
+        return ("the flood produced no output: the frames never left the card "
+                "(check `aireplay-ng -9` and that the monitor is on the target's "
+                "channel)")
     if attack == "eapol_logoff":
         return ("the Logoff was not accepted: the supplicant ignores it (which is the "
                 "correct client-side behaviour), or the frame never left the card "

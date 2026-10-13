@@ -259,7 +259,8 @@ def test_a_properly_issued_certificate_is_not_flagged(tmp_path):
 def test_the_eap_exchange_decodes_method_identity_and_certificate(tmp_path):
     path, _ = synth.build_enterprise_capture(str(tmp_path / "ent.pcap"))
     report = eap_exchange(path)
-    assert report["eapol"] == 2
+    # identity, the TLS server hello and the certificate: three EAPOL frames
+    assert report["eapol"] == 3
     assert "Identity" in report["methods"] and "PEAP" in report["methods"]
     assert report["identities"] == ["jdoe@corp.example"]
     assert report["certificates"] and report["certificates"][0]["self_signed"] is True

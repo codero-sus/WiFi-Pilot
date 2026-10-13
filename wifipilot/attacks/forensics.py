@@ -66,14 +66,23 @@ class OfflineAttack(Attack):
                                 "detail": detail}, ap.bssid)
 
     def _finish(self, ctx: AttackContext, ap: AccessPoint, attempt: Attempt,
-                result: str, detail: str, extra: Dict[str, Any]) -> AttackOutcome:
-        """Close an offline audit: attempt record, counter, and honest extras."""
+                result: str, detail: str, extra: Dict[str, Any],
+                severity: str = "") -> AttackOutcome:
+        """Close an offline audit: attempt record, counter, and honest extras.
+
+        An audit that found something passes ``severity`` and gets a finding raised
+        with the same text: the finding is the deliverable for analysis work, and the
+        attempt record alone would leave it in the log where nobody reads it.
+        """
         ctx.session.stats.offline_audits += 1
         ap.remember(self.name, detail)
         ctx.session.end_attempt(attempt, STATUS_SUCCESS, result, detail)
+        if severity and severity != "info":
+            self._finding(ctx, ap, self.name, severity, result, detail)
         return AttackOutcome.success(
             result, detail=detail,
             extra={**extra, "offline": True, "noise": self.noise, "impact": self.impact,
+                   "severity": severity or "info",
                    "note": (extra.get("note") or
                             "offline: nothing was transmitted, and nothing on air "
                             "changed")})

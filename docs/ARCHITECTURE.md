@@ -115,7 +115,7 @@ That uniformity is what makes the simulation possible: modules branch on `ctx.de
 packet source only (`ctx.radio` instead of a subprocess), while validation, cracking,
 reporting and UI rendering stay identical.
 
-The 54 attacks are grouped into seven modules by *what they need*, which is also how the
+The 162 attacks are grouped into modules by *what they need*, which is also how the
 tests and the docs are organised:
 
 | module | attacks | radio |

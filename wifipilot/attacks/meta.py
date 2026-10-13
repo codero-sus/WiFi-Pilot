@@ -207,7 +207,174 @@ ATTACK_META: Dict[str, Dict[str, str]] = {
     "eapol_logoff": {"category": "rogue", "noise": "quiet", "impact": "degraded",
                      "detection": "EAPOL-Logoff frames: no deauth, and PMF does not cover "
                                   "them"},
+    # -- enterprise, second wave ------------------------------------------- #
+    "eap_identity_harvest": {"category": "enterprise", "noise": "silent", "impact": "info",
+                             "detection": "nothing from us until a client authenticates; "
+                                          "reads the EAP-Response/Identity the AP asked for"},
+    "eap_method_probe": {"category": "enterprise", "noise": "quiet", "impact": "info",
+                         "detection": "one EAPOL-Start per identity, then the NAK method "
+                                      "list: a short negotiation the AP logs"},
+    "certificate_audit": {"category": "enterprise", "noise": "silent", "impact": "info",
+                          "detection": "nothing on air; parses certificates already captured"},
+    "ttls_inner_audit": {"category": "enterprise", "noise": "silent", "impact": "info",
+                         "detection": "nothing on air; reads the inner conversation of a "
+                                      "captured TTLS tunnel"},
+    "mschapv2_crack": {"category": "offline", "noise": "silent", "impact": "loot",
+                       "detection": "nothing on air; a dictionary against a captured "
+                                    "MS-CHAPv2 exchange"},
+    "radius_secret_test": {"category": "enterprise", "noise": "quiet", "impact": "info",
+                           "detection": "one Access-Request per candidate secret; a real "
+                                        "RADIUS server logs the failures"},
+    "eap_tls_version": {"category": "enterprise", "noise": "silent", "impact": "info",
+                        "detection": "nothing on air; reads the TLS version out of a "
+                                     "captured EAP-TLS handshake"},
+    # -- rogue infrastructure, second wave --------------------------------- #
+    "rogue_dhcp": {"category": "rogue", "noise": "moderate", "impact": "degraded",
+                   "detection": "a second DHCP server on the segment: offers carry our "
+                                "gateway and resolver"},
+    "dns_sink": {"category": "rogue", "noise": "moderate", "impact": "degraded",
+                 "detection": "every DNS query answered by us, one log line per name"},
+    "captive_portal": {"category": "rogue", "noise": "moderate", "impact": "degraded",
+                       "detection": "a portal page asking for credentials, served by us"},
+    "arp_mitm": {"category": "rogue", "noise": "loud", "impact": "degraded",
+                 "detection": "gratuitous ARP replies claiming the gateway: traffic "
+                              "passes through our radio"},
+    "beacon_clone": {"category": "rogue", "noise": "moderate", "impact": "degraded",
+                     "detection": "beacons with the network's own BSSID and elements, sent "
+                                  "from a second radio"},
+    "wpa3_downgrade_twin": {"category": "rogue", "noise": "moderate", "impact": "degraded",
+                            "detection": "a twin with SAE and PMF stripped: clients that "
+                                         "do not require WPA3 may join it"},
+    # -- protocol-level analysis and manipulation -------------------------- #
+    "krack_detect": {"category": "offline", "noise": "silent", "impact": "info",
+                     "detection": "nothing on air; the retransmission pattern is read out "
+                                  "of a capture we already have"},
+    "kr00k_detect": {"category": "offline", "noise": "silent", "impact": "info",
+                     "detection": "nothing on air; scans captured ciphertext for the "
+                                  "all-zero keystream signature"},
+    "fragattacks_detect": {"category": "offline", "noise": "silent", "impact": "info",
+                           "detection": "nothing on air; looks for A-MSDU and fragment "
+                                        "patterns in stored frames"},
+    "ft_audit": {"category": "offline", "noise": "silent", "impact": "info",
+                 "detection": "nothing on air; reads mobility-domain and AKM elements"},
+    "pmf_downgrade_probe": {"category": "rogue", "noise": "quiet", "impact": "degraded",
+                            "detection": "association attempts with MFPC/MFPR cleared: the "
+                                         "AP either enforces PMF or negotiates it away"},
+    "btm_hijack": {"category": "rogue", "noise": "quiet", "impact": "degraded",
+                   "detection": "BTM requests naming candidate BSSIDs that are not the "
+                                "AP's neighbours"},
+    "beacon_rate_audit": {"category": "offline", "noise": "silent", "impact": "info",
+                          "detection": "nothing on air; compares beacon intervals, TSF and "
+                                       "sequence numbers in a capture"},
+    "tsf_clone_detect": {"category": "offline", "noise": "silent", "impact": "info",
+                         "detection": "nothing on air; TSF timers compared between "
+                                      "identical BSSIDs"},
+    "client_fingerprint": {"category": "offline", "noise": "silent", "impact": "info",
+                           "detection": "nothing on air; reads probe requests and their "
+                                        "element sets"},
+    # -- capture, second wave ---------------------------------------------- #
+    "injection_test": {"category": "capture", "noise": "quiet", "impact": "none",
+                       "detection": "aireplay-ng's own test frames: a handful of probe "
+                                    "requests, then it stops"},
+    "arp_replay": {"category": "wep", "noise": "loud", "impact": "degraded",
+                   "detection": "injected ARP frames that the AP rebroadcasts; network "
+                                "traffic rises while IVs accumulate"},
+    "pcap_replay": {"category": "capture", "noise": "loud", "impact": "degraded",
+                    "detection": "frames replayed from a capture file at their recorded "
+                                 "timing"},
+    "mac_filter_probe": {"category": "survey", "noise": "quiet", "impact": "none",
+                         "detection": "association attempts from random MACs; a MAC filter "
+                                      "rejects them visibly"},
+    "channel_sweep": {"category": "survey", "noise": "silent", "impact": "none",
+                      "detection": "nothing but channel changes on our own radio"},
+    # -- network-layer audits ---------------------------------------------- #
+    "ap_admin_audit": {"category": "survey", "noise": "quiet", "impact": "none",
+                       "detection": "TCP connections to management ports: a port scan of "
+                                    "one host"},
+    "upnp_audit": {"category": "survey", "noise": "quiet", "impact": "none",
+                   "detection": "one SSDP M-SEARCH multicast, then HTTP GETs to the "
+                                "description URLs"},
+    "snmp_audit": {"category": "survey", "noise": "quiet", "impact": "none",
+                   "detection": "SNMP GET requests carrying default community strings"},
+    "dns_audit": {"category": "survey", "noise": "quiet", "impact": "none",
+                  "detection": "a handful of DNS queries to the network's own resolver"},
+    "wpad_audit": {"category": "survey", "noise": "quiet", "impact": "none",
+                   "detection": "DNS queries for the wpad names, then a GET for wpad.dat"},
+    "rogue_dhcp_detect": {"category": "survey", "noise": "silent", "impact": "info",
+                          "detection": "nothing but listening for DHCP replies from the "
+                                       "segment"},
+    "arp_spoof_detect": {"category": "survey", "noise": "silent", "impact": "info",
+                         "detection": "nothing on air; reads ARP claims from a capture or "
+                                      "a listen window"},
+    "ipv6_ra_audit": {"category": "survey", "noise": "silent", "impact": "info",
+                      "detection": "nothing but listening for router advertisements"},
+    # -- denial of service, second wave ------------------------------------ #
+    "disassoc_flood": {"category": "dos", "noise": "extreme", "impact": "outage",
+                       "detection": "disassociation frames in a loop: every client of the "
+                                    "AP drops, and rules that count deauths do not fire"},
+    "rts_flood": {"category": "dos", "noise": "extreme", "impact": "degraded",
+                  "detection": "RTS frames with a maximal duration reserve the medium and "
+                               "are never answered: control frames only"},
+    "cts_flood": {"category": "dos", "noise": "extreme", "impact": "degraded",
+                  "detection": "CTS-to-self frames hold the channel silent; no management "
+                               "frame is on air at all"},
+    "channel_switch_flood": {"category": "dos", "noise": "loud", "impact": "outage",
+                             "detection": "beacons carrying CSA elements, one channel move "
+                                          "after another"},
+    "sa_query_flood": {"category": "dos", "noise": "loud", "impact": "degraded",
+                       "detection": "SA Query requests with rotating tokens: the AP's "
+                                    "association state is walked at frame rate"},
+    "tdls_teardown_flood": {"category": "dos", "noise": "loud", "impact": "degraded",
+                            "detection": "TDLS Teardown action frames break direct links "
+                                         "and push traffic through the AP"},
+    "probe_response_flood": {"category": "dos", "noise": "loud", "impact": "degraded",
+                             "detection": "probe responses from BSSIDs that do not exist: "
+                                          "client scan lists fill with phantoms"},
+    "dhcp_discover_flood": {"category": "dos", "noise": "loud", "impact": "degraded",
+                            "detection": "DHCP DISCOVER broadcasts from fake stations walk "
+                                         "the server through its pool"},
+    # -- offline analysis, second wave -------------------------------------- #
+    "capture_quality": {"category": "offline", "noise": "silent", "impact": "info",
+                        "detection": "nothing on air; scores the session's own captures"},
+    "wordlist_audit": {"category": "offline", "noise": "silent", "impact": "info",
+                       "detection": "nothing on air; reads the configured wordlists"},
+    "hash_audit": {"category": "offline", "noise": "silent", "impact": "info",
+                   "detection": "nothing on air; parses mode-22000 hash files"},
+    "crack_plan": {"category": "offline", "noise": "silent", "impact": "info",
+                   "detection": "nothing on air; a PBKDF2 benchmark and a multiplication"},
+    "vendor_fingerprint": {"category": "offline", "noise": "silent", "impact": "info",
+                           "detection": "nothing on air; groups the scanner's findings by "
+                                        "vendor and model"},
+    "beacon_timeline": {"category": "offline", "noise": "silent", "impact": "info",
+                        "detection": "nothing on air; the session's own history of the "
+                                     "neighbourhood"},
+    "wordlist_mine": {"category": "offline", "noise": "silent", "impact": "info",
+                      "detection": "nothing on air; candidates derived from the SSIDs and "
+                                   "vendors already seen"},
+    "pmk_check": {"category": "offline", "noise": "silent", "impact": "loot",
+                  "detection": "nothing on air; recomputes MICs with keys the session "
+                               "already holds"},
+    "loot_manifest": {"category": "offline", "noise": "silent", "impact": "info",
+                      "detection": "nothing on air; SHA-256 over the session's artefacts"},
+    "cleartext_sniff": {"category": "offline", "noise": "silent", "impact": "loot",
+                        "detection": "nothing on air; reads credentials out of a capture"},
 }
+
+
+def register_batch(module) -> List[str]:
+    """Merge a batch module's metadata into the table, and return the names it added.
+
+    Batch modules carry their metadata next to their code (``META``), because the two
+    are written together and a table in another file is a table that gets forgotten.
+    This is the one place that copies it in, so :func:`validate` still has a single
+    table to check and the UI still has a single table to read.
+    """
+    added: List[str] = []
+    for name, row in dict(getattr(module, "META", {}) or {}).items():
+        if name not in ATTACK_META:
+            added.append(name)
+        ATTACK_META[name] = dict(row)
+    return added
 
 
 def meta_for(name: str, **overrides: str) -> Dict[str, str]:
@@ -259,4 +426,4 @@ def validate() -> List[str]:
 
 
 __all__ = ["ATTACK_META", "CATEGORIES", "IMPACT_LEVELS", "IMPACT_STYLE", "NOISE_LEVELS",
-           "NOISE_STYLE", "category_label", "meta_for", "validate"]
+           "NOISE_STYLE", "category_label", "meta_for", "register_batch", "validate"]

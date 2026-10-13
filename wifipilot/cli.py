@@ -1327,9 +1327,13 @@ def command_decode(args, config: Config, console) -> int:
         return 1
     console.print(f"[bold]information elements[/bold] [dim]({Path(path).name}, "
                   f"{result.get('frames', 0)} frame(s))[/dim]")
-    table = Table(box=None)
-    for column in ("BSSID", "SSID", "CH", "PMF", "WPS", "elements"):
-        table.add_column(column)
+    # the table is a nicety: without rich the same rows are printed plainly rather
+    # than raising NameError, because "the optional dependency is missing" is not a
+    # reason for a read-only command to fail
+    table = Table(box=None) if HAVE_RICH else None
+    if table is not None:
+        for column in ("BSSID", "SSID", "CH", "PMF", "WPS", "elements"):
+            table.add_column(column)
     for entry in networks:
         facts = entry.get("facts") or {}
         wps = facts.get("wps") or {}
@@ -1341,10 +1345,14 @@ def command_decode(args, config: Config, console) -> int:
         elements = ", ".join(["/".join((facts.get("rsn") or {}).get("akm") or [])] +
                              highlights + ([facts["country"]] if facts.get("country")
                                            else []))
-        table.add_row(entry.get("bssid", ""), entry.get("essid", ""),
-                      str(facts.get("channel", 0) or ""), pmf, wps_state,
-                      elements or "-")
-    console.print(table)
+        row = (entry.get("bssid", ""), entry.get("essid", ""),
+               str(facts.get("channel", 0) or ""), pmf, wps_state, elements or "-")
+        if table is not None:
+            table.add_row(*row)
+        else:
+            console.print("  " + "  ".join(str(cell) for cell in row))
+    if table is not None:
+        console.print(table)
     for finding in findings:
         colour = {"high": "red", "medium": "yellow", "low": "dim"}.get(
             finding["severity"], "dim")

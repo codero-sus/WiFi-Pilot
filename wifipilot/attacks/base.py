@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import abc
 import contextlib
+import glob
 import os
 import time
 from dataclasses import dataclass, field
@@ -186,6 +187,100 @@ class AttackContext:
             time.sleep(0.2)
         return True
 
+    # -- live observation --------------------------------------------------- #
+    def listen(self, seconds: float = 5.0, limit: int = 0, channel: int = 0):
+        """Yield what the monitor interface sees for up to ``seconds``.
+
+        An attack that has to *observe* an answer (did the client leave? did the AP
+        reply to that association? did anything notice the flood?) cannot use
+        airodump-ng's CSV: it needs the frames themselves, now.  This opens one
+        ``AF_PACKET`` socket, parses every frame in Python and yields small dicts
+        (``kind``, ``addr1``/``addr2``/``addr3``, ``bssid``, ``station``, ``payload``,
+        ``fields``).  Real mode only — demo runs simulate the observation instead.
+        """
+        import socket as _socket
+
+        from ..pcap import _strip_radiotap
+        from .frames import parse_80211
+
+        if self.demo:
+            return
+        interface = self.monitor
+        if not interface:
+            return
+        try:
+            sock = _socket.socket(_socket.AF_PACKET, _socket.SOCK_RAW,
+                                  _socket.htons(3))
+            sock.bind((interface, 0))
+        except (OSError, AttributeError) as exc:
+            self.log(f"cannot listen on {interface}: {exc}", level="warning")
+            return
+        self.set_channel(channel)
+        deadline = time.time() + max(0.5, seconds)
+        seen = 0
+        try:
+            sock.settimeout(0.25)
+            while time.time() < deadline and not self.want_stop():
+                try:
+                    packet = sock.recv(4096)
+                except _socket.timeout:
+                    continue
+                except OSError:                      # pragma: no cover - link down
+                    break
+                frame = _strip_radiotap(packet)
+                if len(frame) < 10:
+                    continue
+                parsed = parse_80211(frame)
+                if parsed is None:
+                    continue
+                seen += 1
+                yield parsed
+                if limit and seen >= limit:
+                    break
+        finally:
+            with contextlib.suppress(Exception):
+                sock.close()
+
+    def capture_window(self, seconds: float, path: str = "", channel: int = 0,
+                       prefix: str = "window") -> str:
+        """Take a bounded capture of the current channel and return the file.
+
+        airodump-ng is preferred (it keeps beacon metadata in the same file); tcpdump
+        is the fallback, and a machine with neither returns an empty string rather
+        than pretending.  The file is written under the session's state directory.
+        """
+        if self.demo:
+            return ""
+        airodump = registry.path("airodump-ng")
+        tcpdump = registry.path("tcpdump")
+        if not airodump and not tcpdump:
+            return ""
+        stem = path or os.path.join(self.session.state_dir, "captures",
+                                    f"{prefix}-{int(time.time())}")
+        os.makedirs(os.path.dirname(stem), exist_ok=True)
+        self.set_channel(channel)
+        if airodump:
+            args = [airodump, "-w", stem, "--output-format", "pcap", "-I", "1",
+                    "--band", "bg", self.monitor]
+        else:
+            args = [tcpdump, "-i", self.monitor, "-w", stem + ".pcap", "-s", "0",
+                    "-U"]
+        proc = Process(args, name="capture-window")
+        proc.start()
+        if proc.error:
+            return ""
+        try:
+            self._sleep(float(seconds))
+        finally:
+            with contextlib.suppress(Exception):
+                proc.stop()
+        candidates = [stem + ".pcap", stem + "-01.cap"]
+        candidates += sorted(glob.glob(stem + "-*.cap")) + sorted(glob.glob(stem + "*.pcap"))
+        for candidate in candidates:
+            if os.path.exists(candidate) and os.path.getsize(candidate) > 0:
+                return candidate
+        return ""
+
     # -- capture validation ------------------------------------------------
     def validate_capture(self, path: str, kind: str = "") -> "tuple[bool, str, Any]":
         """Verify a capture with our own parser, and with aircrack-ng when present."""
@@ -252,8 +347,48 @@ class Attack(abc.ABC):
         missing = [flag for flag in self.requires if not caps.get(flag, False)]
         return f"missing capability: {', '.join(missing)}" if missing else ""
 
+    #: the metadata category/noise/impact, overridable per class but normally taken
+    #: from :mod:`wifipilot.attacks.meta` (which validate() checks against the registry)
+    category: str = ""
+    noise: str = ""
+    impact: str = ""
+
     def applies(self, ap: AccessPoint) -> bool:
         return ap.encryption in self.applies_to
+
+    # -- shared plumbing every attack gets --------------------------------- #
+    @property
+    def meta(self) -> Dict[str, str]:
+        from .meta import meta_for
+        return meta_for(self.name, category=self.category, noise=self.noise,
+                        impact=self.impact)
+
+    def budget(self, ctx: AttackContext, default: float = 60.0) -> float:
+        """How long this attack is allowed to run: the config's answer or a default."""
+        try:
+            seconds = ctx.config.attack_timeout_for(self.name)
+        except Exception:                                    # pragma: no cover - defensive
+            seconds = 0.0
+        return float(seconds or default)
+
+    def finding(self, ctx: AttackContext, ap: AccessPoint, title: str, detail: str,
+                severity: str = "info", kind: str = "") -> None:
+        """Record a finding once per attack/BSSID, with the attack's own kind by default."""
+        from .wpa3 import _add_finding_once
+        _add_finding_once(ctx, {"kind": kind or self.name, "severity": severity,
+                                "title": title, "detail": detail}, ap.bssid)
+
+    def skip_if(self, ctx: AttackContext, ap: AccessPoint, attempt: Attempt,
+                reason: str) -> Optional[AttackOutcome]:
+        """Close an attempt that decided not to act; returns the outcome or None."""
+        if not reason:
+            return None
+        ctx.session.end_attempt(attempt, "skipped", reason)
+        return AttackOutcome.skipped(reason, f"{ap.display_name}: {reason}")
+
+    def preflight(self, ctx: AttackContext, ap: AccessPoint) -> str:
+        """A reason to skip before doing anything, or an empty string."""
+        return ""
 
     @abc.abstractmethod
     def run(self, ctx: AttackContext, ap: AccessPoint) -> AttackOutcome:
@@ -279,3 +414,45 @@ class Attack(abc.ABC):
               deauths: int = 0) -> AttackOutcome:
         ctx.session.end_attempt(attempt, STATUS_FAILED, result, detail)
         return AttackOutcome.failed(result, detail, deauths)
+
+
+# --------------------------------------------------------------------------- #
+# every outcome, described the same way
+# --------------------------------------------------------------------------- #
+
+
+def stamp_outcome(outcome: Optional[AttackOutcome], module: "Attack", ap: AccessPoint,
+                  ctx: AttackContext, seconds: float = 0.0) -> Optional[AttackOutcome]:
+    """Fill one attack's outcome with the facts every report needs.
+
+    Called by the engine for *every* attack, so nothing has to remember to add the
+    category, the noise, the Blue-Team sentence or where the attack ran: an attack
+    module only describes what it found.  A failure without an explanation also gets
+    the module's own ``unavailable_reason`` attached, which is the difference between
+    "it did not work" and "the tool is not installed".
+    """
+    if outcome is None:
+        return None
+    meta = module.meta
+    extra = outcome.extra if outcome.extra is not None else {}
+    extra.setdefault("attack", module.name)
+    extra.setdefault("label", module.label)
+    extra.setdefault("tool", module.tool)
+    extra.setdefault("category", meta.get("category", ""))
+    extra.setdefault("category_label", meta.get("category_label", ""))
+    extra.setdefault("noise", meta.get("noise", ""))
+    extra.setdefault("impact", meta.get("impact", ""))
+    extra.setdefault("detection", meta.get("detection", ""))
+    extra.setdefault("offline", not module.needs_injection)
+    extra.setdefault("requires", list(module.requires))
+    extra.setdefault("target", {"bssid": ap.bssid, "essid": ap.essid,
+                                "channel": ap.channel, "encryption": ap.encryption,
+                                "signal": ap.signal, "band": ap.band})
+    if seconds:
+        extra.setdefault("elapsed", round(seconds, 2))
+    if not outcome.detail and not outcome.ok:
+        reason = module.unavailable_reason(ctx)
+        if reason:
+            outcome.detail = reason
+    outcome.extra = extra
+    return outcome

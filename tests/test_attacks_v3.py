@@ -87,12 +87,13 @@ def context_for(engine) -> AttackContext:
 # registry and metadata
 # --------------------------------------------------------------------------- #
 
-def test_the_build_ships_fifty_four_registered_attacks():
-    assert len(ATTACK_CLASSES) == 54
-    assert len(ATTACK_NAMES) == 54
-    assert len(DEFAULT_ORDER) == 54
+def test_the_registry_matches_the_order_and_the_names():
+    # the exact number is asserted by the batch that added the last attacks; here
+    # the three surfaces only have to agree with each other, whatever the count is
+    assert len(ATTACK_CLASSES) == len(DEFAULT_ORDER) >= 54
+    assert len(ATTACK_NAMES) == len(DEFAULT_ORDER)
     assert set(ATTACK_CLASSES) == set(ATTACK_NAMES) == set(DEFAULT_ORDER)
-    assert len(set(DEFAULT_ORDER)) == 54                     # no duplicates
+    assert len(set(DEFAULT_ORDER)) == len(DEFAULT_ORDER)     # no duplicates
     assert set(NEW_ATTACKS) <= set(ATTACK_CLASSES)
     assert len(NEW_ATTACKS) == 27
 
@@ -104,7 +105,7 @@ def test_every_attack_has_metadata_and_the_metadata_has_no_orphans():
 
 def test_the_catalogue_carries_what_each_attack_costs():
     catalog = {entry["name"]: entry for entry in attack_catalog()}
-    assert len(catalog) == 54
+    assert len(catalog) == len(DEFAULT_ORDER)
     for name, entry in catalog.items():
         assert entry["label"] and entry["tool"] and entry["description"], name
         assert entry["category"] in {item["name"] for item in CATEGORIES}
@@ -115,8 +116,10 @@ def test_the_catalogue_carries_what_each_attack_costs():
         # the class and the table must agree when both state the same axis
         cls = ATTACK_CLASSES[name]
         for field in ("category", "noise", "impact"):
+            # "" is not a declaration: base.Attack documents it as "take this axis
+            # from the metadata table", which is where most classes leave it
             declared = getattr(cls, field, None)
-            if declared is not None:
+            if declared:
                 assert declared == entry[field], f"{name}: {field} disagrees"
 
 
@@ -130,7 +133,7 @@ def test_the_default_enabled_set_is_exactly_what_config_enables():
 
 
 def test_the_offline_attacks_need_no_radio_and_no_authorisation():
-    assert len(OFFLINE_ATTACKS) == 10
+    assert len(OFFLINE_ATTACKS) >= 10
     config = Config()
     config.demo = False                                # a real (radio-less) run
     config.authorized = False
@@ -158,7 +161,7 @@ def _offline_context(config: Config) -> AttackContext:
 def test_denial_of_service_is_opt_in_and_never_runs_in_stealth():
     ap = AccessPoint("d0:9e:12:9d:36:cc", "HOME-2F4A", encryption="WPA2", auth="PSK",
                      channel=6)
-    assert len(DOS_ATTACKS) == 10
+    assert len(DOS_ATTACKS) >= 10
     loud = Config(demo=True)
     loud.attacks = list(ATTACK_NAMES)                  # everything the build has
     loud.stealth = True
@@ -342,7 +345,7 @@ def test_every_new_attack_runs_in_demo_mode_without_raising(engine):
         ran[name] = outcomes[-1]
         # the attempt record is closed, whatever the outcome
         assert any(attempt.attack == name for attempt in engine.session.attempts), name
-    assert len(ran) == 27
+    assert len(ran) == len(NEW_ATTACKS)
     positive = [name for name, outcome in ran.items() if outcome.ok]
     # the demo neighbourhood is built to give most of these a positive result: if a
     # change makes everything skip, the suite should say so
@@ -542,7 +545,7 @@ def test_hcxdump_capture_converts_a_capture_into_mode_22000(engine):
 
 def test_the_registry_catalogue_is_what_the_engine_reports(engine):
     catalog = {entry["name"]: entry for entry in engine._attack_catalog()}
-    assert len(catalog) == 54
+    assert len(catalog) == len(DEFAULT_ORDER)
     for entry in catalog.values():
         assert "category" in entry and "noise" in entry and "impact" in entry
         assert "available" in entry and "enabled" in entry
@@ -559,13 +562,16 @@ def test_the_cli_lists_the_catalogue_with_its_costs(capsys):
 
     assert main(["attacks", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["count"] == 54
-    assert len(payload["offline_attacks"]) == 10
+    assert payload["count"] == len(DEFAULT_ORDER)
+    assert len(payload["offline_attacks"]) == len(OFFLINE_ATTACKS)
     assert all(entry["detection"] for entry in payload["attacks"])
 
     assert main(["attacks", "--no-radio"]) == 0
     text = capsys.readouterr().out
-    assert "10 of 54 attacks" in text
+    # the count is read from the catalogue, not written here: a wave of attacks must
+    # not require editing an assertion to prove it shipped
+    offline = len([entry for entry in attack_catalog() if entry["offline"]])
+    assert f"{offline} of {len(DEFAULT_ORDER)} attacks" in text
     assert "crack_sweep" in text and "deauth_flood" not in text
 
     assert main(["attacks", "--category", "dos"]) == 0
@@ -583,12 +589,12 @@ def test_every_attack_is_documented():
         text = handle.read()
     missing = [name for name in DEFAULT_ORDER if name not in text]
     assert not missing, f"docs/ATTACKS.md does not mention: {missing}"
-    assert "54 attacks" in text
+    assert f"{len(DEFAULT_ORDER)} attacks" in text
 
 
 def test_the_readme_states_the_attack_count_it_ships():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     with open(os.path.join(root, "README.md"), encoding="utf-8") as handle:
         text = handle.read()
-    assert "54 attacks" in text
+    assert f"{len(DEFAULT_ORDER)} attacks" in text
     assert "27 attacks" not in text

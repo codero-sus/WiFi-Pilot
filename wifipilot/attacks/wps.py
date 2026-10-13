@@ -366,8 +366,8 @@ class WpsPinAttack(WpsAttack):
                          detail=f"candidate {index + 1}/{len(pins)}")
             time.sleep(0.8)
             hit = (ap.wps_locked != "locked" and ap.encryption != "WPA3"
-                   and index == 0 and ap.wps_pixie_vulnerable
-                   and ctx.radio.rng.random() < 0.6)
+                   and index == 0 and ctx.radio is not None
+                   and ctx.radio.pixie_ok(ap.bssid) and ctx.radio.rng.random() < 0.6)
             if hit:
                 password = ctx.radio.crack(ap.bssid, kind="wps").get("password", "")
                 return PixieDustAttack._finish(self, ctx, ap, attempt, pin, password,
