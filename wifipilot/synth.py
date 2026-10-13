@@ -21,7 +21,7 @@ import random
 import struct
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .crypto import KDV_SHA1, compute_pmkid, mic_from_ptk, pmk, ptk
 
@@ -238,22 +238,139 @@ def vht_capabilities() -> bytes:
     return ie(191, body)
 
 
-def extended_capabilities(bss_transition: bool = True) -> bytes:
-    """Extended capabilities: bit 3 of byte 3 is BSS transition (802.11v)."""
+#: Extended Capabilities bits, by the numbers the standard gives them (table 9-169).
+#: They matter because this one element answers "does this AP do 802.11v/k/r", and
+#: because reading it at the wrong offset is how a tool reports a feature the network
+#: does not have.
+EXTENDED_CAPABILITY_BITS = {"20/40 coexistence": 0, "extended channel switching": 2,
+                            "BSS transition (802.11v)": 19, "WNM sleep mode": 24,
+                            "WNM notifications": 25, "TIM broadcast": 22,
+                            "multi-band": 40, "SSPN interface": 10}
+
+
+def extended_capabilities(bss_transition: bool = True, wnm_sleep: bool = False,
+                          coexistence: bool = False, channel_switch: bool = False,
+                          **extra: bool) -> bytes:
+    """The Extended Capabilities element (tag **127**), bit by bit.
+
+    The bits are set by their standard numbers rather than by byte offsets, because
+    "bit 19 is BSS transition" is checkable and "byte 3 bit 3" is how the element was
+    read wrongly for years.
+    """
+    wanted = dict(EXTENDED_CAPABILITY_BITS)
+    wanted.update({key.replace("_", " "): value for key, value in extra.items()})
+    flags = {"BSS transition (802.11v)": bss_transition, "WNM sleep mode": wnm_sleep,
+             "20/40 coexistence": coexistence, "extended channel switching": channel_switch}
     value = bytearray(8)
-    if bss_transition:
-        value[3] |= 0x08
-    return ie(93, bytes(value))
+    for name, on in flags.items():
+        bit = wanted.get(name)
+        if on and bit is not None:
+            value[bit // 8] |= 1 << (bit % 8)
+    return ie(127, bytes(value))
 
 
-def mobility_domain(md: bytes = b"\x00\x01") -> bytes:
-    """The 802.11r mobility domain element."""
-    return ie(52, md[:2] + b"\x01\x00")
+def mobility_domain(md: bytes = b"\x00\x01", over_ds: bool = True) -> bytes:
+    """The 802.11r Mobility Domain element (tag 54).
+
+    Two bytes of MDID and a capability byte whose bit 0 says the AP accepts fast
+    BSS transitions over the distribution system — the bit that decides whether a
+    roaming assessment has anything to work with.
+    """
+    return ie(54, md[:2] + bytes([0x01 if over_ds else 0x00]))
+
+
+def rm_enabled_capabilities(neighbour_report: bool = True, beacon_passive: bool = True,
+                            beacon_active: bool = True, beacon_table: bool = True,
+                            link_measurement: bool = True) -> bytes:
+    """RM Enabled Capabilities (tag 70): which 802.11k measurements an AP will do.
+
+    Five bytes of bitmap.  A neighbour report request can only be answered by an AP
+    that advertises the capability, which is why an audit reads this before it says
+    anything about location privacy.
+    """
+    value = bytearray(5)
+    for bit, on in ((1, link_measurement), (2, neighbour_report), (3, beacon_passive),
+                    (4, beacon_active), (5, beacon_table)):
+        if on:
+            value[bit // 8] |= 1 << (bit % 8)
+    return ie(70, bytes(value))
+
+
+def neighbour_report_element(entries: Optional[List[Tuple[str, int, int]]] = None) -> bytes:
+    """A Neighbour Report element (tag 52): the APs this one will hand a client to.
+
+    Each entry is a BSSID, its BSSID information field, an operating class, a channel
+    and a PHY type — 13 bytes each, exactly as a beacon report response carries them.
+    """
+    # (bssid, operating class, channel) — the default entry is a 2.4GHz neighbour
+    entries = entries or [("aa:bb:cc:11:22:33", 81, 6)]
+    body = bytearray()
+    for bssid, operating_class, channel in entries:
+        body += _mac(bssid)
+        body += struct.pack("<I", 0x00000003)          # AP reachable, security: same
+        body += bytes([operating_class, channel, 7])   # operating class, channel, PHY
+    return ie(52, bytes(body))
+
+
+def bss_load_element(station_count: int = 8, utilisation: int = 90,
+                     available_admission: int = 1200) -> bytes:
+    """BSS Load (tag 11): how busy the cell says it is.
+
+    ``utilisation`` is the channel-utilisation byte (0-255, so 90 is 35%), and the
+    station count is the AP's own association table — the two numbers that turn
+    "which AP is the target" from a guess into a measurement.
+    """
+    # station count (2), channel utilisation (1), available admission capacity (2)
+    return ie(11, struct.pack("<HBH", station_count & 0xFFFF, utilisation & 0xFF,
+                              available_admission & 0xFFFF))
+
+
+def interworking_element(network_type: int = 2, internet: bool = True,
+                         venue_group: int = 1) -> bytes:
+    """The Interworking element (tag 107): what kind of network this claims to be.
+
+    The low nibble of the first byte is the access network type (``2`` is a chargeable
+    public network, ``14`` is a personal device), bit 4 is the internet bit, and the
+    second byte's low nibble is the venue group.
+    """
+    first = (network_type & 0x0F) | (0x10 if internet else 0x00)
+    return ie(107, bytes([first, (venue_group & 0x0F) << 4]))
+
+
+def hs20_element(release: int = 2, anqp_domain: int = 0x1234,
+                 operator: bytes = b"\x00\x01\x02") -> bytes:
+    """The Hotspot 2.0 (Passpoint) element: vendor 221, OUI 00:50:f2, type 0x11."""
+    body = bytes([release & 0x0F]) + struct.pack(">H", anqp_domain & 0xFFFF)
+    if operator:
+        body += bytes([len(operator)]) + operator
+    return ie(221, WFA_VENDOR_OUI + b"\x11" + body)
+
+
+def wmm_parameter_element(acm_be: bool = False, aifsn: int = 3, ecw_min: int = 4,
+                          ecw_max: int = 10, acm_voice: bool = False) -> bytes:
+    """The WMM Parameter element: vendor 221, OUI 00:50:f2, type 2.
+
+    Four access-category records (best effort, background, video, voice) of four bytes
+    each, prefixed by a version and a QoS info byte.  APs that require admission
+    control for a category set the ACM bit, and that is what a voice deployment's
+    capacity numbers hinge on.
+    """
+    def record(index: int) -> bytes:
+        acm = (index == 0 and acm_be) or (index == 3 and acm_voice)
+        return bytes([aifsn, (ecw_max << 4) | ecw_min, 0x01 if acm else 0x00, 0x00])
+
+    return (ie(221, WFA_VENDOR_OUI + b"\x02" + bytes([1, 0x80])
+               + b"".join(record(index) for index in range(4))))
+
+
+def he_capabilities(mcs_map: int = 0xFA) -> bytes:
+    """HE Capabilities as an Element Extension (tag 255, extension id 35)."""
+    return ie(255, bytes([35]) + struct.pack("<H", 0x03F0) + bytes([mcs_map, 0x00]) + bytes(8))
 
 
 def build_beacon(ssid: str, bssid: str, channel: int = 6, include_rsn: bool = True,
                  akm: str = "psk", pmf: bool = False, extra_ies: bytes = b"",
-                 rates: bytes = MODERN_RATES) -> bytes:
+                 rates: bytes = MODERN_RATES, tsf: int = 0, tkip: bool = False) -> bytes:
     """A well-formed 802.11 beacon, for capture-shape benchmarks and tests.
 
     ``akm`` selects the AKM suites in the RSN element (``psk``, ``sae``,
@@ -265,14 +382,15 @@ def build_beacon(ssid: str, bssid: str, channel: int = 6, include_rsn: bool = Tr
     ap = _mac(bssid)
     ssid_bytes = ssid.encode()[:32]
     body = (b"\x80\x00\x00\x00" + b"\xff" * 6 + ap + ap + b"\x00\x00"
-            + bytes(8)                                        # timestamp
+            + struct.pack("<Q", tsf & 0xFFFFFFFFFFFFFFFF)     # timestamp (µs)
             + b"\x64\x00"                                    # beacon interval
             + b"\x01\x04")                                   # capability: ESS + privacy
     if include_rsn:
         body += b"\x00" + bytes([len(ssid_bytes)]) + ssid_bytes
         body += ie(1, rates)
         body += b"\x03\x01" + bytes([channel])                          # DS parameter
-        body += rsn_element(akm, pmf=pmf)
+        body += (rsn_element(akm, pmf=pmf, group="tkip", pairwise="tkip+ccmp")
+                 if tkip else rsn_element(akm, pmf=pmf))
     else:
         body += b"\x00\x00"                                            # hidden SSID
     return body + bytes(extra_ies)
@@ -287,11 +405,12 @@ def build_probe_request(station: str, ssid: str = "", bssid: str = "ff:ff:ff:ff:
     injection at all.
     """
     sta = _mac(station)
-    body = (b"\x00" * 8                       # timestamp
-            + b"\x64\x00"                    # beacon interval
-            + b"\x04\x01")                   # capability: privacy
+    # a probe request has no fixed field area: the element list starts right after the
+    # 24-byte header.  Writing beacon-scale fields here (a timestamp, an interval)
+    # makes the first "element" a zero-length SSID, which is how a directed probe comes
+    # to look like a wildcard one to every reader downstream.
     ssid_bytes = ssid.encode()[:32]
-    body += b"\x00" + bytes([len(ssid_bytes)]) + ssid_bytes
+    body = b"\x00" + bytes([len(ssid_bytes)]) + ssid_bytes
     body += b"\x01\x04\x82\x84\x8b\x96"     # rates
     return b"\x40\x00\x00\x00" + b"\xff" * 6 + sta + _mac(bssid) + b"\x00\x00" + body
 
@@ -303,12 +422,19 @@ def build_deauth(bssid: str, station: str = "ff:ff:ff:ff:ff:ff", reason: int = 7
             + b"\x00\x00" + bytes([reason, 0]))
 
 
-def build_deauth_flood(bssid: str, rounds: int = 40, broadcast: bool = True) -> List[bytes]:
-    """A burst of deauth frames — enough of them for ``sniff.attack_frames``."""
+def build_deauth_flood(bssid: str, rounds: int = 40, broadcast: bool = True,
+                       reason: int = 7) -> List[bytes]:
+    """A burst of deauth frames — enough of them for ``sniff.attack_frames``.
+
+    ``reason=15``/``16`` is not a mistake: those are the codes an AP sends when a
+    forged TKIP MIC trips its Michael countermeasures, which is a *finding* to an
+    audit rather than an attack.
+    """
     frames: List[bytes] = []
-    for _ in range(max(1, rounds)):
+    for index in range(max(1, rounds)):
         frames.append(build_deauth(bssid, "ff:ff:ff:ff:ff:ff" if broadcast
-                                   else random_mac(locally_administered=True)))
+                                   else random_mac(locally_administered=True),
+                                   reason=reason if reason != 15 else 15 + index % 2))
     return frames
 
 
@@ -318,8 +444,24 @@ _AKM_CODES = {"802.1x": 1, "psk": 2, "ft-802.1x": 3, "ft-psk": 4, "psk-sha256": 
               "h2e": 24, "sae-h2e-ext": 25}
 
 
-def rsn_element(akm: str = "psk", pmf: bool = False, pairwise: int = 4,
-                group: int = 4) -> bytes:
+_CIPHER_CODES = {"wep40": 1, "wep64": 1, "tkip": 2, "ccmp": 4, "wep104": 5, "wep128": 5,
+                 "gcmp": 9, "gcmp256": 10, "ccmp256": 11, "bip": 6, "bipcmac": 6}
+
+
+def _cipher_codes(value) -> List[int]:
+    """Accept an OUI code (``4``) or the names an assessment talks in (``tkip+ccmp``)."""
+    if isinstance(value, int):
+        return [value]
+    codes: List[int] = []
+    for name in str(value).replace("/", "+").split("+"):
+        code = _CIPHER_CODES.get(name.strip().lower())
+        if code is not None and code not in codes:
+            codes.append(code)
+    return codes or [4]
+
+
+def rsn_element(akm: str = "psk", pmf: bool = False, pairwise="ccmp",
+                group="ccmp") -> bytes:
     """An RSN information element (tag 48) with the AKM list and PMF bits.
 
     ``akm="sae+psk"`` builds the transition-mode element that makes a "WPA3" network
@@ -335,9 +477,12 @@ def rsn_element(akm: str = "psk", pmf: bool = False, pairwise: int = 4,
     capabilities = 0
     if pmf:
         capabilities = 0x0030                     # MFPC (bit 5) + MFPR (bit 4)
+    group_codes = _cipher_codes(group)
+    pairwise_codes = _cipher_codes(pairwise)
     body = (bytes([1, 0])                          # RSN version 1
-            + bytes([group, 0, 0, 0])              # group cipher: CCMP
-            + bytes([1, 0]) + bytes([pairwise, 0, 0, 0])
+            + bytes([group_codes[0], 0, 0, 0])     # group cipher
+            + struct.pack("<H", len(pairwise_codes))
+            + b"".join(bytes([code, 0, 0, 0]) for code in pairwise_codes)
             + bytes([len(suites), 0])
             + b"".join(bytes([code, 0, 0, 0]) for code in suites)
             + struct.pack("<H", capabilities))
@@ -431,6 +576,71 @@ def self_signed_certificate(common_name: str = "radius.lab.local",
     return tlv(0x30, tlv(0x30, tbs))
 
 
+def build_test_certificate(common_name: str = "radius.corp.example",
+                           organization: str = "Example Corp",
+                           country: str = "IN", issuer_cn: str = "",
+                           issuer_org: str = "", bits: int = 2048,
+                           not_before: str = "230104000000Z",
+                           not_after: str = "270103000000Z",
+                           signature_algorithm: str = "1.2.840.113549.1.1.11") -> bytes:
+    """A structurally complete X.509 certificate (DER) for the certificate audits.
+
+    :func:`self_signed_certificate` is deliberately minimal — it exists so the
+    *self-signed* finding can be tested.  This one carries the rest of the structure an
+    audit reads: an explicit version, the signature AlgorithmIdentifier, the validity
+    window, and a real ``subjectPublicKeyInfo`` whose RSA modulus is ``bits`` long, so a
+    key-size finding is a finding about this certificate and not about a constant.  With
+    no ``issuer_cn``/``issuer_org`` the issuer is the subject: a self-signed certificate.
+    """
+    def tlv(tag: int, body: bytes) -> bytes:
+        if len(body) < 0x80:
+            return bytes([tag, len(body)]) + body
+        if len(body) < 0x100:
+            return bytes([tag, 0x81, len(body)]) + body
+        return bytes([tag, 0x82]) + struct.pack(">H", len(body)) + body
+
+    def oid(dotted: str) -> bytes:
+        parts = [int(part) for part in dotted.split(".")]
+        out = bytes([parts[0] * 40 + parts[1]])
+        for part in parts[2:]:
+            chunk = [part & 0x7F]
+            part >>= 7
+            while part:
+                chunk.insert(0, (part & 0x7F) | 0x80)
+                part >>= 7
+            out += bytes(chunk)
+        return tlv(0x06, out)
+
+    def rdn(dotted: str, value: str) -> bytes:
+        return tlv(0x31, tlv(0x30, oid(dotted) + tlv(0x0C, value.encode())))
+
+    def name(cn: str, org: str, country_code: str) -> bytes:
+        parts = rdn("2.5.4.3", cn) + rdn("2.5.4.10", org) + rdn("2.5.4.6", country_code)
+        return tlv(0x30, parts)
+
+    subject = name(common_name, organization, country)
+    issuer = name(issuer_cn, issuer_org, country) if (issuer_cn or issuer_org) else subject
+    # a plausible modulus of the requested size: only its length is judged, so it is
+    # derived from the name (deterministic) rather than being a valid RSA key
+    seed = hashlib.sha256(f"{common_name}|{bits}".encode()).digest()
+    modulus = bytearray(seed * (bits // 8 // len(seed) + 1))[:bits // 8 or 128]
+    modulus[0] |= 0x80
+    modulus[-1] |= 0x01
+    rsa_public_key = tlv(0x30, tlv(0x02, bytes(modulus)) + tlv(0x02, b"\x01\x00\x01"))
+    spki = tlv(0x30, tlv(0x30, oid("1.2.840.113549.1.1.1"))
+               + tlv(0x03, b"\x00" + rsa_public_key))
+    signature = oid(signature_algorithm)
+    tbs = (tlv(0xA0, tlv(0x02, b"\x02"))                  # v3
+           + tlv(0x02, hashlib.sha256(common_name.encode()).digest()[:8])
+           + tlv(0x30, signature)                          # signature AlgorithmIdentifier
+           + issuer
+           + tlv(0x30, tlv(0x17, not_before.encode()) + tlv(0x17, not_after.encode()))
+           + subject
+           + spki)
+    return tlv(0x30, tlv(0x30, tbs) + tlv(0x30, signature)
+               + tlv(0x03, b"\x00" + hashlib.sha256(common_name.encode()).digest() * 4))
+
+
 def build_eap_response_identity(station: str, bssid: str, identity: str) -> bytes:
     """An EAP-Response/Identity frame — the clear-text username carrier."""
     body = identity.encode()[:253]
@@ -457,54 +667,535 @@ def build_eap_tls_certificate(station: str, bssid: str, certificate: bytes,
     return (_data_header(_mac(station), _mac(bssid), _mac(bssid), 0) + _llc_eapol(eapol))
 
 
-def build_enterprise_capture(path: str, essid: str = "CorpNet-8021X",
-                             bssid: str = "34:c9:27:19:79:89",
-                             station: str = "02:00:00:00:00:21",
-                             identity: str = "jdoe@corp.example",
-                             certificate: Optional[bytes] = None) -> Tuple[str, List[bytes]]:
-    """A beacon plus an 802.1X exchange: identity response and server certificate."""
-    frames = [build_beacon(essid, bssid),
-              build_eap_response_identity(station, bssid, identity),
-              build_eap_tls_certificate(station, bssid,
-                                        certificate or self_signed_certificate())]
+def build_eap_tls_server_hello(station: str, bssid: str, version: int = 0x0301,
+                               cipher: int = 0xC02F, method: int = 25,
+                               session_id: bytes = b"") -> bytes:
+    """An EAP-Response carrying a TLS ServerHello record.
+
+    The version field is what an audit reads: ``0x0301`` is TLS 1.0, ``0x0303`` is TLS
+    1.2.  A capture that claims 802.1X security but negotiates TLS 1.0 is a finding,
+    and it is one an offline reader can prove without transmitting anything.
+    """
+    random_bytes = hashlib.sha256((bssid + station).encode()).digest()
+    body = (struct.pack(">H", version) + random_bytes
+            + bytes([len(session_id)]) + session_id
+            + struct.pack(">H", cipher) + b"\x00"          # no compression
+            + struct.pack(">H", 0))                        # no extensions
+    handshake = bytes([0x02]) + struct.pack(">I", len(body))[1:] + body
+    record = bytes([0x16, version >> 8 & 0xFF, version & 0xFF]) \
+        + struct.pack(">H", len(handshake)) + handshake
+    flags = b"\x00" if method == 25 else b"\x20"
+    eap_body = flags + record
+    eap = bytes([2, 2]) + struct.pack(">H", 5 + len(eap_body)) + bytes([method]) + eap_body
+    eapol = bytes([2, 0]) + struct.pack(">H", len(eap)) + eap
+    return (_data_header(_mac(station), _mac(bssid), _mac(bssid), 0) + _llc_eapol(eapol))
+
+
+def _eap_frame(station: str, bssid: str, code: int, eap_type: int, identifier: int,
+               body: bytes) -> bytes:
+    payload = bytes([code, identifier]) + struct.pack(">H", 5 + len(body)) \
+        + bytes([eap_type]) + body
+    eapol = bytes([2, 0]) + struct.pack(">H", len(payload)) + payload
+    return (_data_header(_mac(station), _mac(bssid), _mac(bssid), 0) + _llc_eapol(eapol))
+
+
+def build_mschapv2_exchange(station: str, bssid: str, username: str, password: str,
+                            challenge: Optional[bytes] = None,
+                            peer_challenge: Optional[bytes] = None,
+                            identifier: int = 2) -> List[bytes]:
+    """A real MS-CHAPv2 exchange: server challenge, then the client's response.
+
+    The challenge and the 24-byte NT-Response are computed exactly as RFC 2759 says
+    (see :mod:`wifipilot.netproto`), which is what makes the offline crack that reads
+    this capture a genuine dictionary attack rather than a lookup of a value we stored.
+    """
+    from .netproto import mschapv2_response
+
+    challenge = challenge or bytes(range(16))
+    peer_challenge = peer_challenge or bytes(range(16, 32))
+    # the MS-CHAPv2 packet inside the EAP type: Code, Identifier, MS-Length,
+    # Value-Size, Value, Name (RFC 2759 §4 — the identifier is repeated here)
+    def packet(code: int, value: bytes, name: bytes) -> bytes:
+        return (bytes([code, identifier]) + struct.pack(">H", 5 + len(value) + len(name))
+                + bytes([len(value)]) + value + name)
+
+    response = (peer_challenge + b"\x00" * 8
+                + mschapv2_response(password, challenge, peer_challenge, username)
+                + b"\x00")
+    # the Name field of the Response *is* the user name (RFC 2759 §4): an offline
+    # reader that recomputes the ChallengeHash needs it to be the real one
+    return [_eap_frame(bssid, station, 1, 26, identifier,
+                       packet(1, challenge, b"MSCHAPv2")),
+            _eap_frame(station, bssid, 2, 26, identifier,
+                       packet(2, response, username.encode("latin-1")))]
+
+
+def build_mschapv2_capture(path: str, essid: str = "CorpNet-8021X",
+                           bssid: str = "34:c9:27:19:79:89",
+                           station: str = "02:00:00:00:00:22",
+                           username: str = "User", password: str = "clientPass",
+                           challenge: Optional[bytes] = None,
+                           peer_challenge: Optional[bytes] = None
+                           ) -> Tuple[str, List[bytes], Dict[str, Any]]:
+    """A capture holding one PEAP/MS-CHAPv2 authentication, plus its real material."""
+    frames = [build_beacon(essid, bssid)]
+    frames += build_mschapv2_exchange(station, bssid, username, password, challenge,
+                                      peer_challenge)
+    write_pcap(path, frames, spacing=0.01)
+    auth_challenge = challenge or bytes(range(16))
+    peer = peer_challenge or bytes(range(16, 32))
+    from .netproto import mschapv2_response
+
+    material = {
+        "username": username, "challenge": auth_challenge.hex(),
+        "peer_challenge": peer.hex(), "method": "MSCHAPv2",
+        # the response is recomputed from the real password so an offline cracker has
+        # a genuine target and a hit can be proved against it
+        "response": mschapv2_response(password, auth_challenge, peer, username).hex(),
+    }
+    return str(path), frames, material
+
+
+def build_ttls_pap_exchange(station: str, bssid: str, username: str, password: str,
+                            number: int = 1) -> List[bytes]:
+    """A TTLS tunnel carrying PAP: the credentials are inside, and printable.
+
+    The AVP layout is the one RFC 2865 uses for RADIUS attributes, wrapped in the
+    TTLS message header — which is why an attack that reads inside the tunnel can pull
+    a username and a password out of a capture.
+    """
+    user_avp = bytes([0, 1]) + struct.pack(">H", 2 + len(username)) + username.encode()
+    pass_avp = bytes([0, 2]) + struct.pack(">H", 2 + len(password)) + password.encode()
+    inner = bytes([0, number]) + struct.pack(">H", 4 + len(user_avp) + len(pass_avp)) \
+        + user_avp + pass_avp
+    tls = bytes([0x17, 0x03, 0x03]) + struct.pack(">H", len(inner)) + inner
+    return [_eap_frame(bssid, station, 1, 21, number, b"\x00" + tls)]
+
+
+def build_ttls_capture(path: str, essid: str = "CorpNet-TTLS",
+                       bssid: str = "34:c9:27:19:79:8b",
+                       station: str = "02:00:00:00:00:23",
+                       username: str = "alice", password: str = "Winter2026"
+                       ) -> Tuple[str, List[bytes]]:
+    frames = [build_beacon(essid, bssid)]
+    frames += build_ttls_pap_exchange(station, bssid, username, password)
     write_pcap(path, frames, spacing=0.01)
     return str(path), frames
 
 
-def build_data_frame(bssid: str, station: str, payload: bytes = b"") -> bytes:
-    """A plain 802.11 data frame (ARP/DHCP-like background traffic)."""
+def build_enterprise_capture(path: str, essid: str = "CorpNet-8021X",
+                             bssid: str = "34:c9:27:19:79:89",
+                             station: str = "02:00:00:00:00:21",
+                             identity: str = "jdoe@corp.example",
+                             certificate: Optional[bytes] = None,
+                             tls_version: int = 0x0301,
+                             method: int = 25) -> Tuple[str, List[bytes]]:
+    """A beacon plus an 802.1X exchange: identity, TLS hello and server certificate."""
+    frames = [build_beacon(essid, bssid),
+              build_eap_response_identity(station, bssid, identity),
+              build_eap_tls_server_hello(station, bssid, version=tls_version,
+                                         method=method),
+              build_eap_tls_certificate(station, bssid,
+                                        certificate or self_signed_certificate(),
+                                        method=method)]
+    write_pcap(path, frames, spacing=0.01)
+    return str(path), frames
+
+
+def build_data_frame(bssid: str, station: str, payload: bytes = b"",
+                     to_ds: bool = False) -> bytes:
+    """A plain 802.11 data frame (ARP/DHCP-like background traffic).
+
+    The direction bits and the addresses have to agree: with ``to_ds`` clear this is
+    the access point talking to a station (``addr1`` the station, ``addr2`` the AP),
+    which is what a parser reading the DS bits expects.  Getting these backwards makes
+    a frame that decodes as its own mirror image — a reversed client list.
+    """
     body = payload or (b"\xaa\xaa\x03\x00\x00\x00\x08\x06" + bytes(28))
-    return _data_header(_mac(bssid), _mac(station), _mac(bssid), 0) + body
+    if to_ds:
+        return _data_header(_mac(station), _mac(bssid), _mac(bssid), 0, to_ds=True) + body
+    return _data_header(_mac(bssid), _mac(station), _mac(bssid), 0, to_ds=False) + body
+
+
+#: the WPA (not WPA2) vendor element and a WPS element, for the scenes and tests
+WPA_VENDOR_OUI = b"\x00\x50\xf2"
+#: the Wi-Fi Alliance OUI that carries WPS, WMM, Hotspot 2.0 and the rest
+WFA_VENDOR_OUI = b"\x00\x50\xf2"
+
+#: what a consumer AP's WPS element looks like: label, display, keypad and push button
+#: all offered, device names filled in, not locked.  Built with the real element builder
+#: rather than by hand — the hand-rolled version carried a configuration-methods
+#: attribute with an attribute id that does not exist (0x0088 instead of 0x1012), which
+#: is exactly the kind of thing a decoder has to be able to survive and an audit should
+#: not be manufacturing.
+WPS_VENDOR_IE = wps_element(version="2.0", methods=0x0188, locked=False,
+                            manufacturer="Example Networks", model="EN-AP300",
+                            model_number="v1.2", device_name="corp-ap-3f",
+                            serial="EN300-0001")
+
+
+def retry(frame: bytes) -> bytes:
+    """The same frame with the retry bit set — what a repeat transmission looks like."""
+    return frame[:1] + bytes([frame[1] | 0x08]) + frame[2:]
+
+
+def fragment(frame: bytes, index: int = 1) -> bytes:
+    """A frame carrying a fragment number (the low nibble of the sequence control)."""
+    control = int.from_bytes(frame[22:24], "little")
+    control = (control & 0xFFF0) | (index & 0x0F)
+    return frame[:22] + struct.pack("<H", control) + frame[24:]
+
+
+def bcast(frame: bytes) -> bytes:
+    """A data frame addressed to the broadcast address (group traffic)."""
+    return frame[:4] + b"\xff" * 6 + frame[10:]
+
+
+def build_probe_response(ssid: str, bssid: str, station: str = "ff:ff:ff:ff:ff:ff",
+                         channel: int = 6, extra_ies: bytes = b"",
+                         include_rsn: bool = True, akm: str = "psk",
+                         tsf: int = 0) -> bytes:
+    """A probe response (subtype 5): the beacon body sent by request.
+
+    The wildcard form of this frame — a zero-length SSID element sent to the broadcast
+    address — is the fingerprint of an AP that answers *every* probe it hears, which is
+    how a lure behaves.  It is built here so a capture of one can be audited.
+    """
+    ap = _mac(bssid)
+    body = (struct.pack("<Q", tsf & 0xFFFFFFFFFFFFFFFF) + b"\x64\x00" + b"\x01\x04")
+    ssid_bytes = ssid.encode()[:32]
+    body += ie(0, ssid_bytes) + ie(1, MODERN_RATES) + ie(3, bytes([channel]))
+    if include_rsn:
+        body += rsn_element(akm)
+    body += extra_ies
+    return (b"\x50\x00\x00\x00" + _mac(station) + ap + ap + b"\x00\x00" + body)
+
+
+def clock_beacons(frames: List[bytes], base: int = 0, spacing_us: int = 1_000,
+                  frozen_bssid: str = "") -> List[bytes]:
+    """Give every beacon and probe response a timestamp that tracks the capture clock.
+
+    A beacon's timestamp is the AP's own microsecond clock, so on air it advances at
+    the same rate the frames arrive at.  A replayed beacon cannot do that: the
+    recording's timestamps stand still while capture time runs on, which is the whole
+    basis of the TSF skew audit.  ``frozen_bssid`` is the one transmitter that keeps its
+    recording's clock, so a scene has something for that audit to find.
+    """
+    if not frames:
+        return frames
+    base = base or int(time.time() * 1_000_000)
+    frozen = _mac(frozen_bssid) if frozen_bssid else b""
+    out: List[bytes] = []
+    for index, frame in enumerate(frames):
+        # subtype 8 (beacon) and 5 (probe response) both carry the timestamp first
+        if len(frame) >= 32 and frame[0] in (0x80, 0x50):
+            if frozen and frame[10:16] == frozen:
+                stamp = base - 9_000_000              # nine seconds behind, and still
+            else:
+                stamp = base + index * spacing_us
+            frame = frame[:24] + struct.pack("<Q", stamp & 0xFFFFFFFFFFFFFFFF) + frame[32:]
+        out.append(frame)
+    return out
 
 
 def build_scene(path: str, aps: int = 6, clients: int = 10, rounds: int = 400,
                 seed: int = 7) -> str:
-    """A realistic mixed capture: mostly beacons, some data, occasional EAPOL.
+    """A mixed capture with the shapes an analyst's parser has to survive.
 
-    Real airodump-ng output is dominated by beacons and background traffic; a
-    capture made only of handshakes measures the wrong thing.
+    Real airodump-ng output is dominated by beacons and background traffic, so a
+    capture made only of handshakes measures the wrong thing.  This scene carries:
+    hidden and named networks, an overlapping-channel pair, a WPA3 transition-mode
+    network, a WPA one (so the old element decoder has work), a clone of a named
+    network with a beacon rate and a timestamp that give it away, directed and
+    wildcard probe requests, open-system and shared-key authentication exchanges,
+    association responses both accepted and refused, QoS and power-save data,
+    retransmissions and a duplicated sequence number, a fragment, ARP traffic
+    including a gratuitous reply, DHCP, SA Query action frames, EAPOL handshakes at
+    both key descriptor versions, an EAPOL-Logoff, and a deauthentication burst.
+
+    Everything is built by the same builders the attacks use, so a reader that finds
+    something here would find it on air.
     """
     rng = random.Random(seed)
-    networks = []
-    for index in range(aps):
-        bssid = "aa:bb:cc:%02x:%02x:%02x" % (index, index * 3 % 256, index * 7 % 256)
-        ssid = f"Scene-{index}" if index % 4 else ""
-        networks.append((bssid, ssid))
-    stations = ["02:00:00:00:%02x:%02x" % (index // 256, index % 256) for index in range(clients)]
     frames: List[bytes] = []
+
+    # -- the networks ------------------------------------------------------- #
+    networks: List[Tuple[str, str, int, str, bool, bytes]] = []
+    for index in range(max(7, aps)):        # index 6 is the 802.11k/v/r AP
+        bssid = "aa:bb:cc:%02x:%02x:%02x" % (index, index * 3 % 256, index * 7 % 256)
+        if index == 0:
+            # a hidden network still beacons: no name, but rates, channel and RSN
+            networks.append((bssid, "", 1, "psk", False, b""))
+        elif index == 1:
+            networks.append((bssid, f"Scene-{index}", 1, "psk", False,
+                             country_element("IN", 1, 13, max_power=20)))
+        elif index == 2:
+            networks.append((bssid, f"Scene-{index}", 11, "sae+psk", False,
+                             country_element("DE", 36, 4, max_power=23)))
+        elif index == 3:
+            networks.append((bssid, f"Scene-{index}", 6, "sae", True, b""))
+        elif index == 4:
+            # a WPA-era AP: the legacy WPA vendor element, not an RSN one — and a
+            # hotspot, because that is what a "Guest" SSID with a portal always is
+            networks.append((bssid, f"Scene-{index}", 6, "psk", False,
+                             ie(221, WPA_VENDOR_OUI + b"\x01\x00")
+                             + interworking_element(network_type=2, internet=True)
+                             + hs20_element(release=3, anqp_domain=0x0bad)))
+        elif index == 5:
+            # a network still running TKIP in its RSN element, 2020s or not — and
+            # offering both pairwise ciphers, so a client can be walked down to TKIP
+            networks.append((bssid, f"Scene-{index}", 1 + index % 11, "psk", False,
+                             b""))
+        elif index == 6:
+            # an AP that does 802.11k/v/r: it will hand over a client, and it will
+            # answer a neighbour report request with the BSSIDs around it
+            networks.append((bssid, f"Scene-{index}", 1 + index % 11, "psk", False,
+                             extended_capabilities(bss_transition=True, wnm_sleep=True)
+                             + rm_enabled_capabilities()
+                             + neighbour_report_element([("aa:bb:cc:00:00:00", 81, 1),
+                                                         ("aa:bb:cc:02:06:0e", 81, 11)])
+                             + mobility_domain(b"\x12\x34")
+                             + bss_load_element(station_count=14, utilisation=141)
+                             + wmm_parameter_element(acm_voice=True)
+                             + WPS_VENDOR_IE))
+        else:
+            networks.append((bssid, f"Scene-{index}", 1 + index % 11, "psk", False,
+                             WPS_VENDOR_IE))
+    clone_bssid = "aa:bb:cc:99:99:99"
+    # the name each network is known by: a hidden network hides its name in its beacons
+    # only, and the client that connects to it still asks for it by name
+    public_names = {bssid: (name or "Hidden-Corp") for bssid, name, *_rest in networks}
+    tsf_base = int(time.time() * 1_000_000)
+    tsf_clone = tsf_base - 9_000_000                 # nine seconds behind, and frozen
+    stations = ["02:00:00:00:%02x:%02x" % (index // 256, index % 256)
+                for index in range(clients)]
+    stray_names = ["HomeNet-4F2A", "Corp-WiFi", "eduroam", "HP-Print-42"]
+
+    # -- the traffic -------------------------------------------------------- #
     for round_index in range(rounds):
-        for bssid, ssid in networks:                 # the bulk: beacons
-            frames.append(build_beacon(ssid, bssid, channel=1 + round_index % 11,
-                                       include_rsn=bool(ssid)))
-        for index in range(max(1, clients // 5)):    # background traffic
-            frames.append(build_data_frame(rng.choice(networks)[0], rng.choice(stations)))
-        if round_index % 25 == 0:                    # an occasional handshake
-            bssid, ssid = networks[round_index % len(networks)]
-            handshake, _ = build_handshake_frames(ssid or "Scene", bssid,
-                                                  rng.choice(stations), "ScenePassword1")
-            frames.extend(handshake)
-    write_pcap(path, frames)
+        for index, (bssid, ssid, channel, akm, pmf, extra) in enumerate(networks):
+            # the timestamp has to track the capture clock, not the round number: an AP
+            # whose beacon clock runs at 1.0x real time is what a TSF audit expects to
+            # measure, and a synthetic 60ms-per-round clock is what makes it cry wolf
+            frames.append(build_beacon(ssid, bssid, channel=channel,
+                                       include_rsn=True, akm=akm, pmf=pmf,
+                                       extra_ies=extra, tkip=index == 5))
+        if round_index % 50 == 0:                        # the clone answers a probe
+            frames.append(build_probe_response("", clone_bssid, extra_ies=WPS_VENDOR_IE))
+        if round_index % 90 == 0 and networks:           # a beacon cut short by the capture
+            frames.append(build_beacon("Scene-3", networks[-1][0], channel=1,
+                                       extra_ies=WPS_VENDOR_IE + ie(221, bytes(180)))[:-48])
+        if round_index % 2 == 0:
+            # the clone: twice the beacon rate, a *frozen* clock, its own element set —
+            # the two things a replayed beacon cannot fake
+            # the clone upgrades the security *claim* of the network it copies: a
+            # client that prefers WPA3 picks it, and the name now exists at two
+            # security levels on the same channel
+            frames.append(build_beacon("Scene-1", clone_bssid, channel=1, akm="sae",
+                                       pmf=True, extra_ies=WPS_VENDOR_IE))
+        for station in rng.sample(stations, k=min(len(stations), max(1, clients // 4))):
+            name = rng.choice(stray_names)
+            frames.append(build_probe_request(station, name))
+            if round_index % 4 == 0:
+                # an AP that hears its own name answers the station that asked
+                frames.append(build_probe_response(name, networks[1][0], station=station,
+                                                   channel=1))
+            if rng.random() < 0.4:
+                frames.append(build_probe_request(station, ""))
+        for index in range(max(1, clients // 5)):        # background traffic
+            bssid = rng.choice(networks)[0]
+            station = rng.choice(stations)
+            frames.append(build_data_frame(bssid, station))
+            if index % 2 == 0:
+                frames.append(build_qos_data_frame(bssid, station,
+                                                   tid=index % 8,
+                                                   power_save=index % 3 == 0))
+            if index % 5 == 0:                       # a retransmission, as seen on air
+                frames.append(retry(build_data_frame(bssid, station)))
+            if index % 7 == 0:                       # a second fragment
+                frames.append(fragment(build_data_frame(bssid, station), 1))
+        if round_index % 12 == 0:                        # association paperwork
+            bssid = networks[round_index % len(networks)][0]
+            station = rng.choice(stations)
+            frames.append(build_auth_frame(bssid, station, algorithm=0, sequence=1))
+            frames.append(build_auth_frame(bssid, station, algorithm=0, sequence=2))
+            # a real client's association request carries what the client can do:
+            # HT for anything made this decade, and about a third of the estate here
+            # is the old hardware that has to be planned around
+            frames.append(build_assoc_request(bssid, station,
+                                              public_names.get(bssid, "Scene"),
+                                              extra_ies=(ht_capabilities(width40=True)
+                                                         if station.endswith("1")
+                                                         else b"")))
+            frames.append(build_assoc_response(bssid, station,
+                                               status=0 if round_index % 24 else 17))
+        if round_index % 30 == 0:
+            bssid = networks[1][0]                  # a shared-key WEP challenge
+            station = rng.choice(stations)
+            frames.append(build_auth_frame(bssid, station, algorithm=1, sequence=1,
+                                           status=0))
+            frames.append(build_auth_frame(bssid, station, algorithm=1, sequence=2,
+                                           status=0))
+        if round_index % 20 == 0:                        # ARP: request and a gratuitous reply
+            bssid, station = networks[1][0], rng.choice(stations)
+            frames.append(build_arp_frame(bssid, station, op=1,
+                                          sender_ip="192.168.1.20",
+                                          target_ip="192.168.1.1"))
+            frames.append(build_arp_frame(bssid, station, op=2,
+                                          sender_ip="192.168.1.1",
+                                          target_ip="192.168.1.1"))
+            frames.append(bcast(build_arp_frame(bssid, station, op=1,
+                                                sender_ip="192.168.1.20",
+                                                target_ip="255.255.255.255")))
+        if round_index % 40 == 0:                        # DHCP
+            bssid, station = networks[1][0], rng.choice(stations)
+            frames.extend(build_dhcp_frames(bssid, station))
+        if round_index % 25 == 0:                        # an occasional handshake
+            bssid, ssid = networks[round_index % len(networks)][:2]
+            if ssid:
+                handshake, _ = build_handshake_frames(
+                    ssid, bssid, rng.choice(stations), "ScenePassword1",
+                    kdv=1 if round_index % 50 == 0 else KDV_SHA1)
+                frames.extend(handshake)
+        if round_index % 60 == 0 and len(networks) > 3:
+            bssid = networks[3][0]                  # SA Query: PMF at work
+            station = rng.choice(stations)
+            frames.append(build_action_frame(bssid, station, category=8, action=0,
+                                             payload=bytes([round_index & 0xFF, 0x01])))
+            frames.append(build_action_frame(bssid, station, category=8, action=1,
+                                             payload=bytes([round_index & 0xFF, 0x01]),
+                                             station_is_source=True))
+        if round_index % 80 == 0:                        # somebody logging off
+            bssid, station = networks[1][0], rng.choice(stations)
+            frames.append(build_eapol_logoff(bssid, station))
+        if round_index == rounds // 2:                   # a deauthentication burst
+            bssid = networks[1][0]
+            frames.extend(build_deauth_flood(bssid, rounds=24, broadcast=True))
+        if round_index == rounds // 2 + 3 and len(networks) == 6:
+            # and the Michael countermeasure firing: reason 15 (MIC failure) followed
+            # by reason 16 (the BSS shutting down for a minute)
+            bssid = networks[5][0]
+            frames.extend(build_deauth_flood(bssid, rounds=6, broadcast=True, reason=15))
+            frames.extend(build_deauth_flood(bssid, rounds=4, broadcast=True, reason=16))
+        if round_index % 15 == 0:                        # a fragment and a retry
+            bssid, station = networks[1][0], rng.choice(stations)
+            frames.append(fragment(build_data_frame(bssid, station), 1))
+            frames.append(retry(build_data_frame(bssid, station)))
+        if round_index % 45 == 0:                        # an ARP sweep of the subnet
+            bssid, station = networks[1][0], rng.choice(stations)
+            for host in range(1, 10):
+                frames.append(build_arp_frame(bssid, station, op=1,
+                                              sender_ip="192.168.1.20",
+                                              target_ip=f"192.168.1.{host}"))
+        # the battery-powered half of the estate talks almost only in power save
+        for sleepy in stations[-2:]:
+            frames.append(build_qos_data_frame(networks[1][0], sleepy, tid=5,
+                                               power_save=True))
+        if round_index % 70 == 0:                        # an authentication flood
+            flooder = "02:00:00:00:ff:ff"               # never associates, ever
+            for sequence in range(8):
+                frames.append(build_auth_frame(networks[1][0], flooder, algorithm=0,
+                                               sequence=1 + sequence % 3))
+    # a real capture interleaves frames far slower than once a millisecond: at 10 ms a
+    # frame this scene is 30-odd seconds of air, which puts beacons at the ~8/s a 100 TU
+    # interval actually produces instead of at a rate no AP could reach
+    spacing = 0.01
+    frames = clock_beacons(frames, tsf_base, spacing_us=int(spacing * 1_000_000),
+                           frozen_bssid=clone_bssid)
+    write_pcap(path, frames, spacing=spacing)
     return path
+
+
+def build_qos_data_frame(bssid: str, station: str, tid: int = 0,
+                         power_save: bool = False, payload: bytes = b"") -> bytes:
+    """A QoS data frame (subtype 8) with a traffic identifier and a power-save bit."""
+    body = payload or (b"\xaa\xaa\x03\x00\x00\x00\x08\x00" + bytes(28))
+    flags = 0x01 | (0x10 if power_save else 0x00)         # to-DS, plus power management
+    header = (bytes([0x88, flags]) + b"\x00\x00" + _mac(bssid) + _mac(station)
+              + _mac(bssid) + b"\x00\x00" + struct.pack("<H", tid & 0x0F))
+    return header + body
+
+
+def build_auth_frame(bssid: str, station: str, algorithm: int = 0, sequence: int = 1,
+                     status: int = 0, from_ap: bool = False) -> bytes:
+    """An authentication frame (algorithm, sequence, status) in either direction."""
+    transmitter, receiver = (bssid, station) if from_ap else (station, bssid)
+    body = (struct.pack("<HHH", algorithm, sequence, status))
+    return (b"\xb0\x00" + b"\x00\x00" + _mac(receiver) + _mac(transmitter)
+            + _mac(bssid) + b"\x00\x00" + body)
+
+
+def build_assoc_request(bssid: str, station: str, ssid: str,
+                        extra_ies: bytes = b"") -> bytes:
+    """An association request carrying its SSID, rates and whatever else the client has.
+
+    ``extra_ies`` is where a real client puts its HT/VHT/HE capabilities: a station
+    that sends an association request with no HT element at all is 802.11g-era
+    hardware, and that is a finding about the estate rather than about the frame.
+    """
+    body = (b"\x31\x04" + b"\x0a\x00"          # capability, listen interval
+            + ie(0, ssid.encode()[:32]) + ie(1, MODERN_RATES) + bytes(extra_ies))
+    return (b"\x00\x00" + b"\x00\x00" + _mac(bssid) + _mac(station) + _mac(bssid)
+            + b"\x00\x00" + body)
+
+
+def build_assoc_response(bssid: str, station: str, status: int = 0,
+                         association_id: int = 1) -> bytes:
+    """An association response with a status code: ``0`` accepted, anything else refused."""
+    body = b"\x31\x04" + struct.pack("<H", status) + struct.pack("<H", association_id) \
+        + ie(1, MODERN_RATES)
+    return (b"\x10\x00" + b"\x00\x00" + _mac(station) + _mac(bssid) + _mac(bssid)
+            + b"\x00\x00" + body)
+
+
+def build_arp_frame(bssid: str, station: str, op: int = 1, sender_ip: str = "192.168.1.20",
+                    target_ip: str = "192.168.1.1", sender_mac: str = "",
+                    target_mac: str = "") -> bytes:
+    """An ARP frame over the WLAN: the Ethernet ARP layout inside an 802.11 data frame."""
+    import socket as _socket
+
+    sender_mac = sender_mac or station
+    target_mac = target_mac or ("00:00:00:00:00:00" if op == 1 else bssid)
+    arp = (b"\x00\x01\x08\x00\x06\x04" + struct.pack(">H", op)
+           + _mac(sender_mac) + _socket.inet_aton(sender_ip)
+           + _mac(target_mac) + _socket.inet_aton(target_ip))
+    return _data_header(_mac(station), _mac(bssid), _mac(bssid), 0) \
+        + b"\xaa\xaa\x03\x00\x00\x00\x08\x06" + arp
+
+
+def build_dhcp_frames(bssid: str, station: str, hostname: str = "laptop",
+                      offered_ip: str = "192.168.1.50") -> List[bytes]:
+    """A DHCP discover and the offer it draws, over the WLAN."""
+    from .netproto import DHCP_CLIENT_PORT, DHCP_SERVER_PORT, dhcp_discover, dhcp_offer, \
+        ipv4_udp_packet
+
+    discover = dhcp_discover(station, hostname=hostname, requested_ip=offered_ip)
+    offer = dhcp_offer(station, offered_ip, "192.168.1.1", "192.168.1.1",
+                       dns=["192.168.1.1"], hostname=hostname)
+    out = []
+    out.append(_data_header(_mac(station), _mac(bssid), _mac(bssid), 0)
+               + b"\xaa\xaa\x03\x00\x00\x00\x08\x00"
+               + ipv4_udp_packet("0.0.0.0", "255.255.255.255", DHCP_CLIENT_PORT,
+                                 DHCP_SERVER_PORT, discover))
+    out.append(_data_header(_mac(bssid), _mac(station), _mac(bssid), 0, to_ds=False)
+               + b"\xaa\xaa\x03\x00\x00\x00\x08\x00"
+               + ipv4_udp_packet("192.168.1.1", offered_ip, DHCP_SERVER_PORT,
+                                 DHCP_CLIENT_PORT, offer))
+    return out
+
+
+def build_action_frame(bssid: str, station: str, category: int = 0, action: int = 0,
+                       payload: bytes = b"", station_is_source: bool = False) -> bytes:
+    """A management action frame without the radiotap header (capture form)."""
+    transmitter, receiver = ((station, bssid) if station_is_source else (bssid, station))
+    return (b"\xd0\x00" + b"\x00\x00" + _mac(receiver) + _mac(transmitter)
+            + _mac(bssid) + b"\x00\x00" + bytes([category, action]) + payload)
+
+
+def build_eapol_logoff(bssid: str, station: str) -> bytes:
+    """An EAPOL-Logoff frame: type 2, no body, unauthenticated by design."""
+    eapol = b"\x02\x02\x00\x00"
+    return _data_header(_mac(station), _mac(bssid), _mac(bssid), 0) + _llc_eapol(eapol)
 
 
 def build_capture(path: str, ssid: str, bssid: str, station: str, password: str,

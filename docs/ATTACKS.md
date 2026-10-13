@@ -1,8 +1,10 @@
 # Attacks
 
-wifipilot ships **54 attacks**: every technique a WiFi assessment genuinely needs, and
-nothing that exists only to lengthen the list. The families are **offline analysis**
-(ten attacks that read files and transmit nothing at all), **surveys** (passive
+wifipilot ships **162 attacks**: every technique a WiFi assessment genuinely needs, and
+nothing that exists only to lengthen the list — the offline half of the catalogue was
+built the same way the headers of a report are, by asking what a *capture* can still be
+made to say. The families are **offline analysis**
+(eighty-two attacks that read files and transmit nothing at all), **surveys** (passive
 decoding: elements, RSN, PNL, SAE parameters), **capture** (handshake, PMKID, the
 active hunt, the hcxdumptool pipeline), **WPS/WEP/802.1X**, **WPA3** (which is an
 audit, not a crack), **rogue infrastructure and lures** (impersonation, channel-switch
@@ -1236,7 +1238,7 @@ $ wifipilot attacks --json          # the same data for a script
 
 ```python
 from wifipilot.attacks import attack_catalog, validate, OFFLINE_ATTACKS
-catalogue = attack_catalog()        # 54 dicts: name, label, tool, requires, category,
+catalogue = attack_catalog()        # 162 dicts: name, label, tool, requires, category,
                                     # noise, impact, detection, offline, default_enabled
 assert validate() == []             # every attack described, no orphan metadata
 ```
@@ -1255,3 +1257,235 @@ disagreeing about what the tool does.
 name in `models.ATTACK_NAMES`, gates in `planner.allow()` if it needs tools or is
 disruptive, and a row in the tables above. The tests in `tests/test_attacks_v3.py` will
 tell you which of those you forgot.
+
+<!-- catalogue:start -->
+
+## 11. The complete catalogue
+
+**181 attacks**, of which **102** transmit nothing at all — no radio, no monitor interface, no frame.  The table is generated from the registry (`python3 tools/gen_attack_docs.py`), so it cannot drift from the code: `wifipilot attacks` prints the same list, `--json` returns it, and the web UI, the planner and the report are all built from it.
+
+How to read the columns: **noise** is what a defender sees (extreme 7, loud 18, moderate 16, quiet 21, silent 119), **impact** is what the *network* loses when the attack works (degraded 27, info 114, loot 27, none 9, outage 4), and **detection** is the artefact left behind — the thing to look for in a capture when asking whether this was run against you.
+
+### Offline analysis (no radio at all) — 102
+
+| attack | answers | noise | impact | tool | defender sees |
+| --- | --- | --- | --- | --- | --- |
+| `loot_audit` | Loot inventory and hash-file audit | dim | green | wifipilot hash22000.py | nothing on air; reads the session's own files |
+| `eapol_audit` | EAPOL / handshake audit | dim | green | wifipilot pcap.py (EAPOL decoder) | nothing on air; decodes EAPOL already captured |
+| `wep_audit` | WEP feasibility audit | dim | green | wifipilot pcap.py (IV counter) | nothing on air; counts IVs already captured |
+| `pixie_offline` | Pixie-Dust offline (pixiewps on a stored exchange) | dim | bold green | pixiewps | nothing on air; runs pixiewps against a stored exchange |
+| `eap_md5_crack` | EAP-MD5 offline dictionary | dim | bold green | wifipilot sniff.py + hashlib | nothing on air; offline dictionary against a captured EAP-MD5 exchange |
+| `crack_sweep` | Crack sweep (offline, whole session) | dim | bold green | wifipilot crack.py | nothing on air; CPU only |
+| `rogue_detect` | Rogue and cloned-AP detection | dim | green | wifipilot sniff.py + OUI registry | nothing on air; compares what the scanner already sees |
+| `twin_detect` | Evil-twin fingerprinting | dim | green | wifipilot sniff.py + OUI registry | nothing on air; fingerprints identical SSIDs |
+| `roam_audit` | Roaming and 802.11k/r/v audit | dim | green | wifipilot ies.py (RM/FT/BTM elements) | nothing on air; reads 802.11k/r/v elements |
+| `wps_lockout_audit` | WPS posture and lockout audit | dim | green | wifipilot ies.py + wps.py | nothing on air; assesses WPS from IEs and history |
+| `capture_quality` | Capture quality ranking (what is worth cracking) | dim | green | wifipilot pcap.py (handshake scoring) | nothing on air; scores the session's own captures |
+| `hash_audit` | Hash file audit (mode 22000) | dim | green | wifipilot hash22000.py | nothing on air; parses mode-22000 hash files |
+| `wordlist_audit` | Wordlist audit (coverage and cost) | dim | green | wifipilot crack.py (measuring, not guessing) | nothing on air; reads the configured wordlists |
+| `wordlist_mine` | Target wordlist mining (off the engagement's own data) | dim | green | wifipilot (engagement-derived candidates) | nothing on air; candidates derived from the SSIDs and vendors already seen |
+| `crack_plan` | Crack plan (benchmarked time estimates) | dim | green | wifipilot crack.py + masks.py | nothing on air; a PBKDF2 benchmark and a multiplication |
+| `vendor_fingerprint` | Device fingerprinting (vendors, models, drivers) | dim | green | wifipilot ies.py + util.oui_vendor | nothing on air; groups the scanner's findings by vendor and model |
+| `beacon_timeline` | Beacon timeline (what changed while we watched) | dim | green | wifipilot models.AccessPoint.history | nothing on air; the session's own history of the neighbourhood |
+| `cleartext_sniff` | Cleartext credential sniff (HTTP, FTP, mail) | dim | bold green | wifipilot netproto.py + pcap.py | nothing on air; reads credentials out of a capture |
+| `pmk_check` | PMK check (loot that needs no cracking) | dim | bold green | wifipilot crypto.py (PTK + MIC verification) | nothing on air; recomputes MICs with keys the session already holds |
+| `loot_manifest` | Loot manifest (chain of custody) | dim | green | wifipilot (SHA-256 manifest) | nothing on air; SHA-256 over the session's artefacts |
+| `krack_detect` | KRACK key-reinstallation detector (CVE-2017-13077) | dim | green | wifipilot pcap.py (EAPOL replay analysis) | nothing on air; the retransmission pattern is read out of a capture we already have |
+| `kr00k_detect` | KR00K zero-key frame detector (CVE-2019-15126) | dim | green | wifipilot pcap.py + ciphertext analysis | nothing on air; scans captured ciphertext for the all-zero keystream signature |
+| `fragattacks_detect` | FragAttacks exposure audit (CVE-2020-24588 and relatives) | dim | green | wifipilot ies.py + pcap.py (aggregation and fragmentation) | nothing on air; looks for A-MSDU and fragment patterns in stored frames |
+| `ft_audit` | 802.11r fast-transition audit | dim | green | wifipilot ies.py (mobility domain + FT AKM) | nothing on air; reads mobility-domain and AKM elements |
+| `beacon_rate_audit` | Beacon behaviour audit (clones and floods) | dim | green | wifipilot pcap.py (TSF, interval, sequence) | nothing on air; compares beacon intervals, TSF and sequence numbers in a capture |
+| `tsf_clone_detect` | TSF clone detector (same SSID, unrelated clocks) | dim | green | wifipilot pcap.py (TSF correlation) | nothing on air; TSF timers compared between identical BSSIDs |
+| `client_fingerprint` | Station fingerprinting (vendor, randomisation, probes) | dim | green | wifipilot sniff.py + pcap.py | nothing on air; reads probe requests and their element sets |
+| `mschapv2_crack` | MS-CHAPv2 challenge/response recovery | dim | bold green | wifipilot (MD4 + DES, RFC 2759) | nothing on air; a dictionary against a captured MS-CHAPv2 exchange |
+| `mic_check` | Handshake MIC verification (offline) | dim | bold green | wifipilot (HMAC-SHA1/AES-CMAC MIC) | nothing is transmitted; the MIC is computed locally over a stored frame |
+| `nonce_reuse_audit` | Nonce reuse audit (KRACK precondition) | dim | green | wifipilot (own 802.11 parser) | silent: reads EAPOL nonces out of a stored capture |
+| `key_version_audit` | EAPOL key descriptor version audit | dim | green | wifipilot (own 802.11 parser) | silent: reads the key information field of stored EAPOL frames |
+| `tkip_countermeasures_audit` | TKIP countermeasures detection | dim | green | wifipilot (own 802.11 parser) | silent: reads deauthentication reason codes out of a capture |
+| `group_cipher_audit` | Group cipher audit | dim | green | wifipilot (own 802.11 parser) | silent: decodes the RSN element of stored beacons |
+| `cipher_downgrade_audit` | Pairwise cipher downgrade audit | dim | green | wifipilot (own 802.11 parser) | silent: compares the pairwise cipher lists of stored beacons |
+| `rsn_ie_audit` | RSN element audit | dim | green | wifipilot (own 802.11 parser) | silent: reads the RSN element line by line |
+| `ie_anomaly_audit` | Information element anomaly audit | dim | green | wifipilot (own 802.11 parser) | silent: walks the element area of every management frame in a capture |
+| `malformed_ie_audit` | Malformed element audit | dim | green | wifipilot (own 802.11 parser) | silent: length-checks every element in every management frame |
+| `wildcard_probe_audit` | Wildcard probe audit (KARMA customers) | dim | green | wifipilot (own 802.11 parser) | silent: reads the SSID element of stored probe requests |
+| `randomised_mac_ratio` | Randomised MAC ratio | dim | green | wifipilot (own 802.11 parser) | silent: reads transmitter addresses out of a capture |
+| `probe_privacy_audit` | Directed probe privacy audit | dim | green | wifipilot (own 802.11 parser) | silent: builds a per-station network list from stored probe requests |
+| `assoc_history_audit` | Association history audit | dim | green | wifipilot (own 802.11 parser) | silent: counts management frame types in a stored capture |
+| `client_vendor_audit` | Client vendor audit | dim | green | wifipilot (own 802.11 parser) | silent: reads transmitter addresses and their OUIs |
+| `client_count_audit` | Client population audit | dim | green | wifipilot (own 802.11 parser) | silent: counts distinct transmitters per BSSID |
+| `data_frame_audit` | Data frame mix audit | dim | green | wifipilot (own 802.11 parser) | silent: classifies every frame in a capture |
+| `protected_ratio_audit` | Protected frame ratio audit | dim | green | wifipilot (own 802.11 parser) | silent: reads the protected bit and the LLC type of stored data frames |
+| `duration_field_audit` | Duration/NAV field audit | dim | green | wifipilot (own 802.11 parser) | silent: reads the duration field of every frame in a capture |
+| `retransmit_audit` | Retransmission audit | dim | green | wifipilot (own 802.11 parser) | silent: reads the retry bit of stored frames |
+| `fragment_audit` | Fragmentation audit | dim | green | wifipilot (own 802.11 parser) | silent: reads the fragment number of stored data frames |
+| `beacon_interval_audit` | Beacon interval audit | dim | green | wifipilot (own 802.11 parser) | silent: reads the beacon interval of stored beacons |
+| `tsf_skew_audit` | Beacon timestamp (TSF) skew audit | dim | green | wifipilot (own 802.11 parser) | silent: measures the drift of stored beacon timestamps |
+| `assoc_response_audit` | Association response audit | dim | green | wifipilot (own 802.11 parser) | silent: reads the status code of stored association responses |
+| `auth_response_audit` | Authentication exchange audit | dim | green | wifipilot (own 802.11 parser) | silent: reads the algorithm and status of stored authentication frames |
+| `ssid_length_audit` | SSID inventory and length audit | dim | green | wifipilot (own 802.11 parser) | silent: reads SSID elements out of stored beacons and probe responses |
+| `encryption_inventory` | Encryption inventory | dim | green | wifipilot (own 802.11 parser) | silent: decodes the security elements of stored beacons |
+| `bssid_oui_audit` | Access point vendor audit | dim | green | wifipilot (own 802.11 parser) | silent: reads BSSID OUIs out of stored beacons |
+| `signal_histogram` | Signal distribution audit | dim | green | wifipilot (own 802.11 parser) | silent: reads the radiotap signal field of stored frames |
+| `channel_usage_audit` | Channel usage audit | dim | green | wifipilot (own 802.11 parser) | silent: reads the DS parameter set of stored beacons |
+| `channel_overlap_audit` | Channel overlap audit | dim | green | wifipilot (own 802.11 parser) | silent: compares the channels in stored beacons |
+| `handshake_message_audit` | Handshake message inventory | dim | green | wifipilot (own 802.11 parser) | silent: reads the message numbers of stored EAPOL frames |
+| `pmkid_presence_audit` | PMKID presence audit | dim | bold green | wifipilot (own 802.11 parser) | silent: reads PMKIDs out of stored EAPOL message 1 frames |
+| `eapol_retry_audit` | EAPOL retransmission audit | dim | green | wifipilot (own 802.11 parser) | silent: counts repeated key message numbers in a capture |
+| `wpa3_transition_audit` | WPA3 transition mode audit | dim | green | wifipilot (own 802.11 parser) | silent: reads the AKM suites of stored beacons |
+| `sa_query_activity` | SA Query activity audit | dim | green | wifipilot (own 802.11 parser) | silent: counts action frames with category 8 in a capture |
+| `eapol_logoff_audit` | EAPOL-Logoff audit | dim | green | wifipilot (own 802.11 parser) | silent: scans stored frames for EAPOL type 2 |
+| `llc_snap_audit` | LLC/SNAP ethertype audit | dim | green | wifipilot (own 802.11 parser) | silent: reads the LLC/SNAP header of stored data frames |
+| `qos_audit` | QoS traffic audit | dim | green | wifipilot (own 802.11 parser) | silent: reads the QoS control field of stored data frames |
+| `power_save_audit` | Power save audit | dim | green | wifipilot (own 802.11 parser) | silent: reads the power management bit of stored data frames |
+| `broadcast_storm_audit` | Broadcast and multicast audit | dim | green | wifipilot (own 802.11 parser) | silent: reads the receiver address of stored data frames |
+| `gratuitous_arp_audit` | Gratuitous ARP audit | dim | green | wifipilot (own 802.11 parser) | silent: parses the ARP payloads already in a capture |
+| `arp_scan_detect` | ARP scan detection | dim | green | wifipilot (own 802.11 parser) | silent: tracks ARP request targets per client |
+| `dhcp_fingerprint_audit` | DHCP fingerprint audit | dim | green | wifipilot (own 802.11 parser) | silent: parses DHCP options out of stored frames |
+| `duplicate_seq_audit` | Duplicate sequence number audit | dim | green | wifipilot (own 802.11 parser) | silent: tracks (transmitter, sequence) pairs in a capture |
+| `deauth_storm_detect` | Deauthentication storm detection | dim | green | wifipilot (own 802.11 parser) | silent: counts deauthentication frames per second in a capture |
+| `auth_flood_detect` | Authentication flood detection | dim | green | wifipilot (own 802.11 parser) | silent: cross-references authentication and association frames per station |
+| `probe_flood_detect` | Probe request flood detection | dim | green | wifipilot (own 802.11 parser) | silent: counts probe requests per station and their name lengths |
+| `pcap_report` | Capture report (JSON artifact) | dim | bold green | wifipilot (own 802.11 parser) | silent: writes a file; nothing is transmitted |
+| `capture_coverage` | Capture coverage audit | dim | green | wifipilot (own 802.11 parser) | silent: cross-references the session's discovery and capture state |
+| `beacon_rate_histogram` | Beacon rate audit | dim | green | wifipilot (own 802.11 parser) | silent: measures beacon spacing in a capture |
+| `auth_algorithm_inventory` | Authentication algorithm inventory | dim | green | wifipilot (own 802.11 parser) | silent: reads the algorithm number of stored authentication frames |
+| `station_inventory` | Station inventory | dim | green | wifipilot (own 802.11 parser) | silent: builds a per-address map from stored frames |
+| `quality_histogram` | Frame size histogram | dim | green | wifipilot (own 802.11 parser) | silent: measures every frame in a capture |
+| `vendor_ie_inventory` | Vendor element inventory | dim | green | wifipilot (own 802.11 parser) | silent: reads element 221 out of stored beacons |
+| `hidden_ap_audit` | Hidden network audit | dim | green | wifipilot (own 802.11 parser) | silent: correlates beacons without an SSID with association requests |
+| `extended_capability_audit` | Extended capabilities audit | dim | green | wifipilot (own 802.11 parser) | silent: decodes the extended capabilities element of stored beacons |
+| `rrm_measurement_audit` | 802.11k measurement audit | dim | green | wifipilot (own 802.11 parser) | silent: decodes the RM enabled capabilities element (tag 70) |
+| `neighbour_report_audit` | Neighbour report audit | dim | green | wifipilot (own 802.11 parser) | silent: decodes the neighbour report element (tag 52) |
+| `ft_mobility_audit` | Fast transition (802.11r) audit | dim | green | wifipilot (own 802.11 parser) | silent: decodes the mobility domain element (tag 54) |
+| `bss_load_audit` | BSS load audit | dim | green | wifipilot (own 802.11 parser) | silent: decodes the BSS load element (tag 11) |
+| `interworking_audit` | Interworking element audit | dim | green | wifipilot (own 802.11 parser) | silent: decodes the interworking element (tag 107) |
+| `hs20_audit` | Hotspot 2.0 (Passpoint) audit | dim | green | wifipilot (own 802.11 parser) | silent: decodes the Hotspot 2.0 vendor element (221/00:50:f2/0x11) |
+| `wmm_parameter_audit` | WMM parameter audit | dim | green | wifipilot (own 802.11 parser) | silent: decodes the WMM parameter element (221/00:50:f2/0x02) |
+| `wps_config_audit` | WPS configuration method audit | dim | green | wifipilot (own 802.11 parser) | silent: decodes the WPS element's configuration methods |
+| `country_power_audit` | Regulatory domain audit | dim | green | wifipilot (own 802.11 parser) | silent: decodes the country element (tag 7) |
+| `ssid_hygiene_audit` | SSID hygiene audit | dim | green | wifipilot (own 802.11 parser) | silent: reads the SSID element of stored beacons |
+| `security_mismatch_audit` | Security mismatch audit | dim | green | wifipilot (own 802.11 parser) | silent: compares the RSN of every BSSID carrying the same SSID |
+| `client_capability_audit` | Client capability audit | dim | green | wifipilot (own 802.11 parser) | silent: reads association requests in a capture |
+| `frame_control_audit` | Frame control audit | dim | green | wifipilot (own 802.11 parser) | silent: reads the frame control field of every stored frame |
+| `airtime_estimate` | Airtime estimate | dim | green | wifipilot (own 802.11 parser) | silent: measures every frame in a capture |
+| `probe_response_latency_audit` | Probe response latency audit | dim | green | wifipilot (own 802.11 parser) | silent: pairs probe requests with the responses to them |
+| `eapol_key_flags_audit` | EAPOL key flag audit | dim | green | wifipilot (own 802.11 parser) | silent: reads the key information field of stored EAPOL frames |
+| `group_rekey_audit` | Group key rekey audit | dim | green | wifipilot (own 802.11 parser) | silent: reads key data out of stored EAPOL frames |
+| `eapol_timing_audit` | EAPOL timing audit | dim | green | wifipilot (own 802.11 parser) | silent: times the EAPOL messages in a capture |
+
+### Surveys the air, transmits nothing — 19
+
+| attack | answers | noise | impact | tool | defender sees |
+| --- | --- | --- | --- | --- | --- |
+| `passive` | Passive capture | dim | dim | airodump-ng | nothing at all; listen-only capture |
+| `rogue_ap` | Rogue AP / evil twin survey | dim | green | wifipilot (offline analysis) | nothing on air; cross-checks the neighbourhood |
+| `ie_audit` | Configuration audit (beacon elements) | dim | green | wifipilot ies.py (IE decoder) | nothing on air; decodes beacons |
+| `pmf_audit` | PMF / transition-mode audit | dim | green | wifipilot wpa3.py (RSN decoder) | nothing on air; reads RSN capabilities |
+| `saewolf` | WPA3 SAE capture (dragonslayer) | green | bold green | airodump-ng + wpa3.py (SAE/PMF decoder) | captures SAE frames; sends nothing until a client authenticates |
+| `sae_group_audit` | SAE group and H2E audit (WPA3 parameters) | dim | green | wifipilot wpa3.py (RSN + SAE decoder) | nothing on air beyond the capture that was already happening; reads the RSN element and SAE commits |
+| `hidden_ssid` <br>_on by default_ | Hidden SSID discovery | green | green | airodump-ng | one probe request per hidden name; the AP's own answer reveals it |
+| `pnl_harvest` | Probe harvest (preferred network lists) | dim | green | wifipilot sniff.py (probe decoder) | nothing on air; reads probe requests |
+| `tracker` <br>_on by default_ | Station tracker (follow a client) | dim | green | airodump-ng (listen-only) | follows a station with the capture radio only |
+| `ap_admin_audit` | Management surface audit (admin ports and pages) | green | dim | wifipilot (raw sockets + HTTP) | TCP connections to management ports: a port scan of one host |
+| `upnp_audit` | UPnP/SSDP audit (device description and IGD) | green | dim | wifipilot netproto.py (SSDP + HTTP) | one SSDP M-SEARCH multicast, then HTTP GETs to the description URLs |
+| `snmp_audit` | SNMP audit (default community strings) | green | dim | wifipilot netproto.py (BER codec) | SNMP GET requests carrying default community strings |
+| `dns_audit` | DNS resolver audit (open resolver, DNSSEC) | green | dim | wifipilot netproto.py (DNS client) | a handful of DNS queries to the network's own resolver |
+| `wpad_audit` | WPAD audit (proxy auto-discovery exposure) | green | dim | wifipilot netproto.py (DNS + HTTP) | DNS queries for the wpad names, then a GET for wpad.dat |
+| `rogue_dhcp_detect` | Rogue DHCP detection (second server on the segment) | dim | green | wifipilot netproto.py (DHCP sniff) | nothing but listening for DHCP replies from the segment |
+| `arp_spoof_detect` | ARP spoofing detection (address conflicts) | dim | green | wifipilot netproto.py (ARP parsing) | nothing on air; reads ARP claims from a capture or a listen window |
+| `ipv6_ra_audit` | IPv6 router advertisement audit | dim | green | wifipilot (ICMPv6 parsing) | nothing but listening for router advertisements |
+| `mac_filter_probe` <br>_injects_ | MAC filtering probe (random station) | green | dim | wifipilot rawtx.py + a live listen window | association attempts from random MACs; a MAC filter rejects them visibly |
+| `channel_sweep` | Channel sweep (live channel map) | dim | dim | wifipilot rawtx.py + airodump-ng fallback | nothing but channel changes on our own radio |
+
+### Capture requests (frames on air) — 7
+
+| attack | answers | noise | impact | tool | defender sees |
+| --- | --- | --- | --- | --- | --- |
+| `pmkid` <br>_on by default, injects_ | PMKID capture (client-less) | dim | bold green | hcxdumptool / tcpdump | nothing from us; the AP volunteers the PMKID to associated clients |
+| `handshake` <br>_on by default, injects_ | WPA handshake capture | green | bold green | airodump-ng + aireplay-ng | two short deauth bursts per client; a WIDS counting deauths sees them |
+| `handshake_broadcast` <br>_injects_ | WPA handshake capture (broadcast deauth) | cyan | bold green | airodump-ng + aireplay-ng -0 (broadcast) | broadcast deauth; every client on the channel drops at once |
+| `pmkid_flood` <br>_injects_ | PMKID hunt (deauth + harvest) | yellow | yellow | aireplay-ng + airodump-ng --pmkid | deauth-driven PMKID hunt; frequent disconnects |
+| `hcxdump_capture` <br>_injects_ | hcxdumptool capture (client-less PMKID pipeline) | cyan | bold green | hcxdumptool + hcxpcapngtool | an active hcxdumptool session: association attempts and deauths under its own policy |
+| `injection_test` <br>_injects_ | Injection test (aireplay-ng --test) | green | dim | aireplay-ng --test | aireplay-ng's own test frames: a handful of probe requests, then it stops |
+| `pcap_replay` <br>_injects_ | Capture replay (frames back on the air) | yellow | yellow | wifipilot rawtx.py (replay of a stored capture) | frames replayed from a capture file at their recorded timing |
+
+### WPS — 5
+
+| attack | answers | noise | impact | tool | defender sees |
+| --- | --- | --- | --- | --- | --- |
+| `wps_pixie` <br>_on by default, injects_ | WPS Pixie-Dust (offline) | green | bold green | reaver -K 1 / bully --pixiewps | one WPS exchange (EAP messages 1-4); the AP sees a normal enrolment |
+| `wps_ap_pin` <br>_injects_ | WPS AP-PIN attempt (vendor algorithm) | green | bold green | reaver -p <AP PIN> (or bully) | static AP-PIN attempts from a vendor algorithm |
+| `wps_lockout_probe` <br>_injects_ | WPS lockout probe (policy measurement) | green | green | reaver (wrong PINs, then stop) / wash | a few deliberately-wrong PINs, then stop: the finding is whether the AP locked out |
+| `wps_pbc` <br>_injects_ | WPS push-button enrolment (window check) | green | bold green | wpa_supplicant (wps_pbc) + wpa_cli | push-button enrolment attempts; fails visibly while the AP's button window is shut |
+| `wps_pin` <br>_injects_ | WPS PIN recovery (online) | cyan | bold green | reaver / bully | a stream of PIN attempts; APs with lockout will report it |
+
+### WEP — 6
+
+| attack | answers | noise | impact | tool | defender sees |
+| --- | --- | --- | --- | --- | --- |
+| `arp_replay` <br>_injects_ | ARP replay (WEP IV generation) | yellow | yellow | aireplay-ng -3 (with a raw-frame fallback) | injected ARP frames that the AP rebroadcasts; network traffic rises while IVs accumulate |
+| `wep_ivs` <br>_on by default, injects_ | WEP IV harvesting | yellow | bold green | airodump-ng + aireplay-ng --arpreplay | ARP-replay injection; the network's own traffic rises |
+| `wep_p0841` <br>_injects_ | WEP P0841 (injected ARP) | yellow | bold green | aireplay-ng -2 -p 0841 | injected ARP frames with a spoofed client |
+| `wep_chopchop` <br>_injects_ | WEP chopchop | yellow | bold green | aireplay-ng -4 (KoreK chopchop) | one frame chopped byte by byte; thousands of injected frames |
+| `wep_fragment` <br>_injects_ | WEP fragmentation | cyan | bold green | aireplay-ng -5 (fragmentation) | fragmented injected frames |
+| `wep_hirte` <br>_injects_ | WEP Hirte (client fragmentation) | cyan | bold green | aireplay-ng -7 (client-oriented fragmentation) | client-driven fragmentation; a station must be active |
+
+### Enterprise (802.1X) — 8
+
+| attack | answers | noise | impact | tool | defender sees |
+| --- | --- | --- | --- | --- | --- |
+| `enterprise` | WPA-Enterprise survey | dim | green | airodump-ng (+ hostapd-mana/eaphammer when installed) | nothing on air; decodes 802.1X already captured |
+| `eap_identity_harvest` <br>_injects_ | EAP identity harvest (cleartext usernames) | dim | green | wifipilot (EAP parser over a capture or a live listen) | nothing from us until a client authenticates; reads the EAP-Response/Identity the AP asked for |
+| `eap_method_probe` <br>_injects_ | EAP method probe (what the server will negotiate) | green | green | wifipilot (EAPOL-Start + EAP Nak) | one EAPOL-Start per identity, then the NAK method list: a short negotiation the AP logs |
+| `certificate_audit` <br>_injects_ | RADIUS certificate audit (X.509) | dim | green | wifipilot (TLS Certificate + X.509 DER parser) | nothing on air; parses certificates already captured |
+| `ttls_inner_audit` <br>_injects_ | TTLS/PEAP inner conversation audit | dim | green | wifipilot (EAP-in-TLS decoder) | nothing on air; reads the inner conversation of a captured TTLS tunnel |
+| `eap_tls_version` <br>_injects_ | EAP-TLS version and cipher audit | dim | green | wifipilot (TLS record parser) | nothing on air; reads the TLS version out of a captured EAP-TLS handshake |
+| `radius_secret_test` <br>_injects_ | RADIUS shared-secret test | green | green | wifipilot netproto (own RADIUS client) | one Access-Request per candidate secret; a real RADIUS server logs the failures |
+| `rogue_radius` <br>_injects_ | Rogue RADIUS (credential check) | cyan | bold green | eaphammer / hostapd-mana / hostapd-wpe | a rogue RADIUS/eaphammer AP; clients that trust any certificate will offer credentials |
+
+### Rogue infrastructure and lures — 16
+
+| attack | answers | noise | impact | tool | defender sees |
+| --- | --- | --- | --- | --- | --- |
+| `eapol_logoff` <br>_injects_ | EAPOL-Logoff (unauthenticated disconnect) | green | yellow | wifipilot rawtx.py (AF_PACKET injection) | EAPOL-Logoff frames: no deauth, and PMF does not cover them |
+| `karma_detect` <br>_injects_ | Karma/MANA rogue-AP detection (probe all names) | green | green | wifipilot rawtx.py (probe requests, random names) | probe requests for names that do not exist; anything that answers is a Karma device |
+| `csa_attack` <br>_injects_ | Channel-switch announcement (silent eviction) | cyan | yellow | wifipilot rawtx.py (CSA beacon) | beacons with a Channel Switch Announcement; clients leave the channel |
+| `ssid_bruteforce` <br>_injects_ | Hidden-SSID brute force (directed probes) | cyan | green | wifipilot rawtx.py (probe requests, wordlist) | probe/association attempts with dictionary SSIDs against a hidden network |
+| `ssid_confusion` <br>_injects_ | SSID confusion (impostor BSSID) | cyan | yellow | wifipilot rawtx.py (beacon, existing SSID) | beacons for an existing SSID from a new BSSID |
+| `ap_isolation_audit` <br>_injects_ | Client-isolation audit (spoofed ARP) | green | green | wifipilot rawtx.py (ARP request between two clients) | a handful of spoofed ARP frames between two clients |
+| `pmf_downgrade_probe` <br>_injects_ | PMF enforcement probe (unprotected disassoc) | green | yellow | wifipilot rawtx.py (disassociation) | association attempts with MFPC/MFPR cleared: the AP either enforces PMF or negotiates it away |
+| `btm_hijack` <br>_injects_ | 802.11v BTM steering to a rogue BSSID | green | yellow | wifipilot rawtx.py (WNM action frame) | BTM requests naming candidate BSSIDs that are not the AP's neighbours |
+| `evil_twin` <br>_injects_ | Evil twin (client lure) | cyan | bold green | hostapd-mana / hostapd | a second access point with the same SSID; the real network's clients may prefer it |
+| `karma` <br>_injects_ | Karma (answer every probe request) | cyan | bold green | hostapd-mana (enable_mana=1) | an AP that answers every probe request (hostapd-mana) |
+| `rogue_dhcp` <br>_injects_ | Rogue DHCP server (leases to anyone who asks) | cyan | yellow | wifipilot netproto.py (DHCP) + rawtx.py (injected offers) | a second DHCP server on the segment: offers carry our gateway and resolver |
+| `dns_sink` <br>_injects_ | DNS sink (every name answered, every query logged) | cyan | yellow | wifipilot netproto.py (own DNS server) | every DNS query answered by us, one log line per name |
+| `captive_portal` <br>_injects_ | Captive portal (a login page served by us) | cyan | bold green | wifipilot (http.server) | a portal page asking for credentials, served by us |
+| `arp_mitm` <br>_injects_ | ARP man-in-the-middle (gateway masquerade) | yellow | yellow | wifipilot rawtx.py (gratuitous ARP) | gratuitous ARP replies claiming the gateway: traffic passes through our radio |
+| `beacon_clone` <br>_injects_ | Beacon clone (the SSID from a second radio) | cyan | yellow | wifipilot rawtx.py (beacons) | beacons with the network's own BSSID and elements, sent from a second radio |
+| `wpa3_downgrade_twin` <br>_injects_ | WPA3 downgrade twin (offer the network as WPA2-only) | cyan | yellow | hostapd with a WPA2-only profile | a twin with SAE and PMF stripped: clients that do not require WPA3 may join it |
+
+### Denial-of-service tests (opt-in) — 18
+
+| attack | answers | noise | impact | tool | defender sees |
+| --- | --- | --- | --- | --- | --- |
+| `deauth_flood` <br>_injects_ | Deauthentication flood (detection test) | red | red | mdk4 d (or aireplay-ng -0) | every client of the AP is disconnected, repeatedly |
+| `auth_flood` <br>_injects_ | Authentication flood (state exhaustion test) | yellow | yellow | mdk4 a | thousands of authentication frames from fake stations |
+| `assoc_flood` <br>_injects_ | Association flood (state exhaustion) | yellow | yellow | wifipilot rawtx.py (association requests) | thousands of association requests; the association table fills |
+| `null_data_flood` <br>_injects_ | Null-data flood (power-save buffer exhaustion) | yellow | yellow | wifipilot rawtx.py (QoS Null, PS bit) | QoS Null frames only — no deauth frames at all, so deauth-based WIDS rules do not fire |
+| `probe_flood` <br>_injects_ | Probe flood (hidden-SSID disclosure test) | yellow | yellow | mdk4 p | a dictionary of directed probe requests |
+| `eapol_start_flood` <br>_injects_ | EAPOL-Start flood (802.1X session exhaustion) | yellow | yellow | wifipilot rawtx.py (EAPOL-Start) | EAPOL-Starts from fake supplicants; the RADIUS server holds half-open sessions |
+| `sae_commit_flood` <br>_injects_ | SAE commit flood (WPA3 CPU exhaustion) | yellow | yellow | wifipilot rawtx.py (SAE commit frames) | SAE commit frames from fake stations; anti-clogging tokens are the mitigation |
+| `tkip_michael` <br>_injects_ | TKIP Michael countermeasure (capture replay) | red | red | wifipilot rawtx.py (captured TKIP frames, MIC corrupted) | TKIP MIC failures trigger the AP's 60-second Michael countermeasure shutdown |
+| `wids_confusion` <br>_injects_ | WIDS attribution confusion (spoofed transmitter test) | red | yellow | wifipilot rawtx.py (deauth frames, foreign BSSID) | attack frames from a list of spoofed transmitters; the test is whether the site's monitoring can tell |
+| `beacon_flood` <br>_injects_ | Beacon flood (WIDS test) | red | yellow | mdk4 b | hundreds of phantom SSIDs in every scan list |
+| `disassoc_flood` <br>_injects_ | Disassociation flood | red | red | wifipilot rawtx.py (disassociation frames) | disassociation frames in a loop: every client of the AP drops, and rules that count deauths do not fire |
+| `rts_flood` <br>_injects_ | RTS/NAV flood (medium reservation) | red | yellow | wifipilot rawtx.py (RTS frames) | RTS frames with a maximal duration reserve the medium and are never answered: control frames only |
+| `cts_flood` <br>_injects_ | CTS-to-self flood (quiet NAV attack) | red | yellow | wifipilot rawtx.py (CTS frames) | CTS-to-self frames hold the channel silent; no management frame is on air at all |
+| `channel_switch_flood` <br>_injects_ | Channel-switch flood (clients chase a quiet channel) | yellow | red | wifipilot rawtx.py (CSA beacons) | beacons carrying CSA elements, one channel move after another |
+| `sa_query_flood` <br>_injects_ | SA Query flood (PMF association state) | yellow | yellow | wifipilot rawtx.py (SA Query action frames) | SA Query requests with rotating tokens: the AP's association state is walked at frame rate |
+| `tdls_teardown_flood` <br>_injects_ | TDLS teardown flood (direct links dropped) | yellow | yellow | wifipilot rawtx.py (TDLS action frames) | TDLS Teardown action frames break direct links and push traffic through the AP |
+| `probe_response_flood` <br>_injects_ | Probe response flood (phantom scan lists) | yellow | yellow | wifipilot rawtx.py (probe responses) | probe responses from BSSIDs that do not exist: client scan lists fill with phantoms |
+| `dhcp_discover_flood` <br>_injects_ | DHCP DISCOVER flood (lease pool exhaustion) | yellow | yellow | wifipilot netproto.py + rawtx.py (UDP broadcast) | DHCP DISCOVER broadcasts from fake stations walk the server through its pool |
+
+<!-- 181 attacks -->
+<!-- catalogue:end -->

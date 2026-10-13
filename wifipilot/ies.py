@@ -211,6 +211,8 @@ def decode_ies(ies: Iterable[InformationElement]) -> Dict[str, Any]:
         "pmf_required": False, "bss_load": None, "mobility_domain": "",
         "roaming": {"r": False, "k": False, "v": False}, "elements": [],
         "vendor_ouis": [], "extended_capabilities": None, "legacy_rates_only": False,
+        "extended_bits": {}, "neighbour_report": [], "rm_enabled": None,
+        "interworking": None, "hs20": None, "wmm_parameters": None, "ft_over_ds": False,
         "channel_width": "20 MHz", "max_mcs": 0, "tim": False, "power_constraint": None,
     }
     basic_rates: List[int] = []
@@ -231,10 +233,12 @@ def decode_ies(ies: Iterable[InformationElement]) -> Dict[str, Any]:
         elif tag == 7 and value:
             facts["country"] = value[:2].decode("ascii", "replace")
         elif tag == 11 and len(value) >= 5:
-            station_count, channel_utilisation = value[0], value[1]
-            facts["bss_load"] = {"stations": station_count,
-                                 "utilisation_percent": round(channel_utilisation * 100 / 255),
-                                 "available_admission": int.from_bytes(value[2:4], "little")}
+            # the BSS Load element is station count (2), channel utilisation (1),
+            # available admission capacity (2) — all little endian, in that order
+            facts["bss_load"] = {
+                "stations": int.from_bytes(value[0:2], "little"),
+                "utilisation_percent": round(value[2] * 100 / 255),
+                "available_admission": int.from_bytes(value[3:5], "little")}
         elif tag == 32 and value:
             facts["power_constraint"] = struct.unpack("b", value[:1])[0]
         elif tag == 45:
@@ -247,19 +251,54 @@ def decode_ies(ies: Iterable[InformationElement]) -> Dict[str, Any]:
                 # the VHT MCS map packs four 2-bit maps per byte, one per stream count
                 facts["max_mcs"] = max(facts["max_mcs"],
                                        max((value[3] >> shift) & 0x03 for shift in (0, 2, 4, 6)))
-        elif tag == 52 and len(value) >= 3:
+        elif tag == 54 and len(value) >= 3:
+            # 802.11r: the mobility domain (MDID) and the capability byte
             facts["mobility_domain"] = value[:2].hex()
+            facts["ft_over_ds"] = bool(value[2] & 0x01)
             facts["roaming"]["r"] = True
+        elif tag == 52 and len(value) >= 13:
+            # a neighbour report: 13 bytes per BSSID this AP will hand a client to
+            entries = []
+            for cursor in range(0, len(value) - 12, 13):
+                entries.append({"bssid": ":".join(f"{byte:02x}" for byte in
+                                                  value[cursor:cursor + 6]),
+                                "operating_class": value[cursor + 10],
+                                "channel": value[cursor + 11],
+                                "phy": value[cursor + 12]})
+            facts["neighbour_report"] = entries
+        elif tag == 70:
+            # RM enabled capabilities (802.11k): five bytes of measurements
+            facts["rm_enabled"] = {"link_measurement": bool(value[0] & 0x02),
+                                   "neighbour_report": bool(value[0] & 0x04),
+                                   "beacon_passive": bool(value[0] & 0x08),
+                                   "beacon_active": bool(value[0] & 0x10),
+                                   "beacon_table": bool(value[0] & 0x20)} if value else None
+            if value and value[0] & 0x04:
+                facts["roaming"]["k"] = True
+        elif tag == 107 and value:
+            facts["interworking"] = {
+                "network_type": value[0] & 0x0F, "internet": bool(value[0] & 0x10),
+                "asra": bool(value[0] & 0x20), "esr": bool(value[0] & 0x40),
+                "uesa": bool(value[0] & 0x80),
+                "venue_group": (value[1] >> 4) if len(value) > 1 else 0}
         elif tag == 201:
-            facts["roaming"]["k"] = True
+            facts["roaming"]["k"] = True                         # RM vendor element
         elif tag == 255 and len(value) >= 1:
             # element extension (id 255): 0 = HE capabilities, others are 6 GHz / EHT
             facts["he"] = facts["he"] or value[0] == 35
             facts["eht"] = facts["eht"] or value[0] == 108
-        elif tag == 93:
+        elif tag == 127:
+            # Extended Capabilities (tag 127 — not 93, which is why a tool that trusts
+            # the wrong number reports 802.11v on networks that never heard of it).
+            # The bits are numbered from the start of the element: 19 is BSS transition,
+            # 24 is WNM sleep, 0 is 20/40 coexistence.
             facts["extended_capabilities"] = value.hex()
-            # bit 2 of the fourth byte is BSS transition (802.11v)
-            if len(value) >= 4 and (value[3] & 0x08):
+            facts["extended_bits"] = {
+                "bss_transition": bool(value[2] & 0x08) if len(value) > 2 else False,
+                "wnm_sleep": bool(value[3] & 0x01) if len(value) > 3 else False,
+                "coexistence": bool(value[0] & 0x01),
+                "channel_switch": bool(value[0] & 0x04)}
+            if facts["extended_bits"]["bss_transition"]:
                 facts["roaming"]["v"] = True
         elif tag == 48 and len(value) >= 2:
             facts["rsn"] = _decode_rsn(value)
@@ -274,12 +313,39 @@ def decode_ies(ies: Iterable[InformationElement]) -> Dict[str, Any]:
                 facts["wps"] = _decode_wps(value)
             elif vendor[:3] == WMM_VENDOR_OUI[:3] and vendor[3:4] in (b"\x02", b"\x00"):
                 facts["wmm"] = True
+                if vendor[3:4] == b"\x02" and len(value) >= 4:
+                    facts["wmm_parameters"] = _decode_wmm_parameters(value)
+            elif vendor[:3] == WPS_VENDOR_OUI[:3] and vendor[3:4] == b"\x11":
+                # Hotspot 2.0: a release number and the ANQP domain the AP answers on
+                facts["hs20"] = {"release": value[4] & 0x0F if len(value) > 4 else 0,
+                                 "anqp_domain": int.from_bytes(value[5:7], "big")
+                                 if len(value) > 6 else 0}
             elif vendor[:3] == WPA1_VENDOR_OUI[:3] and vendor[3:4] == b"\x01":
                 facts["wpa1"] = True
     # a network advertising only the four legacy rates is 802.11b/g-only hardware
     facts["legacy_rates_only"] = bool(basic_rates) and set(basic_rates) <= set(LEGACY_RATES)
     facts["max_rate"] = max(facts["rates"] + facts["ext_rates"], default=0.0)
     return facts
+
+
+def _decode_wmm_parameters(value: bytes) -> Dict[str, Any]:
+    """The WMM Parameter element's four access-category records (EDCA parameters).
+
+    ``value`` starts with the OUI and the element type, then a version and a QoS info
+    byte, then four four-byte records: AIFSN (low nibble of byte 0), an exponent range
+    (ECW min in bits 0-3, ECW max in bits 4-7 of byte 1), and the ACM bit in byte 2.
+    """
+    names = ("best effort", "background", "video", "voice")
+    out: Dict[str, Any] = {"version": value[4] if len(value) > 4 else 0, "ac": {}}
+    for index, name in enumerate(names):
+        start = 6 + index * 4
+        if start + 4 > len(value):
+            break
+        out["ac"][name] = {"aifsn": value[start] & 0x0F,
+                           "ecw_min": value[start + 1] & 0x0F,
+                           "ecw_max": (value[start + 1] >> 4) & 0x0F,
+                           "acm": bool(value[start + 2] & 0x01)}
+    return out
 
 
 def _decode_rsn(value: bytes) -> Dict[str, Any]:

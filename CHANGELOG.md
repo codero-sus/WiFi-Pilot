@@ -4,6 +4,48 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## 162 attacks — the offline half gets its teeth
+
+* **108 further attacks, 162 in total.** The new wave is dominated by *offline analysis*:
+  82 attacks that read a capture and transmit nothing at all, so an engagement gets its
+  findings from files the session already has (`wifipilot attacks --no-radio`).
+* **`offline3.py` (55 attacks)** decodes the frames themselves: the RSN element (ciphers,
+  AKMs, PMF bits, transition mode, TKIP countermeasures), IE anomalies and malformed
+  elements, probe privacy and randomised-MAC ratios, association history, retransmission
+  and fragmentation rates, TSF skew and beacon-rate outliers, QoS and power save, DHCP
+  fingerprints, gratuitous ARP and ARP scans, auth/association/deauth storms, handshake
+  message inventories, encapsulation ratios, duplicate sequence numbers, a capture report
+  written as a JSON artefact, and a station/vendor/frame-size inventory.
+* **Six real bugs the new audits found in the tool itself**, all fixed:
+  * `pcap.py` divided a microsecond capture's sub-second field by `1e9` instead of `1e6`,
+    so *every* timestamp was a thousandth of a second early — which turned "10 beacons a
+    second" into "10000 beacons a second" for every rate, burst and drift calculation;
+  * `synth.build_probe_request` wrote beacon-scale fixed fields, making every directed
+    probe request look like a wildcard one;
+  * `synth.build_assoc_request` emitted its SSID element twice, so the name read back out
+    of an association request was a length byte and a rate tag;
+  * `synth.build_scene` built the association requests from whatever SSID the beacon loop
+    left behind, and its beacons had a clock that ran at 60x real time;
+  * `frames.parse_80211` left probe-request SSIDs as raw bytes, which crashed the privacy
+    audit the moment a real directed probe appeared (`TypeError: expected str`);
+  * `OfflineAttack` and the scene builder are now consistent about which capture an
+    offline audit reads (a survey audit handed the session's handshake capture reports a
+    confident zero — worse than reporting nothing).
+* **The scene is richer, and the audits find things in it:** a hidden network whose name
+  leaks in the association requests, WPA2/WPA3 transition and pure-WPA3 networks, a
+  TKIP-only RSN element with both pairwise ciphers advertised (a downgrade target),
+  Michael-countermeasure deauths (reason 15/16), a forged clone with a frozen clock and
+  double the beacon rate, retries and fragments, QoS/power-save stations, directed and
+  wildcard probes, shared-key authentication, ARP sweeps, a truncated beacon and a KARMA
+  probe response.
+* **Registration is a wave, not an edit:** a batch module carries its metadata and
+  registers with one tuple entry (`attacks.BATCH_MODULES`), extending
+  `models.ATTACK_NAMES` in place so the planner, the CLI and the AI pilot see it. Every
+  attack gets a timeout budget from its own category when it is not named explicitly.
+* **`docs/ATTACKS.md` now ends with the complete generated catalogue**
+  (`tools/gen_attack_docs.py`, checked into the test suite), because a hand-maintained
+  list of 162 entries is a list that is wrong.
+
 ## 54 attacks — offline analysis, lures, and metadata that the whole tool reads
 
 * **27 new attacks, 54 in total**, each one registered, described, gated and tested:

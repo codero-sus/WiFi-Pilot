@@ -22,11 +22,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
+#: magic -> (byte order, fractions per second).  The divisor is what the record
+#: header's sub-second field is measured in: a microsecond capture divides by
+#: 1_000_000, a nanosecond one by 1_000_000_000.  Reading the microsecond magic with
+#: a divisor of 1000 made every timestamp a thousandth of a second too early, which
+#: silently turned "beacons at 10 per second" into "beacons at 10000 per second" for
+#: every rate and drift calculation in the tool.
 PCAP_MAGIC = {
-    b"\xd4\xc3\xb2\xa1": ("<", 1000),   # little endian, microseconds
-    b"\xa1\xb2\xc3\xd4": (">", 1000),   # big endian
-    b"\x4d\x3c\xb2\xa1": ("<", 1),      # little endian, nanoseconds
-    b"\xa1\xb2\x3c\x4d": (">", 1),
+    b"\xd4\xc3\xb2\xa1": ("<", 1_000_000),      # little endian, microseconds
+    b"\xa1\xb2\xc3\xd4": (">", 1_000_000),      # big endian
+    b"\x4d\x3c\xb2\xa1": ("<", 1_000_000_000),  # little endian, nanoseconds
+    b"\xa1\xb2\x3c\x4d": (">", 1_000_000_000),
 }
 PCAPNG_MAGIC = b"\x0a\x0d\x0d\x0a"
 
@@ -282,7 +288,7 @@ def _iter_pcap(data, start_offset: int = 0, endian: str = "",
         offset += 16
         if incl_len > 262144 or offset + incl_len > total:
             break
-        yield (ts_sec + ts_frac / (1_000_000.0 * divisor)), offset, incl_len, offset + incl_len
+        yield (ts_sec + ts_frac / divisor), offset, incl_len, offset + incl_len
         offset += incl_len
 
 
@@ -421,14 +427,17 @@ def essid_from_beacon(payload: bytes) -> str:
 def probe_request_essid(buf, start: int, length: int) -> str:
     """The SSID a probe *request* asks for (``""`` for a wildcard probe).
 
-    A probe request body is fixed fields (timestamp 8, beacon interval 2,
-    capability 2) followed by information elements, so the SSID element starts at
-    offset 24 + 12.  Wildcard probes carry a zero-length SSID element — that is
-    still a signal (the client is looking for *anything*), which is why the
-    caller distinguishes it from "no request at all".
+    A probe request carries **no fixed fields**: the information elements start
+    immediately after the 24-byte header, so the SSID element is the first thing in the
+    body.  (Beacons and probe *responses* are the frames with a timestamp, an interval
+    and a capability field before their elements — those are read with
+    :func:`essid_from_beacon`.)  Reading this frame like a beacon used to make every
+    directed probe look like a wildcard one, which turns "the client is asking for
+    Corp-WiFi" into "the client is asking for anything" — the finding this function
+    exists to produce.
     """
-    body_start = start + 24 + 12
-    if length <= 36:
+    body_start = start + 24
+    if length <= 24:
         return ""
     return essid_from_beacon(bytes(buf[body_start:start + length]))
 
