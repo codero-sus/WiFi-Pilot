@@ -705,8 +705,22 @@ def build_ble(seed: int = 7, limit: int = 0) -> List[BleDevice]:
 
 
 def ble_catalog() -> List[Dict[str, Any]]:
-    """The floor as data: what the web UI's simulator view renders."""
-    return [device.to_dict() for device in ble()]
+    """The floor as data: what the web UI's simulator view renders.
+
+    Each row is the device plus what it can answer: ``roles`` is the set of batteries this
+    device satisfies (see :data:`LINK_ROLES`), and ``attacks`` are the registered attacks
+    that need one of them — the Bluetooth equivalent of the IT device shelf's per-device
+    attack list, so a run can be aimed instead of guessed.
+    """
+    airspace = ble()
+    rows: List[Dict[str, Any]] = []
+    for device in airspace.devices:
+        row = device.to_dict()
+        roles = airspace.roles_of(device)
+        row["roles"] = roles
+        row["attacks"] = sorted(name for name, role in ATTACK_ROLES.items() if role in roles)
+        rows.append(row)
+    return rows
 
 
 # --------------------------------------------------------------------------- #
@@ -1826,8 +1840,9 @@ def reset_ble(seed: int = 7) -> VirtualBle:
 #: BlueSnarfing, a fragile stack for BlueBorne — instead of the first address it sees.
 ATTACK_ROLES: Dict[str, str] = {
     "bt_le_scan": "le", "bt_hci_inquiry": "bredr", "bt_device_census": "le",
-    "bt_sdp_browse": "sdp", "bt_rfcomm_discovery": "rfcomm", "bt_gatt_enumeration": "gatt",
-    "bt_advertising_flood": "le", "bt_beacon_clone": "beacon", "bt_tracker_clone": "tracker",
+    "bt_sdp_browse": "sdp", "bt_rfcomm_scan": "rfcomm", "bt_gatt_enumeration": "gatt",
+    "bt_adv_name_flood": "le", "bt_adv_dos": "le", "bt_beacon_clone": "beacon",
+    "bt_tracker_clone": "tracker",
     "bt_connectable_lure": "le", "bt_pairing_flood": "smp", "bt_l2cap_echo_flood": "l2cap",
     "bt_blueborne": "fragile", "bt_bias": "bredr", "bt_knob": "bredr",
     "bt_bluebugging": "at", "bt_blesa": "gatt", "bt_sweyntooth": "fragile",

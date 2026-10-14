@@ -455,9 +455,22 @@ def test_famous_live_attacks_run_in_demo(config, session):
 
 
 def test_demo_runs_do_not_claim_a_radio(config, session):
-    """The batteries are marked as simulated, and the counts are the PDUs, not claims."""
+    """A simulated run says so, and the counts are the PDUs that were answered.
+
+    The Bluetooth batteries drive the simulated floor now, so an answer is either the
+    peer's own protocol bytes or nothing at all — never a claim that a radio did
+    something.  What the report has to keep honest is the arithmetic: every probe is in
+    the transcript, and the number answered is the number with a body.
+    """
     outcome = _attack("bt_blueborne", config, session)
     assert outcome.extra["simulated"] is True
-    assert outcome.extra["answered"] == len(outcome.extra["probes"])
-    assert all(entry["events"] == ["simulated"]
-               for entry in outcome.extra["transcript"])
+    transcript = outcome.extra["transcript"]
+    answered = [entry for entry in transcript if entry.get("answer")]
+    assert len(answered) == outcome.extra["answered"] >= 1
+    assert len(outcome.extra["unanswered"]) == len(transcript) - len(answered)
+    assert set(outcome.extra["probes"]) == {entry["probe"] for entry in transcript}
+    # the device that answered is a device on the floor, and the verdict reads it
+    assert outcome.extra["target"] and outcome.extra["alive_after"] is not None
+    assert outcome.extra["exposed"] is (outcome.extra["alive_after"] is False
+                                        or bool(outcome.extra["unanswered"]
+                                                and answered))
