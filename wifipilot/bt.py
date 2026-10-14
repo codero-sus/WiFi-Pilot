@@ -36,6 +36,7 @@ be followed from a recording".
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import struct
 import time
@@ -57,6 +58,22 @@ __all__ = [
     "iter_le_frames", "parse_le_wrapper", "find_adv_pdu", "mac_bytes", "mac_text", "company_name",
     "service_name", "appearance_name", "eir_kind_name", "major_class_name",
     "sdp_service_search_attribute", "parse_sdp", "PRINTER", "AUDIO", "HID", "WEARABLE",
+    # the profiles above the link: LMP features, RFCOMM, OBEX and HID reports
+    "HCI_LINK_CONTROL", "link_control", "disconnect_command", "authentication_requested",
+    "set_connection_encryption", "change_connection_link_key", "read_remote_features_command",
+    "link_key_request_reply", "link_key_request_negative_reply",
+    "io_capability_request_reply", "user_confirmation_request_reply",
+    "user_passkey_request_reply", "parse_features_event", "explain_bredr_features",
+    "BREDR_FEATURES",
+    "RFCOMM_PSM", "rfcomm_dlci", "rfcomm_address", "rfcomm_length_field", "rfcomm_frame",
+    "parse_rfcomm", "rfcomm_socket", "crc8_lapb",
+    "obex_packet", "obex_header", "obex_name_header", "obex_connect", "obex_get",
+    "obex_setpath", "obex_disconnect", "obex_response", "parse_obex_packet",
+    "OBEX_REQUESTS", "OBEX_RESPONSES", "OBEX_HEADERS",
+    "HID_SERVICE_UUID", "HID_CHARACTERISTICS", "HID_KEYBOARD_REPORT_MAP", "HID_KEYS",
+    "HID_MODIFIERS", "HID_SHIFTED", "hid_key", "hid_boot_report", "hid_key_reports",
+    "hid_gatt_table", "hid_input_report",
+    "SERVICE_GROUPS", "service_group",
 ]
 
 # --------------------------------------------------------------------------- #
@@ -296,6 +313,24 @@ def major_class_name(class_of_device: int) -> str:
 
 def company_name(identifier: int) -> str:
     return COMPANY_IDS.get(identifier, f"company 0x{identifier:04x}")
+
+
+#: service groups the survey buckets devices into: a printer, an audio device, an input
+#: device and something wearable say different things about a site, and the census the
+#: Bluetooth wave prints is grouped by exactly these lists.
+PRINTER = (0x1109, 0x1116, 0x1122, 0x1123)
+AUDIO = (0x1108, 0x110A, 0x110B, 0x110C, 0x110E, 0x1112, 0x111E, 0x112F)
+HID = (0x1124, 0x1812)
+WEARABLE = (0x180D, 0x180F, 0x1816, 0x1818, 0x1826)
+SERVICE_GROUPS = {"printer": PRINTER, "audio": AUDIO, "hid": HID, "wearable": WEARABLE}
+
+
+def service_group(uuid: int) -> str:
+    """Which group a service UUID belongs to, or ``""`` when it belongs to none."""
+    for name, members in SERVICE_GROUPS.items():
+        if uuid in members:
+            return name
+    return ""
 
 
 def service_name(uuid: int) -> str:
@@ -651,7 +686,10 @@ def le_set_advertising_parameters(interval_min_ms: float = 100.0, interval_max_m
     """LE Set Advertising Parameters: interval (0.625 ms units), type, channels."""
     interval_min = max(0x20, min(0x4000, int(interval_min_ms / 0.625)))
     interval_max = max(interval_min, min(0x4000, int(interval_max_ms / 0.625)))
-    own = mac_bytes("00:00:00:00:00:00") if own_address_type else mac_bytes(peer_address or "")
+    # the peer address is only meaningful for the directed advertising types, and the
+    # command carries it in one field either way: a public own-address means the field is
+    # the peer's, and the placeholder below is what the specification wants when there is
+    # no peer (the kernel and the controller ignore it for undirected advertising)
     parameters = (struct.pack("<HH", interval_min, interval_max)
                   + bytes([adv_type, own_address_type, 0x00])       # own address type 0 = public
                   + mac_bytes(peer_address or "00:00:00:00:00:00")
@@ -1630,3 +1668,591 @@ def merge_observations(devices: Dict[str, BluetoothDevice],
             device.tracker = tracker
     device.raw.append(packet)
     return device
+
+
+# --------------------------------------------------------------------------- #
+# the profiles above the link: LMP features, RFCOMM, OBEX and HID
+# --------------------------------------------------------------------------- #
+#
+# Everything above is the radio and the link.  The classic attacks in the "famous" wave
+# live one storey up: they need the *link control* commands that negotiate keys (BIAS,
+# KNOB), the serial profile that carries AT commands and file transfer (BlueBugging,
+# BlueSnarfing), the OBEX dialect that runs over it, and the HID reports that are a
+# keyboard's entire output.  This section is that storey, in the same style: real
+# protocol bytes, built in-process, parseable by the in-process parser, so a capture and
+# an attack describe the same frame.
+
+#: Link Control (OGF 1) commands, by name.  The opcode is ``(ogf << 10) | ocf``, which
+#: is how the HCI specification addresses a command — the same arithmetic
+#: :func:`hci_packet` does from :data:`HCI_COMMANDS`.  These are the ones the link-layer
+#: attacks need: feature reads for KNOB, the key/IO-capability replies that impersonation
+#: (BIAS) and key negotiation replay depend on, and the control of an existing handle.
+HCI_LINK_CONTROL: Dict[str, Tuple[int, int]] = {
+    "Create Connection": (1, 0x05),
+    "Disconnect": (1, 0x06),
+    "Read Remote Supported Features": (1, 0x03),
+    "Read Remote Extended Features": (1, 0x1C),
+    "Remote Name Request": (1, 0x19),
+    "Authentication Requested": (1, 0x11),
+    "Set Connection Encryption": (1, 0x13),
+    "Change Connection Link Key": (1, 0x15),
+    "Link Key Request Reply": (1, 0x0B),
+    "Link Key Request Negative Reply": (1, 0x0C),
+    "PIN Code Request Reply": (1, 0x0D),
+    "IO Capability Request Reply": (1, 0x2B),
+    "User Confirmation Request Reply": (1, 0x2C),
+    "User Passkey Request Reply": (1, 0x2E),
+    "IO Capability Request Negative Reply": (1, 0x34),
+}
+
+HCI_COMMANDS.update(HCI_LINK_CONTROL)
+
+#: HCI events that carry a peer's feature pages back
+HCI_EVENT_READ_REMOTE_SUPPORTED_FEATURES = 0x0B
+HCI_EVENT_READ_REMOTE_EXTENDED_FEATURES = 0x23
+
+#: BR/EDR feature bits, page by page, from the Baseband specification (Vol 2, Part B,
+#: section 8.2 in the current revision).  Page 2's bit 2 — "Secure Connections
+#: (Controller)" — is the one BIAS and KNOB are about: a peer that advertises it can be
+#: negotiated down to a one-byte key, and a peer that does not requires the legacy
+#: pairing path, which is what BIAS impersonates.
+BREDR_FEATURES: Dict[int, Dict[int, str]] = {
+    0: {
+        0: "3-slot packets", 1: "5-slot packets", 2: "encryption", 3: "slot offset",
+        4: "timing accuracy", 5: "switch (central/peripheral)", 6: "hold mode",
+        7: "sniff mode", 8: "park mode", 9: "RSSI", 10: "channel quality driven data rate",
+        11: "SCO link", 12: "HV2 packets", 13: "HV3 packets", 14: "u-law log",
+        15: "A-law log", 16: "CVSD", 17: "paging", 18: "power control",
+        19: "transparent SCO", 20: "flow control lag (LSB)", 21: "flow control lag (bit 1)",
+        22: "flow control lag (MSB)", 23: "broadcast encryption", 24: "EDR ACL 2 Mbps",
+        25: "EDR ACL 3 Mbps", 26: "enhanced inquiry scan", 27: "interlaced inquiry scan",
+        28: "interlaced page scan", 29: "RSSI with inquiry results", 30: "EV3 packets",
+        31: "EV4 packets",
+    },
+    1: {
+        0: "EV5 packets", 1: "AFH capable peripheral", 2: "AFH capable central",
+        3: "AFH classification peripheral", 4: "AFH classification central",
+        5: "ESC0 (extended features)", 6: "anonymous mode", 7: "EDR eSCO 2 Mbps",
+        8: "EDR eSCO 3 Mbps", 9: "3-slot EDR ACL", 10: "5-slot EDR ACL",
+        11: "sniff subrating", 12: "pause encryption", 13: "AFH capable central (page 1)",
+        14: "secure simple pairing", 15: "encapsulated PDU", 16: "erroneous data reporting",
+        17: "non-flushable packet boundary flag", 18: "link supervision timeout event",
+        19: "inquiry TX power level", 20: "enhanced power control",
+        21: "extended features (page 2)", 22: "2 Mbps eSCO", 23: "3 Mbps eSCO",
+    },
+    2: {
+        0: "connectionless peripheral broadcast",
+        1: "connectionless central broadcast",
+        2: "secure connections (controller)",
+        3: "ping", 4: "slot availability mask", 5: "train nudging",
+        6: "LE supported (controller)", 7: "simultaneous LE and BR/EDR",
+    },
+}
+
+
+def link_control(name: str, parameters: bytes = b"") -> bytes:
+    """``link_control("Read Remote Extended Features", ...)`` -> an H4 command packet."""
+    return hci_packet(name, parameters)
+
+
+def disconnect_command(handle: int, reason: int = 0x13) -> bytes:
+    """Disconnect a handle with a reason code (0x13 remote user terminated)."""
+    return link_control("Disconnect", struct.pack("<HB", handle & 0xFFFF, reason & 0xFF))
+
+
+def authentication_requested(handle: int) -> bytes:
+    """Ask the controller to authenticate an existing connection: BIAS talks here."""
+    return link_control("Authentication Requested", struct.pack("<H", handle & 0xFFFF))
+
+
+def set_connection_encryption(handle: int, enable: bool = True) -> bytes:
+    """Turn link encryption on — after which the peer's key is whatever was negotiated."""
+    return link_control("Set Connection Encryption",
+                        struct.pack("<HB", handle & 0xFFFF, 1 if enable else 0))
+
+
+def change_connection_link_key(handle: int) -> bytes:
+    """Force a fresh link key: the manoeuvre a key-reinstallation replay answers."""
+    return link_control("Change Connection Link Key", struct.pack("<H", handle & 0xFFFF))
+
+
+def read_remote_features_command(handle: int, page: int = 0) -> bytes:
+    """Read the peer's feature page: page 0 is the baseband set, 2 holds Secure Connections."""
+    if page <= 0:
+        return link_control("Read Remote Supported Features", struct.pack("<H", handle & 0xFFFF))
+    return link_control("Read Remote Extended Features",
+                        struct.pack("<HB", handle & 0xFFFF, page & 0xFF))
+
+
+def link_key_request_reply(address: str, link_key: bytes) -> bytes:
+    """Answer a link-key request with the key the impersonated device would have used."""
+    return link_control("Link Key Request Reply",
+                        mac_bytes(address) + bytes(link_key)[:16].ljust(16, b"\x00"))
+
+
+def link_key_request_negative_reply(address: str) -> bytes:
+    """Refuse the stored key, forcing the controller into a fresh pairing exchange."""
+    return link_control("Link Key Request Negative Reply", mac_bytes(address))
+
+
+def io_capability_request_reply(address: str, capability: int = 0x03,
+                                authentication_requirements: int = 0x04) -> bytes:
+    """Answer an IO-capability request: capability 3 is *no input, no output* (Just Works)."""
+    return link_control("IO Capability Request Reply",
+                        mac_bytes(address) + bytes([capability & 0xFF, 0x00,
+                                                    authentication_requirements & 0xFF]))
+
+
+def user_confirmation_request_reply(address: str) -> bytes:
+    """Confirm a numeric comparison without a human: the Just Works path, spoken directly."""
+    return link_control("User Confirmation Request Reply", mac_bytes(address))
+
+
+def user_passkey_request_reply(address: str, passkey: int = 0) -> bytes:
+    """Answer a passkey request with a chosen key (0..999999)."""
+    return link_control("User Passkey Request Reply",
+                        mac_bytes(address) + struct.pack("<I", passkey % 1000000))
+
+
+def parse_features_event(packet: bytes) -> Dict[str, Any]:
+    """Parse a *Read Remote [Extended] Features Complete* event into named bits.
+
+    The event carries the connection handle, the status, an optional page number and the
+    eight feature bytes.  Page 0 arrives on its own event; pages 1 and 2 arrive on the
+    extended-features event.  Everything is decoded through :data:`BREDR_FEATURES`, so the
+    report says "secure connections (controller): not supported" instead of a hex blob.
+    """
+    out: Dict[str, Any] = {"event": 0, "status": -1, "handle": 0, "page": 0,
+                           "features": b"", "names": {}}
+    data = packet
+    if data[:1] == b"\x04":                                     # H4 event packet: strip the
+        data = data[3:]                                         # type, event and length
+    if len(data) < 3:
+        return out
+    event = packet[1] if packet[:1] == b"\x04" else 0x00
+    out["event"] = event
+    if event == HCI_EVENT_READ_REMOTE_EXTENDED_FEATURES:
+        if len(data) < 4:
+            return out
+        out["status"], out["handle"] = data[0], struct.unpack("<H", data[1:3])[0]
+        out["page"] = data[3]
+        out["features"] = bytes(data[4:12])
+    elif event == HCI_EVENT_READ_REMOTE_SUPPORTED_FEATURES:
+        out["status"], out["handle"] = data[0], struct.unpack("<H", data[1:3])[0]
+        out["features"] = bytes(data[3:11])
+    out["names"] = explain_bredr_features(out["features"], out["page"])
+    return out
+
+
+def explain_bredr_features(features: bytes, page: int = 0) -> Dict[str, bool]:
+    """Turn eight feature bytes into ``{name: supported}`` for the given page."""
+    table = BREDR_FEATURES.get(page, {})
+    bits = int.from_bytes(bytes(features)[:8].ljust(8, b"\x00"), "little")
+    return {name: bool(bits >> bit & 1) for bit, name in sorted(table.items())}
+
+
+# --------------------------------------------------------------------------- #
+# RFCOMM (TS 07.10): the serial profile that carries AT commands and OBEX
+# --------------------------------------------------------------------------- #
+
+#: RFCOMM's fixed PSM; the *channel* inside it comes from the peer's SDP record
+RFCOMM_PSM = 0x0003
+#: DLCI 0 is the multiplexer's control channel; a user channel is ``channel << 1 | dir``
+RFCOMM_CONTROL_DLCI = 0
+
+#: control-field octets for the frames this module builds.  ``0xEF`` is UIH (unnumbered
+#: information with header), which is what every RFCOMM payload uses today.
+RFCOMM_UIH = 0xEF
+RFCOMM_UIH_PF = 0xFF
+RFCOMM_SABM = 0x2F
+RFCOMM_UA = 0x63
+RFCOMM_DISC = 0x43
+RFCOMM_DM = 0x0F
+
+
+def rfcomm_dlci(channel: int, direction: int = 0) -> int:
+    """The DLCI for a user channel: ``channel * 2 + direction`` (0 = initiator)."""
+    return (int(channel) & 0x1F) * 2 + (1 if direction else 0)
+
+
+def rfcomm_address(dlci: int, command: bool = True) -> int:
+    """Address octet: EA (this is the last address octet), C/R, then the six DLCI bits."""
+    return 0x01 | (0x02 if command else 0x00) | ((dlci & 0x3F) << 2)
+
+
+def rfcomm_length_field(length: int) -> bytes:
+    """One or two length octets: bit 0 is EA, the value is shifted left by one."""
+    if length < 128:
+        return bytes([(length << 1) | 0x01])
+    return bytes([((length & 0x7F) << 1), ((length >> 7) & 0xFF)])
+
+
+def crc8_lapb(data: bytes, initial: int = 0xFF) -> int:
+    """CRC-8 as LAPB/RFCOMM define it: polynomial x^8 + x^2 + x + 1, LSB first.
+
+    The same polynomial the FCS of every RFCOMM frame is computed with, which is why it
+    lives here rather than inside the frame builder.
+    """
+    crc = initial & 0xFF
+    for byte in data:
+        crc ^= byte & 0xFF
+        for _ in range(8):
+            crc = ((crc >> 1) ^ 0x8C) if crc & 1 else (crc >> 1)
+    return crc & 0xFF
+
+
+def rfcomm_frame(dlci: int, payload: bytes = b"", control: int = RFCOMM_UIH,
+                 command: bool = True, fcs: bool = True) -> bytes:
+    """A complete RFCOMM frame: address, control, length, payload and the LAPB FCS."""
+    header = bytes([rfcomm_address(dlci, command), control & 0xFF]) \
+        + rfcomm_length_field(len(payload))
+    body = header + bytes(payload)
+    if not fcs:
+        return body
+    return body + bytes([crc8_lapb(body)])
+
+
+def parse_rfcomm(frame: bytes) -> Dict[str, Any]:
+    """Read an RFCOMM frame back: DLCI, control, payload and whether the FCS checked."""
+    out: Dict[str, Any] = {"dlci": -1, "channel": -1, "control": 0, "payload": b"",
+                           "fcs_ok": None, "command": False}
+    if len(frame) < 4:
+        return out
+    address, control = frame[0], frame[1]
+    if not address & 0x01:
+        return out
+    out["dlci"] = (address >> 2) & 0x3F
+    out["channel"] = out["dlci"] >> 1
+    out["command"] = bool(address & 0x02)
+    out["control"] = control
+    first = frame[2]
+    if first & 0x01:
+        length = first >> 1
+        offset = 3
+    elif len(frame) >= 4:
+        length = (first >> 1) | (frame[3] << 7)
+        offset = 4
+    else:
+        return out
+    out["payload"] = bytes(frame[offset:offset + length])
+    tail = frame[offset + length:]
+    if tail:
+        out["fcs_ok"] = crc8_lapb(frame[:offset + length]) == tail[0]
+    return out
+
+
+def rfcomm_socket(address: str, channel: int, timeout: float = 5.0) -> Any:
+    """Connect an RFCOMM channel through the kernel, or return ``None``.
+
+    This is the real path for the serial profiles: ``AF_BLUETOOTH``/``BTPROTO_RFCOMM``
+    makes the kernel and the controller do the framing, the credit-based flow control and
+    the retransmissions, so an AT command or an OBEX request goes out exactly as a phone
+    would send it.  It needs a controller with the peer bonded (or a peer that lets the
+    channel open without one), which is what :func:`socket.error` says when it refuses.
+    """
+    import socket as socket_module
+
+    family = getattr(socket_module, "AF_BLUETOOTH", None)
+    protocol = getattr(socket_module, "BTPROTO_RFCOMM", None)
+    if family is None or protocol is None:
+        return None
+    try:
+        sock = socket_module.socket(family, socket_module.SOCK_STREAM, protocol)
+    except (OSError, AttributeError):
+        return None
+    try:
+        sock.settimeout(timeout)
+        sock.connect((address, int(channel) & 0x1F))
+    except OSError:
+        with contextlib.suppress(OSError):
+            sock.close()
+        return None
+    return sock
+
+
+# --------------------------------------------------------------------------- #
+# OBEX (IrOBEX 1.2): object exchange, which is how a phone gives its files away
+# --------------------------------------------------------------------------- #
+
+OBEX_CONNECT = 0x80
+OBEX_DISCONNECT = 0x81
+OBEX_PUT = 0x02
+OBEX_PUT_FINAL = 0x82
+OBEX_GET = 0x03
+OBEX_GET_FINAL = 0x83
+OBEX_SETPATH = 0x85
+OBEX_ABORT = 0xFF
+
+#: response codes, with the final bit already set (0x80 | code)
+OBEX_RESPONSES = {
+    0x90: "continue", 0xA0: "OK", 0xA1: "created", 0xA2: "accepted",
+    0xC0: "bad request", 0xC1: "unauthorized", 0xC3: "forbidden", 0xC4: "not found",
+    0xC5: "not acceptable", 0xC6: "conflict", 0xCB: "not implemented",
+    0xD0: "internal server error", 0xD3: "service unavailable",
+}
+
+#: request opcodes, so a parser can tell a CONNECT from a response 0x80
+OBEX_REQUESTS = {
+    OBEX_CONNECT: "CONNECT", OBEX_DISCONNECT: "DISCONNECT", OBEX_PUT: "PUT",
+    OBEX_PUT_FINAL: "PUT (final)", OBEX_GET: "GET", OBEX_GET_FINAL: "GET (final)",
+    OBEX_SETPATH: "SETPATH", OBEX_ABORT: "ABORT",
+}
+
+#: header identifiers this module writes, and what the wire calls them
+OBEX_HEADERS = {
+    0x01: "Name (UTF-16)", 0x05: "Name", 0x42: "Type", 0x44: "Time",
+    0x48: "Body", 0x49: "End of Body", 0xC3: "Length", 0xC4: "Connection ID",
+}
+
+
+def obex_header(identifier: int, value: bytes, length: Optional[int] = None) -> bytes:
+    """One OBEX header: identifier, a big-endian length, then the value.
+
+    The length counts the identifier and the length bytes as well as the value, so a
+    14-byte file name is declared as 17 — which is exactly what a phone's OBEX stack
+    writes, and what its parser expects to read back.
+    """
+    payload = bytes(value)[:0xFFFC]
+    size = (length if length is not None else len(payload) + 3) & 0xFFFF
+    return bytes([identifier & 0xFF]) + struct.pack(">H", size) + payload
+
+
+def obex_name_header(name: str, utf16: bool = False) -> bytes:
+    """A Name header, either UTF-16 (what phones expect) or raw bytes."""
+    if utf16:
+        return obex_header(0x01, name.encode("utf-16-be"))
+    return obex_header(0x05, name.encode("utf-8", "replace"))
+
+
+def obex_packet(opcode: int, headers: Sequence[bytes] = (), body: bytes = b"",
+                max_size: int = 0xFFFF) -> bytes:
+    """An OBEX packet: opcode, total length (big endian), then the headers and any body."""
+    inner = b"".join(bytes(header) for header in headers)
+    if body:
+        inner += obex_header(0x48, bytes(body))
+    length = 3 + len(inner)
+    if length > max_size:                                       # the receiver's ceiling
+        keep = max(0, max_size - 3 - 3)
+        inner = inner[:keep]
+        length = 3 + len(inner)
+    return bytes([opcode & 0xFF]) + struct.pack(">H", length) + inner
+
+
+def obex_connect(max_packet_size: int = 0xFFFF) -> bytes:
+    """CONNECT: version 1.0, no flags, and the largest packet we will accept."""
+    size = max(255, min(0xFFFF, int(max_packet_size)))
+    return bytes([OBEX_CONNECT]) + struct.pack(">H", 7) + bytes([0x10, 0x00]) \
+        + struct.pack(">H", size)
+
+
+def obex_get(name: str, type_: str = "", utf16: bool = False) -> bytes:
+    """GET with a Name header — how an OBEX file transfer asks for one object."""
+    headers = [obex_name_header(name, utf16=utf16)]
+    if type_:
+        headers.append(obex_header(0x42, type_.encode("ascii", "replace")))
+    return obex_packet(OBEX_GET, headers)
+
+
+def obex_setpath(name: str = "", up: bool = False) -> bytes:
+    """SETPATH: walk the object store — one level up, one named folder, or the root."""
+    flags = 0x03 if up else (0x02 if name else 0x01)
+    headers = [obex_name_header(name, utf16=False)] if name else []
+    return obex_packet(OBEX_SETPATH, [bytes([0x00, flags])] + headers)
+
+
+def obex_disconnect() -> bytes:
+    """DISCONNECT: end the session politely, which is what a file transfer does last."""
+    return obex_packet(OBEX_DISCONNECT)
+
+
+def obex_response(code: int) -> str:
+    """The name of an OBEX response code, or its hex form when it is not one we know."""
+    return OBEX_RESPONSES.get(code & 0xFF, f"0x{code & 0xFF:02x}")
+
+
+def parse_obex_packet(data: bytes) -> Dict[str, Any]:
+    """Parse an OBEX request or response: opcode, final bit, headers and the body.
+
+    Headers are returned in wire order with their identifier, decoded name and raw value.
+    ``body`` accumulates every Body/End-of-Body header, so a multi-packet transfer is one
+    call away from the vCard the phone just handed over.
+    """
+    out: Dict[str, Any] = {"opcode": 0, "final": False, "length": 0, "headers": [],
+                           "body": b"", "name": "", "response": "", "request": "",
+                           "setpath_flags": -1}
+    if len(data) < 3:
+        return out
+    opcode = data[0]
+    length = struct.unpack(">H", data[1:3])[0]
+    out["opcode"] = opcode
+    out["final"] = bool(opcode & 0x80)
+    out["length"] = length
+    if opcode in OBEX_REQUESTS:
+        out["request"] = OBEX_REQUESTS[opcode]
+    elif opcode in OBEX_RESPONSES:
+        out["response"] = obex_response(opcode)
+    offset = 3
+    end = min(len(data), length if 3 <= length <= len(data) else len(data))
+    # only the CONNECT request and its *success reply* carry the fixed version block:
+    # the reply is exactly seven bytes, so a 0xA0 that answers a GET is all headers
+    if end >= 7 and (opcode == OBEX_CONNECT or (opcode == 0xA0 and length == 7)):
+        out["version"] = data[3]
+        out["max_packet_size"] = struct.unpack(">H", data[5:7])[0]
+        offset = 7
+    if opcode == OBEX_SETPATH and end >= 5:                     # the flags block has no ID
+        out["setpath_flags"] = data[3]
+        offset = 5
+    while offset + 2 < end:
+        identifier = data[offset]
+        size = int.from_bytes(data[offset + 1:offset + 3], "big")
+        if size < 3 or offset + size > end:
+            break
+        value = data[offset + 3:offset + size]      # past the identifier and its length
+        entry = {"id": identifier, "name": OBEX_HEADERS.get(identifier, f"0x{identifier:02x}"),
+                 "value": value}
+        if identifier == 0x01:
+            entry["text"] = value.decode("utf-16-be", "replace")
+            out["name"] = entry["text"]
+        elif identifier in (0x05, 0x42, 0x44):
+            entry["text"] = value.decode("utf-8", "replace")
+            if identifier == 0x05:
+                out["name"] = entry["text"]
+        elif identifier in (0x48, 0x49):
+            out["body"] += value
+        elif identifier == 0xC3 and len(value) == 4:
+            entry["number"] = int.from_bytes(value, "big")
+        out["headers"].append(entry)
+        offset += size
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# HID: a keyboard is an output device, and its output is keystrokes
+# --------------------------------------------------------------------------- #
+
+HID_SERVICE_UUID = 0x1812
+
+#: the HID over GATT characteristics that matter to an injected keystroke
+HID_CHARACTERISTICS = {
+    0x2A4A: "HID Information", 0x2A4B: "Report Map", 0x2A4C: "HID Control Point",
+    0x2A4D: "Report", 0x2A4E: "Protocol Mode", 0x2A22: "Boot Keyboard Input Report",
+    0x2A32: "Boot Keyboard Output Report",
+}
+
+#: the canonical boot-protocol keyboard report descriptor: eight modifier bits, one
+#: reserved byte, and six rollover keycodes.  A host that sees this descriptor believes
+#: it is talking to a keyboard — which is the entire attack.
+HID_KEYBOARD_REPORT_MAP = bytes([
+    0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7,
+    0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0x95, 0x01,
+    0x75, 0x08, 0x81, 0x01, 0x95, 0x05, 0x75, 0x01, 0x05, 0x08, 0x19, 0x01,
+    0x29, 0x05, 0x91, 0x02, 0x95, 0x01, 0x75, 0x03, 0x91, 0x01, 0x95, 0x06,
+    0x75, 0x08, 0x15, 0x00, 0x25, 0x65, 0x05, 0x07, 0x19, 0x00, 0x29, 0x65,
+    0x81, 0x00, 0xC0,
+])
+
+#: modifier bits, in the order the descriptor declares them
+HID_MODIFIERS = {"left ctrl": 0x01, "left shift": 0x02, "left alt": 0x04,
+                 "left gui": 0x08, "right ctrl": 0x10, "right shift": 0x20,
+                 "right alt": 0x40, "right gui": 0x80}
+
+#: usage IDs for the keys an operator actually types.  The full set is 65 keys per the
+#: descriptor; this is the subset a keystroke-injection run needs, named the way a
+#: keyboard names them.
+HID_KEYS: Dict[str, int] = {
+    "none": 0x00, "rollover": 0x01, "enter": 0x28, "escape": 0x29, "backspace": 0x2A,
+    "tab": 0x2B, "space": 0x2C, "minus": 0x2D, "equals": 0x2E, "left bracket": 0x2F,
+    "right bracket": 0x30, "backslash": 0x31, "semicolon": 0x33, "quote": 0x34,
+    "grave": 0x35, "comma": 0x36, "period": 0x37, "slash": 0x38, "caps lock": 0x39,
+    "f1": 0x3A, "f2": 0x3B, "f3": 0x3C, "f4": 0x3D, "f5": 0x3E, "f6": 0x3F,
+    "f7": 0x40, "f8": 0x41, "f9": 0x42, "f10": 0x43, "f11": 0x44, "f12": 0x45,
+    "print screen": 0x46, "scroll lock": 0x47, "pause": 0x48, "insert": 0x49,
+    "home": 0x4A, "page up": 0x4B, "delete": 0x4C, "end": 0x4D, "page down": 0x4E,
+    "right arrow": 0x4F, "left arrow": 0x50, "down arrow": 0x51, "up arrow": 0x52,
+    "num lock": 0x53, "menu": 0x65,
+}
+HID_KEYS.update({letter: 0x04 + index for index, letter in enumerate("abcdefghijklmnopqrstuvwxyz")})
+HID_KEYS.update({digit: 0x1E + index for index, digit in enumerate("1234567890")})
+
+#: characters that need a shift, mapped to the unshifted key that carries them
+HID_SHIFTED = {"!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6", "&": "7",
+               "*": "8", "(": "9", ")": "0", "_": "minus", "+": "equals", "{": "left bracket",
+               "}": "right bracket", "|": "backslash", ":": "semicolon", "\"": "quote",
+               "~": "grave", "<": "comma", ">": "period", "?": "slash"}
+
+
+def hid_key(name: str) -> int:
+    """The usage ID for a named key, or 0x00 when the name is not one we know."""
+    return HID_KEYS.get(name.lower().strip(), 0x00)
+
+
+def hid_boot_report(modifiers: int = 0, keys: Sequence[int] = ()) -> bytes:
+    """An eight-byte boot keyboard report: modifiers, reserved, six pressed keys."""
+    codes = [int(key) & 0xFF for key in keys][:6]
+    codes += [0x00] * (6 - len(codes))
+    return bytes([modifiers & 0xFF, 0x00] + codes)
+
+
+def hid_key_reports(text: str) -> List[bytes]:
+    """Turn a string into the press/release report pairs a keyboard would send.
+
+    Each character becomes two reports — the key down, then all keys up — which is how a
+    host sees a typing human rather than a one-off report that never releases.
+    """
+    reports: List[bytes] = []
+    for character in text:
+        modifiers = 0
+        name = character
+        if character.isupper() or character in HID_SHIFTED:
+            modifiers |= HID_MODIFIERS["left shift"]
+            name = HID_SHIFTED.get(character, character.lower())
+        code = hid_key(name)
+        if not code:
+            continue
+        reports.append(hid_boot_report(modifiers, [code]))
+        reports.append(hid_boot_report(0, []))
+    return reports
+
+
+def hid_gatt_table(start_handle: int = 0x0001) -> List[Dict[str, Any]]:
+    """The attribute table a HID peripheral serves: services, characteristics, reports.
+
+    The handle numbers are the ones a real HID-over-GATT keyboard uses, so a peer that
+    enumerates this table over ATT sees a keyboard and subscribes to the input report it
+    finds — which is the handle :func:`hid_input_report` addresses.
+    """
+    handle = start_handle
+    rows: List[Dict[str, Any]] = []
+
+    def add(kind: str, uuid: int, **extra: Any) -> int:
+        nonlocal handle
+        row = {"handle": handle, "kind": kind, "uuid": f"0x{uuid:04X}",
+               "name": HID_CHARACTERISTICS.get(uuid, SERVICE_UUIDS.get(uuid, "")),
+               "uuid_value": uuid}
+        row.update(extra)
+        rows.append(row)
+        handle += 1
+        return row["handle"]
+
+    add("service", HID_SERVICE_UUID)
+    add("characteristic", 0x2A4A, properties="read", value=bytes([0x01, 0x11, 0x00, 0x02]))
+    add("characteristic", 0x2A4B, properties="read", value=HID_KEYBOARD_REPORT_MAP)
+    add("characteristic", 0x2A4C, properties="write without response", value=b"\x00")
+    add("characteristic", 0x2A4D, properties="read,notify", report_id=1, report_type=1,
+        value=b"\x00" * 8)
+    add("characteristic", 0x2A4E, properties="read,write without response", value=b"\x01")
+    add("characteristic", 0x2A22, properties="read,notify", boot=True, value=b"\x00" * 8)
+    add("characteristic", 0x2A32, properties="read,write,write without response", boot=True,
+        value=b"\x00" * 8)
+    return rows
+
+
+def hid_input_report(report: bytes, handle: int = 0x0025) -> bytes:
+    """An ATT Handle Value Notification carrying a keyboard report.
+
+    ``handle`` defaults to the report characteristic :func:`hid_gatt_table` declares for
+    the input report; the notification is what a subscribed host receives, and it is what
+    a keystroke is, at the ATT layer.
+    """
+    body = struct.pack("<H", handle) + bytes(report)
+    return l2cap_frame(0x0004, bytes([0x1B]) + body)          # ATT handle-value-notify

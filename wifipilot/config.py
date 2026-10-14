@@ -199,6 +199,16 @@ class Config:
     bt_target: str = ""
     #: how long a Bluetooth command may wait for its controller event
     bt_timeout: float = 2.0
+    #: the ACL handle the Bluetooth link-layer probes are aimed at.  A controller hands
+    #: one out in the Connection Complete event; naming it here lets an operator aim the
+    #: probes at a link that a tool has already opened (``bt_handle``).
+    bt_handle: int = 0
+    #: the line the HID-injection attack types once a host accepts the keyboard.  The
+    #: default proves the injection and changes nothing; an engagement sets its own.
+    hid_payload: str = "id"
+    #: the gateway's MAC on the assessed network, for the FragAttacks injection: the
+    #: packet claims to come from it.  Empty means "use the access point's own address".
+    gateway_mac: str = ""
     #: the interface the evil twin binds to; empty means "the monitor interface"
     twin_interface: str = ""
     #: ask the AP for the name of a hidden network with a directed probe (the
@@ -420,7 +430,21 @@ class Config:
             "bt_connectable_lure": max(self.bt_timeout * 4, 30.0),
             "bt_pairing_flood": max(self.bt_timeout * 2, 15.0),
             "bt_l2cap_echo_flood": max(self.bt_timeout * 2, 15.0),
+            # the famous wave: a probe battery needs an event round-trip per probe, and
+            # the serial-profile attacks need a socket to open and an OBEX session to run
+            "bt_blueborne": max(self.bt_timeout * 8, 30.0),
+            "bt_bias": max(self.bt_timeout * 6, 25.0),
+            "bt_knob": max(self.bt_timeout * 5, 20.0),
+            "bt_bluebugging": max(self.bt_timeout * 10, 45.0),
+            "bt_blesa": max(self.bt_timeout * 5, 25.0),
+            "bt_sweyntooth": max(self.bt_timeout * 8, 30.0),
+            "bt_bluesnarf": max(self.bt_timeout * 12, 60.0),
+            "bt_bluesmack": max(self.bt_timeout * 5, 25.0),
+            "bt_hid_injection": max(self.bt_timeout * 6, 25.0),
             # -- the network wave: every flood is capped by its own class as well ---
+            "krack_replay": max(self.scan_time, 30.0),
+            "fragattacks_inject": max(self.scan_time, 30.0),
+            "airgeddon_portal": max(self.scan_time * 3, 90.0),
             "dhcp_starvation": max(self.scan_time, 45.0),
             "dhcp_flood": max(self.scan_time, 30.0),
             "forged_dhcp_release": max(self.scan_time, 30.0),

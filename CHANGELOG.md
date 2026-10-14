@@ -4,6 +4,55 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## 248 attacks — the famous ones, by name
+
+* **12 further attacks, 248 in total.** Every name on the brief that was still missing,
+  and no name that was already there counted twice: DHCP starvation, the rogue DHCP
+  server, the DHCP flood, the UDP flood and the forged RELEASE/DECLINE were already in
+  the network wave (the forged-release attack has said *RELEASE / DECLINE* in its label
+  since it was written — a DECLINE is the same packet aimed at the pool), as were the
+  evil twin, SSID confusion, the deauthentication flood, beacon flooding and Karma.
+* **The Bluetooth classics, all nine of them (`attacks/btred.py`).** BlueBorne
+  (`bt_blueborne`: the malformed L2CAP configuration, information and SDP requests, with
+  a liveness check after each), BIAS (`bt_bias`: the peer that has a stored key and still
+  completes a legacy pairing), KNOB (`bt_knob`: the key size the controllers actually
+  negotiated, read out of the controller's own Encryption Change event), BlueBugging
+  (`bt_bluebugging`: AT commands over RFCOMM), BLESA (`bt_blesa`: ATT work sent before
+  authentication completes), SweynTooth (`bt_sweyntooth`: the malformed link-layer
+  battery with a ping after each PDU), BlueSnarfing (`bt_bluesnarf`: OBEX GET against the
+  phonebook objects), BlueSmack (`bt_bluesmack`: escalating L2CAP echoes up to the largest
+  PDU that fits one ACL packet) and HID injection (`bt_hid_injection`: advertise the HID
+  service, then type with eight-byte boot reports as ATT notifications).
+* **The three famous Wi-Fi attacks that were only detectors (`attacks/famous.py`).**
+  `krack_replay` finds message 3 of a captured four-way handshake and replays it in a QoS
+  data frame with the retry bit set — the reinstall KRACK is built on; `fragattacks_inject`
+  builds the aggregation flaw (plaintext A-MSDU with the present bit set, a gateway source
+  address and a real IP packet inside) and the fragment-cache pair (a plaintext first
+  fragment with More Fragments, then a non-contiguous sequence);
+  `airgeddon_portal` prepares the whole evil-twin captive-portal pipeline (hostapd,
+  dnsmasq blackhole, portal document root, handshake for the check) and either starts
+  airgeddon in a tmux session — it is menu-driven by design, and the report says so — or
+  serves wifipilot's own portal and says *that* is what ran.
+* **The protocol layer grew the profiles those attacks need (`bt.py`):** RFCOMM frame
+  building with the LAPB CRC-8, the OBEX packet and header codec (CONNECT/GET/SETPATH,
+  response codes, multi-packet body reassembly), HID over GATT (the boot-keyboard report
+  map, the usage-ID table, key strings to press/release report pairs, the attribute table
+  and the handle-value notification), the HCI link-control command set (authentication,
+  key replies, IO-capability and confirmation replies, feature pages) and the BR/EDR
+  feature tables, page 2 included, because that is where Secure Connections lives. The
+  four service groups (`PRINTER`, `AUDIO`, `HID`, `WEARABLE`) that `__all__` had promised
+  since the first wave finally exist, and `parse_features_event` decodes a feature
+  complete event into named bits.
+* **Config:** `bt_handle`, `hid_payload` and `gateway_mac`, plus per-attack budgets for
+  all twelve (30–60 s for the probe batteries, 90 s for the portal pipeline).
+* **Tests:** `tests/test_attacks_famous.py` — 24 tests over the OBEX, RFCOMM, HID and LMP
+  helpers, the KRACK and FragAttacks frame shapes (including the A-MSDU present bit, the
+  retry bit and the non-contiguous fragment numbers), the airgeddon workspace, the
+  batteries of all seven link-layer Bluetooth attacks, and a demo run of every
+  transmitting attack in the wave — which is how the wave caught its own two bugs: a
+  battery list built from tuples instead of labels, and a 65 KB echo that no ACL length
+  field can express.
+
 ## 236 attacks — the second radio, and the network behind the bridge
 
 * **55 further attacks, 236 in total.** Two waves, and both of them leave the 802.11
