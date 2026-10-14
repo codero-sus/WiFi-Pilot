@@ -85,6 +85,27 @@ def test_every_device_advertises_something_the_parsers_read():
     assert airspace.candidates("tracker") and airspace.candidates("beacon")
 
 
+def test_every_role_maps_to_a_registered_attack_and_a_device():
+    """A role that no device can answer is an attack a demo run can never exercise."""
+    from wifipilot.attacks import ATTACK_CLASSES
+
+    assert set(blesim.ATTACK_ROLES) <= set(ATTACK_CLASSES)
+    # the on-air attacks have to name a role, or a demo run aims them at nothing in
+    # particular: these are the ones that open a link and send protocol bytes
+    for name in ("bt_blueborne", "bt_bias", "bt_knob", "bt_bluebugging", "bt_blesa",
+                 "bt_sweyntooth", "bt_bluesnarf", "bt_bluesmack", "bt_hid_injection",
+                 "bt_rfcomm_scan", "bt_adv_dos", "bt_adv_name_flood"):
+        assert blesim.role_for(name) != "any", name
+    airspace = blesim.ble()
+    for role in blesim.LINK_ROLES:
+        assert airspace.candidates(role), role
+        assert blesim.role_for("", role) == role
+    # and the catalogue says which of them each device answers
+    row = blesim.ble_catalog()[0]
+    assert row["roles"] and set(row["roles"]) <= set(blesim.LINK_ROLES)
+    assert set(row["attacks"]) <= set(ATTACK_CLASSES)
+
+
 def test_the_beacons_and_trackers_are_recognised():
     airspace = blesim.ble()
     beacon = airspace.pick("beacon")

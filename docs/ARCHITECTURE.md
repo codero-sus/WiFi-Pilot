@@ -132,7 +132,9 @@ what a demo run meets is a device that answers.
   own ACL answers through the L2CAP signalling, ATT, SMP, SDP, RFCOMM, AT and OBEX engines.
   46 devices across 8 posture profiles (a KNOB-vulnerable headset, an open GATT band, a
   fragile stack, an OBEX object store, HID hosts) mean the same code path that reads a real
-  controller reads the simulation — `bt.hci_send`, `bt.iter_hci_events`, `bt.parse_acl_packet`
+  controller reads the simulation.  Each device answers a set of *roles* — what a battery
+  needs of it — and the catalogue publishes them beside the attacks they enable, so a run
+  is aimed at a device that can answer the question instead of at the first address heard — `bt.hci_send`, `bt.iter_hci_events`, `bt.parse_acl_packet`
   and `bt.parse_sdp` are the parsers in both cases. The same floor is written as a real
   `LINKTYPE_BLUETOOTH_LE_LL_WITH_PHDR` capture (`blesim.write_capture`), so the 14 offline
   Bluetooth audits read the devices the on-air attacks just spoke to.
