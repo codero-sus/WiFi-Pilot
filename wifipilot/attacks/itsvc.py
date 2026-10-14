@@ -89,7 +89,16 @@ def target_from(ctx: AttackContext, ap: Optional[AccessPoint],
     explicit = (getattr(config, "it_host", "") or getattr(config, "gateway_ip", "") or
                 getattr(config, "target_ip", "") or "")
     if explicit:
-        return ItTarget(ip=explicit, device=(devices[0] if devices else ""), ports=(port,))
+        target = ItTarget(ip=explicit, device=(devices[0] if devices else ""), ports=(port,))
+        if ctx.demo:
+            # an address the operator typed is still a host of the segment being drilled:
+            # name it the way the segment does, so the report does not guess the type
+            host = demo_lan().by_ip(explicit)
+            if host is not None:
+                target = ItTarget(ip=host.ip, hostname=host.hostname, vendor=host.vendor,
+                                  model=host.model, device=host.device, ports=host.ports,
+                                  profile=host.profile_name, host=host)
+        return target
     if ap is not None:
         address = getattr(ap, "ip", "") or ""
         if address:
