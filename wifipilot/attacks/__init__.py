@@ -254,12 +254,14 @@ DEFAULT_ORDER = [
 # register here by being listed once.  A wave is one import and one tuple entry, so
 # adding forty attacks does not mean editing forty places.
 from . import btattacks as _batch_btattacks                    # noqa: E402
+from . import btred as _batch_btred                            # noqa: E402
+from . import famous as _batch_famous                          # noqa: E402
 from . import netdos as _batch_netdos                          # noqa: E402
 from . import offline3 as _batch_offline3                      # noqa: E402
 from . import offline4 as _batch_offline4                      # noqa: E402
 
 BATCH_MODULES = (_batch_offline3, _batch_offline4, _batch_btattacks,
-                 _batch_netdos)
+                 _batch_netdos, _batch_btred, _batch_famous)
 
 
 def _register_batches() -> List[str]:
@@ -316,7 +318,13 @@ OPT_IN_ATTACKS = tuple(name for name in DEFAULT_ORDER
     # the second wave: rogue services and the frames that reconfigure clients
     "rogue_dhcp", "dns_sink", "captive_portal", "arp_mitm", "beacon_clone",
     "wpa3_downgrade_twin", "pmf_downgrade_probe", "btm_hijack", "pcap_replay",
-    "arp_replay")
+    "arp_replay",
+    # the famous wave: the Wi-Fi replays and the Bluetooth impersonations.  Everything
+    # that transmits on the Bluetooth radio is opt-in for the same reason the floods are:
+    # a site did not ask to be attacked just because it asked to be assessed.
+    "airgeddon_portal", "krack_replay", "fragattacks_inject",
+    "bt_blueborne", "bt_bias", "bt_knob", "bt_bluebugging", "bt_blesa",
+    "bt_sweyntooth", "bt_bluesnarf", "bt_bluesmack", "bt_hid_injection")
 
 __all__ = [
     "Attack", "AttackContext", "AttackOutcome", "ATTACK_CLASSES", "DEFAULT_ORDER",

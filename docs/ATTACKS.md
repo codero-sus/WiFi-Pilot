@@ -1320,9 +1320,9 @@ frame, and `dhcp_lease_audit` is what proves afterwards that it was there.
 
 ## 11. The complete catalogue
 
-**236 attacks**, of which **121** transmit nothing at all — no radio, no monitor interface, no frame.  The table is generated from the registry (`python3 tools/gen_attack_docs.py`), so it cannot drift from the code: `wifipilot attacks` prints the same list, `--json` returns it, and the web UI, the planner and the report are all built from it.
+**248 attacks**, of which **121** transmit nothing at all — no radio, no monitor interface, no frame.  The table is generated from the registry (`python3 tools/gen_attack_docs.py`), so it cannot drift from the code: `wifipilot attacks` prints the same list, `--json` returns it, and the web UI, the planner and the report are all built from it.
 
-How to read the columns: **noise** is what a defender sees (extreme 15, loud 21, moderate 34, quiet 28, silent 138), **impact** is what the *network* loses when the attack works (degraded 46, info 139, loot 36, none 9, outage 6), and **detection** is the artefact left behind — the thing to look for in a capture when asking whether this was run against you.
+How to read the columns: **noise** is what a defender sees (extreme 15, loud 25, moderate 40, quiet 30, silent 138), **impact** is what the *network* loses when the attack works (degraded 51, info 139, loot 43, none 9, outage 6), and **detection** is the artefact left behind — the thing to look for in a capture when asking whether this was run against you.
 
 ### Offline analysis (no radio at all) — 121
 
@@ -1528,7 +1528,7 @@ How to read the columns: **noise** is what a defender sees (extreme 15, loud 21,
 | `radius_secret_test` <br>_injects_ | RADIUS shared-secret test | green | green | wifipilot netproto (own RADIUS client) | one Access-Request per candidate secret; a real RADIUS server logs the failures |
 | `rogue_radius` <br>_injects_ | Rogue RADIUS (credential check) | cyan | bold green | eaphammer / hostapd-mana / hostapd-wpe | a rogue RADIUS/eaphammer AP; clients that trust any certificate will offer credentials |
 
-### Rogue infrastructure and lures — 34
+### Rogue infrastructure and lures — 41
 
 | attack | answers | noise | impact | tool | defender sees |
 | --- | --- | --- | --- | --- | --- |
@@ -1566,8 +1566,15 @@ How to read the columns: **noise** is what a defender sees (extreme 15, loud 21,
 | `lldp_spoof` <br>_injects_ | LLDP neighbour spoofing | green | green | wifipilot netstack.py (LLDP TLVs) | LLDP frames describing a device that is not in the inventory: the switch's neighbour table shows a new switch or router |
 | `cdp_spoof` <br>_injects_ | CDP neighbour spoofing | green | green | wifipilot netstack.py (CDP TLVs) | CDP frames describing a Cisco device that was never installed: the switch's neighbour inventory changes |
 | `vlan_double_tag_hop` <br>_injects_ | VLAN double tagging (hop) | cyan | yellow | wifipilot netstack.py (802.1Q tags) | frames leaving an access port with the outer tag stripped and an inner tag intact: the only place it shows is the receiving VLAN |
+| `bt_bias` <br>_injects_ | BIAS impersonation probe (CVE-2020-10135) | cyan | bold green | wifipilot bt.py (Authentication Requested, key replies, pairing events) | a link-key request answered with a negative reply and an immediate re-pairing on the same handle: the peer's own controller log shows it, and so does the second pairing |
+| `bt_knob` <br>_injects_ | KNOB key-entropy probe (CVE-2019-9506) | green | bold green | wifipilot bt.py (feature pages + Encryption Change key size) | a fresh key negotiated on an established link: the peer's controller log shows the re-key, and the KNOB tool has to encrypt the link to measure it |
+| `bt_bluebugging` <br>_injects_ | BlueBugging (AT commands over RFCOMM) | cyan | bold green | wifipilot bt.py (RFCOMM, AF_BLUETOOTH BTPROTO_RFCOMM) | an RFCOMM channel opened to a hands-free profile by a device the phone does not know: the phone logs the AT session, and the user may see a key press they did not make |
+| `bt_blesa` <br>_injects_ | BLESA pre-authentication data injection | green | bold green | wifipilot bt.py (LE connection + ATT before pairing) | an ATT exchange on a link that has not paired: the peripheral's own logs show the unauthenticated request, and a client sees a session it did not start |
+| `bt_bluesnarf` <br>_injects_ | BlueSnarfing (OBEX file pull) | cyan | bold green | wifipilot bt.py (OBEX over RFCOMM) | an OBEX session from a device the phone does not know: the phone's own Bluetooth log shows the connection to the object exchange channel |
+| `bt_hid_injection` <br>_injects_ | Bluetooth keystroke injection (HID spoofing) | cyan | bold green | wifipilot bt.py (HID over GATT: report map + boot reports) | a new HID device in the host's Bluetooth settings and keystrokes nobody typed: the host's own log shows the connection and the input reports |
+| `airgeddon_portal` <br>_injects_ | Airgeddon captive portal phishing (evil twin + portal) | yellow | bold green | airgeddon (evil twin menu / CLI plugin) or wifipilot's portal server | a second access point with the target's name plus a portal page and a DNS blackhole: the twin shows up in any site survey, and the portal's DNS answers are visible to the client |
 
-### Denial-of-service tests (opt-in) — 28
+### Denial-of-service tests (opt-in) — 33
 
 | attack | answers | noise | impact | tool | defender sees |
 | --- | --- | --- | --- | --- | --- |
@@ -1599,6 +1606,11 @@ How to read the columns: **noise** is what a defender sees (extreme 15, loud 21,
 | `udp_flood` <br>_injects_ | UDP flood / router resource exhaustion | red | yellow | wifipilot netstack.py (UDP to the router's own stack) | datagrams to closed ports at line rate, and an ICMP port-unreachable for each: the router's own CPU is visibly busy |
 | `udp_reflection` <br>_injects_ | UDP reflection (SSDP, mDNS, NetBIOS) | red | yellow | wifipilot netstack.py (broadcast queries with a spoofed source) | broadcast queries whose source address is not the sender's, answered by every device that speaks the protocol |
 | `ra_flood` <br>_injects_ | IPv6 router advertisement flood | yellow | red | wifipilot netstack.py (RA flood with prefix churn) | router advertisements at a rate no router uses, with rotating sources and prefixes |
+| `bt_blueborne` <br>_injects_ | BlueBorne probe (L2CAP/SDP stack, CVE-2017-1000250/1000251) | cyan | yellow | wifipilot bt.py (L2CAP signalling and SDP PDUs over ACL) | an ACL link that speaks malformed L2CAP on the signalling channel: a controller log shows the PDUs, and the target's own dmesg shows the crash if there is one |
+| `bt_sweyntooth` <br>_injects_ | SweynTooth malformed LL control battery (CVE-2019-17060 family) | cyan | yellow | wifipilot bt.py (LL control PDUs over an LE connection) | malformed LL control PDUs on an LE link: a sniffer sees them, and a device that stops advertising is the symptom the users report |
+| `bt_bluesmack` <br>_injects_ | BlueSmack (oversized L2CAP echo) | yellow | yellow | wifipilot bt.py (L2CAP echo requests at escalating sizes) | an L2CAP echo request larger than any normal signalling PDU: visible to a sniffer, and a device that stops answering is visible to its user |
+| `krack_replay` <br>_injects_ | KRACK key reinstallation (CVE-2017-13077 playback) | yellow | yellow | wifipilot rawtx.py (message 3 replayed from the captured handshake) | message 3 retransmitted from a station that is not the AP: a WIDS with EAPOL sequencing sees the duplicate, and a client that logs its own handshakes sees the reinstall |
+| `fragattacks_inject` <br>_injects_ | FragAttacks plaintext injection (CVE-2020-24588/24586/24587) | yellow | yellow | wifipilot rawtx.py (A-MSDU and fragment-cache shapes) | plaintext aggregation and fragment sequences on a channel whose clients are encrypted: a sniffer sees the A-MSDU present bit on an unencrypted frame, which the standard says cannot happen |
 
-<!-- 236 attacks -->
+<!-- 248 attacks -->
 <!-- catalogue:end -->

@@ -132,7 +132,7 @@ that many passwords are recovered.
 
 | mode | transmits? | what it runs |
 |---|---|---|
-| `"force"` | yes, loudly | **all 236 attacks** (`wp.ALL_ATTACKS`, which is the attack registry's own order): the ten floods, the evil twin, Karma, the EAPOL-Logoff disconnect, the active PMKID hunt, the lures (`csa_attack`, `ssid_confusion`, `karma_detect`), the WEP enablers and the online WPS PIN attack (which can permanently lock an AP's WPS) included |
+| `"force"` | yes, loudly | **all 248 attacks** (`wp.ALL_ATTACKS`, which is the attack registry's own order): the ten floods, the evil twin, Karma, the EAPOL-Logoff disconnect, the active PMKID hunt, the lures (`csa_attack`, `ssid_confusion`, `karma_detect`), the WEP enablers and the online WPS PIN attack (which can permanently lock an AP's WPS) included |
 | `"default"` / `"recall"` | yes | the standard six: handshake, PMKID, WPS Pixie-Dust, WEP, hidden-SSID discovery and station tracking |
 | `"quick"` | yes, briefly | PMKID + handshake + crack only |
 | `"stealth"` | listen-only | passive capture, no deauth, no online PIN attacks, and the floods are refused even if enabled |
@@ -151,7 +151,7 @@ report = wp.status()["findings"]                            # ie_wps_enabled, ie
 
 # no radio at all: audit and crack what a previous run already collected
 wp.attack(target="all", mode="offline")                     # ten file-only analyses
-len(wp.catalogue())                                         # 236 — every attack
+len(wp.catalogue())                                         # 248 — every attack
 wp.catalogue(offline_only=True)                             # the ten that need no radio
 wp.catalogue(category="dos")                                # the denial-of-service tests
 
