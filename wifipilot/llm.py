@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
-from .config import OllamaConfig, OpenRouterConfig
+from .config import CortexConfig, OllamaConfig, OpenRouterConfig
 from .util import read_json
 
 #: attribution sent to OpenRouter (their docs ask for both headers)
@@ -532,6 +532,246 @@ class OllamaClient(LLMClient):
 # --------------------------------------------------------------------------- #
 
 
+class CortexClient(LLMClient):
+    """`Cortex LLMHoster <https://github.com/codero-sus/Cortex_LLMHoster>`_: a local
+    OpenAI-compatible model host, driven over HTTP on the loopback interface.
+
+    It is the third provider and the second *local* one.  Ollama is the easy path when it
+    is already installed; Cortex is for the operator who wants ``llama.cpp`` started for
+    them (GGUF paths, GPU layers, context size) behind an OpenAI-shaped API, with a
+    dashboard and per-model commands.  From wifipilot's side the differences are:
+
+    1. **It is a local service that must be running.** Nothing is probed unless
+       ``cortex.enabled`` is true — wifipilot never knocks on a port it was not asked to.
+    2. **Loopback only** unless ``cortex.allow_remote_host`` is set: this API has no
+       transport security of its own and the models behind it are the operator's machine.
+    3. **The key is optional.** Cortex can run keyless on a trusted listener; when a key
+       is configured (``CORTEX_API_KEY``) it is sent as a bearer token and never logged.
+    """
+
+    provider = "cortex"
+    label = "Cortex LLMHoster"
+
+    @property
+    def host(self) -> str:
+        return str(getattr(self.config, "base_url", "") or getattr(self.config, "host", "")
+                   ).rstrip("/")
+
+    def describe(self) -> str:
+        return f"Cortex LLMHoster ({self.host})"
+
+    # -- policy ------------------------------------------------------------- #
+    def api_key(self) -> str:
+        getter = getattr(self.config, "api_key_value", None)
+        return getter() if callable(getter) else str(getattr(self.config, "api_key", "") or "")
+
+    def is_loopback(self) -> bool:
+        parsed = urllib.parse.urlparse(self.host)
+        return (parsed.hostname or "").lower() in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+
+    def _guard(self) -> None:
+        if not getattr(self.config, "enabled", False):
+            raise LLMPolicyError(
+                "Cortex LLMHoster is disabled — enable it with cortex.enabled=true (or "
+                "`wifipilot --provider cortex`) once the hoster is running")
+        if not self.is_loopback() and not getattr(self.config, "allow_remote_host", False):
+            raise LLMPolicyError(
+                f"refusing to send engagement data to {self.host}: Cortex LLMHoster is a "
+                "local service — set cortex.allow_remote_host=true only for a listener you "
+                "control")
+
+    def _headers(self, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        headers = super()._headers()
+        key = self.api_key()
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        if extra:
+            headers.update(extra)
+        return headers
+
+    def _classify_http_error(self, code: int, body: str, reason: str) -> LLMError:
+        detail = body[:300] or reason
+        if code in (401, 403):
+            return LLMAuthError(
+                f"Cortex LLMHoster rejected the request (HTTP {code}): {detail} — check "
+                f"CORTEX_API_KEY, or run the hoster with CORTEX_API_AUTH_ENABLED=false on "
+                f"a trusted listener")
+        if code == 404:
+            return LLMError(f"Cortex LLMHoster has no such model or route (HTTP 404): {detail}")
+        if code == 429:
+            return LLMRateLimitError(f"Cortex LLMHoster is at its inference limit: {detail}")
+        if code >= 500:
+            return LLMError(f"Cortex LLMHoster runtime error (HTTP {code}): {detail}")
+        return LLMError(f"Cortex LLMHoster HTTP {code}: {detail}")
+
+    # -- api ---------------------------------------------------------------- #
+    def ping(self) -> bool:
+        """``GET /health``: the hoster is up.  Policy refusals raise, they never read offline."""
+        self._guard()
+        try:
+            body = self._request("/health", timeout=min(5.0, float(
+                getattr(self.config, "timeout", 5.0))))
+        except LLMPolicyError:
+            raise
+        except LLMError as exc:
+            self.last_error = str(exc)
+            return False
+        self.last_error = ""
+        try:
+            payload = json.loads(body)
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict):
+            self._health = payload
+        return True
+
+    def version(self) -> str:
+        health = getattr(self, "_health", None) or {}
+        for key in ("version", "api_version", "build"):
+            if isinstance(health, dict) and health.get(key):
+                return str(health[key])
+        return ""
+
+    def list_models(self, force: bool = False, **kwargs: Any) -> List[ModelInfo]:
+        """``GET /v1/models``: the models the hoster has configured (cached for a minute)."""
+        if not self._cached_models(60, force):
+            try:
+                body = self._request("/v1/models", timeout=15.0)
+                data = json.loads(body)
+                entries = data.get("data") if isinstance(data, dict) else None
+                if not isinstance(entries, list):
+                    raise LLMError(f"unexpected /v1/models payload from {self.host}")
+                models: List[ModelInfo] = []
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    identifier = str(entry.get("id") or entry.get("name") or "")
+                    if not identifier:
+                        continue
+                    models.append(ModelInfo(
+                        name=identifier, provider=self.provider,
+                        context=int(entry.get("context_length") or 0),
+                        family=str(entry.get("owned_by") or entry.get("family") or ""),
+                        modified=str(entry.get("created") or ""),
+                        description=str(entry.get("description") or "")[:400],
+                    ))
+                self._models = models
+                self._models_at = time.time()
+                self.models_error = ""
+            except (LLMError, ValueError) as exc:
+                self.models_error = str(exc)
+                return self._models
+        return self._models
+
+    def _filter_models(self, query: str = "", limit: int = 0,
+                       free_only: bool = False) -> List[ModelInfo]:
+        models = self._models
+        if query:
+            needle = query.lower()
+            models = [m for m in models if needle in m.name.lower()]
+        return models[:limit] if limit > 0 else models
+
+    def resolve_model(self, preferred: str = "") -> str:
+        wanted = (preferred or getattr(self.config, "model", "") or "").strip()
+        names = [m.name for m in self.list_models()]
+        if wanted and wanted not in ("auto", ""):
+            match = self._pick_fallback(wanted, names)
+            return match or wanted
+        for candidate in list(getattr(self.config, "fallback_models", []) or []):
+            match = self._pick_fallback(candidate, names)
+            if match:
+                return match
+        return names[0] if names else ""
+
+    # -- chat --------------------------------------------------------------- #
+    def _payload(self, model: str, messages: List[Dict[str, str]], json_mode: bool,
+                 options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        config = self.config
+        payload: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": config.temperature,
+            "max_tokens": int((options or {}).get("max_tokens")
+                              or (options or {}).get("num_predict") or config.max_tokens),
+            "stream": bool(config.stream),
+        }
+        if json_mode and getattr(config, "json_mode", False):
+            payload["response_format"] = {"type": "json_object"}
+        return payload
+
+    def chat(self, messages: List[Dict[str, str]], model: str = "",
+             json_mode: bool = False, on_token: Optional[Callable[[str], None]] = None,
+             timeout: float = 0.0,
+             options: Optional[Dict[str, Any]] = None) -> Tuple[str, Dict[str, Any]]:
+        model = model or self.resolve_model()
+        if not model:
+            raise LLMError(
+                "no model on the Cortex LLMHoster — add one in cortex.toml (or its "
+                "dashboard) and start it")
+        payload = self._payload(model, messages, json_mode, options)
+        self.calls += 1
+        started = time.time()
+        text_parts: List[str] = []
+        stats: Dict[str, Any] = {"model": model, "provider": self.provider,
+                                 "tokens": 0, "cost": 0.0}
+        stream = bool(getattr(self.config, "stream", True))
+        if stream:
+            response = self._request("/v1/chat/completions", payload, stream=True,
+                                     timeout=timeout)
+            with response:
+                for chunk in self._iter_sse(response):
+                    if chunk.get("error"):
+                        raise LLMError(str(chunk["error"]))
+                    usage = chunk.get("usage") or {}
+                    if usage:
+                        stats["tokens"] = int(usage.get("total_tokens") or 0)
+                    for choice in chunk.get("choices") or []:
+                        delta = choice.get("delta") or {}
+                        piece = delta.get("content")
+                        if not piece and isinstance(choice.get("text"), str):
+                            piece = choice["text"]
+                        if piece:
+                            text_parts.append(piece)
+                            if on_token:
+                                on_token(piece)
+                        if choice.get("finish_reason"):
+                            stats["finish_reason"] = str(choice["finish_reason"])
+        else:
+            data = json.loads(self._request("/v1/chat/completions", payload, timeout=timeout))
+            if data.get("error"):
+                error = data["error"]
+                raise LLMError(str(error.get("message") if isinstance(error, dict) else error))
+            usage = data.get("usage") or {}
+            stats["prompt_tokens"] = int(usage.get("prompt_tokens") or 0)
+            stats["completion_tokens"] = int(usage.get("completion_tokens") or 0)
+            stats["tokens"] = int(usage.get("total_tokens") or 0) or (
+                stats["prompt_tokens"] + stats["completion_tokens"])
+            for choice in data.get("choices") or []:
+                message = choice.get("message") or {}
+                piece = message.get("content") or choice.get("text") or ""
+                if piece:
+                    text_parts.append(piece)
+                    if on_token:
+                        on_token(piece)
+                if choice.get("finish_reason"):
+                    stats["finish_reason"] = str(choice["finish_reason"])
+        text = "".join(text_parts)
+        stats["seconds"] = round(time.time() - started, 2)
+        stats.setdefault("tokens", 0)
+        self.last_latency = stats["seconds"]
+        self.tokens_total += int(stats.get("tokens") or 0)
+        if not text and stats.get("finish_reason") == "error":
+            raise LLMError("Cortex LLMHoster returned an empty completion")
+        return text, stats
+
+    def pull(self, model: str, on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+             timeout: float = 3600.0) -> bool:
+        self.last_error = ("Cortex LLMHoster serves the models you point it at (llama.cpp "
+                           "GGUF paths, or a per-model command) — start or add the model in "
+                           "cortex.toml or its dashboard, then pick it here")
+        return False
+
+
 class OpenRouterClient(LLMClient):
     """OpenRouter: OpenAI-compatible chat completions over HTTPS.
 
@@ -869,21 +1109,31 @@ class OpenRouterClient(LLMClient):
 # --------------------------------------------------------------------------- #
 
 
-PROVIDERS = ("auto", "ollama", "openrouter", "none")
+PROVIDERS = ("auto", "ollama", "cortex", "openrouter", "none")
 
 PROVIDER_LABELS = {
-    "auto": "automatic (prefer local Ollama)",
+    "auto": "automatic (prefer a local model)",
     "ollama": "Ollama (local, private)",
+    "cortex": "Cortex LLMHoster (local, OpenAI-compatible)",
     "openrouter": "OpenRouter (cloud, paid, explicit consent)",
     "none": "disabled (deterministic planner only)",
 }
 
+#: local providers, in the order ``auto`` prefers them
+LOCAL_PROVIDERS = ("ollama", "cortex")
+
 
 def build_client(provider: str, ollama: OllamaConfig, openrouter: OpenRouterConfig,
-                 bus=None) -> Optional[LLMClient]:
+                 bus=None, cortex: Optional[CortexConfig] = None) -> Optional[LLMClient]:
     """Instantiate the client for a concrete provider name."""
     if provider == "ollama":
         return OllamaClient(ollama, bus)
+    if provider == "cortex":
+        if cortex is None:
+            raise LLMPolicyError(
+                "no Cortex LLMHoster configuration — add a [cortex] section to "
+                "wifipilot.json (host, model) or pass cortex=CortexConfig(...)")
+        return CortexClient(cortex, bus)
     if provider == "openrouter":
         return OpenRouterClient(openrouter, bus)
     return None
@@ -899,8 +1149,18 @@ def ollama_reachable(config: OllamaConfig, timeout: float = 2.0) -> bool:
         return False
 
 
+def cortex_reachable(config: Optional[CortexConfig], timeout: float = 2.0) -> bool:
+    if config is None or not config.enabled:
+        return False
+    try:
+        return CortexClient(config).ping()
+    except LLMPolicyError:
+        return False
+
+
 def select_provider(ai_provider: str, ollama: OllamaConfig, openrouter: OpenRouterConfig,
-                    probe: bool = True) -> Tuple[str, str]:
+                    probe: bool = True,
+                    cortex: Optional[CortexConfig] = None) -> Tuple[str, str]:
     """Resolve ``ai_provider`` to a concrete provider plus a human-readable reason.
 
     ``auto`` prefers the local model (private, free, no data leaves the box) and
@@ -912,16 +1172,24 @@ def select_provider(ai_provider: str, ollama: OllamaConfig, openrouter: OpenRout
     if ai_provider == "ollama":
         return ("ollama", "explicitly selected local Ollama"
                 if not ollama.enabled else "Ollama selected")
+    if ai_provider == "cortex":
+        if cortex is None or not cortex.enabled:
+            return "none", ("Cortex LLMHoster selected but not enabled "
+                            "(cortex.enabled=false)")
+        return "cortex", "explicitly selected Cortex LLMHoster"
     if ai_provider == "openrouter":
         if not openrouter.enabled:
             return "none", "OpenRouter selected but not enabled (openrouter.enabled=false)"
         if not openrouter.api_key_value():
             return "none", "OpenRouter selected but no API key is configured"
         return "openrouter", "explicitly selected OpenRouter"
-    # auto
+    # auto: a local model first (private, free), then the cloud if it was enabled
     if ollama.enabled and (ollama_reachable(ollama) if probe else True):
         return "ollama", ("local Ollama is reachable" if probe
                           else "Ollama configured (reachability not tested)")
+    if cortex is not None and cortex.enabled and (cortex_reachable(cortex) if probe else True):
+        return "cortex", ("local Cortex LLMHoster is reachable" if probe
+                          else "Cortex LLMHoster configured (reachability not tested)")
     if openrouter.enabled and openrouter.api_key_value():
         reason = ("local Ollama is not reachable; using the explicitly enabled "
                   "OpenRouter fallback")
@@ -932,11 +1200,18 @@ def select_provider(ai_provider: str, ollama: OllamaConfig, openrouter: OpenRout
         if probe:
             return "none", "Ollama is configured but not reachable (start it: ollama serve)"
         return "ollama", "Ollama configured (reachability not tested)"
-    return "none", "no provider available (start Ollama or configure OpenRouter)"
+    if cortex is not None and cortex.enabled:
+        if probe:
+            return "none", ("Cortex LLMHoster is configured but not reachable (start it: "
+                            "cortex-llmhoster --config cortex.toml)")
+        return "cortex", "Cortex LLMHoster configured (reachability not tested)"
+    return "none", ("no provider available (start Ollama or Cortex LLMHoster, or configure "
+                    "OpenRouter)")
 
 
 def provider_status(ollama: OllamaConfig, openrouter: OpenRouterConfig,
-                    probe: bool = False) -> List[Dict[str, Any]]:
+                    probe: bool = False,
+                    cortex: Optional[CortexConfig] = None) -> List[Dict[str, Any]]:
     """Summary of every provider for the dashboard and the web UI."""
     rows: List[Dict[str, Any]] = [{
         "name": "ollama", "label": PROVIDER_LABELS["ollama"],
@@ -945,6 +1220,15 @@ def provider_status(ollama: OllamaConfig, openrouter: OpenRouterConfig,
         "host": ollama.host,
         "model": ollama.model,
         "reachable": ollama_reachable(ollama) if (probe and ollama.enabled) else None,
+    }, {
+        "name": "cortex", "label": PROVIDER_LABELS["cortex"],
+        "enabled": bool(cortex.enabled) if cortex is not None else False,
+        "configured": bool(cortex is not None and cortex.host),
+        "host": cortex.base() if cortex is not None else "",
+        "model": (cortex.model if cortex is not None else "") or "host default",
+        "key_hint": cortex.key_hint() if cortex is not None else "",
+        "reachable": (cortex_reachable(cortex) if (probe and cortex is not None
+                                                   and cortex.enabled) else None),
     }, {
         "name": "openrouter", "label": PROVIDER_LABELS["openrouter"],
         "enabled": bool(openrouter.enabled),

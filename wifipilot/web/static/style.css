@@ -220,3 +220,93 @@ footer { padding: .8rem 1.1rem 2rem; font-size: .74rem; border-top: 1px solid va
 .btn-quiet { background: transparent; color: var(--dim); border: 1px solid var(--line); }
 .btn-quiet:hover { color: #fff; border-color: var(--accent); }
 button:disabled, input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
+
+/* ==================================================================== */
+/* editions, devices and the attack catalogue                           */
+/* ==================================================================== */
+
+/* the edition switch: which of the three toolboxes the operator is holding */
+.seg {
+  display: inline-flex; align-items: stretch; border: 1px solid var(--line);
+  border-radius: 999px; overflow: hidden; background: var(--bg-2);
+}
+.seg-btn {
+  background: transparent; border: 0; color: var(--dim); cursor: pointer;
+  padding: .3rem .7rem; font-size: .76rem; font-weight: 600; letter-spacing: .03em;
+  display: inline-flex; align-items: center; gap: .35rem; border-right: 1px solid var(--line);
+}
+.seg-btn:last-child { border-right: 0; }
+.seg-btn:hover { color: var(--fg); background: rgba(56, 189, 248, .10); }
+.seg-btn.active { background: var(--accent); color: #04141f; }
+.seg-btn b { font-weight: 700; opacity: .75; font-size: .7rem; }
+.seg-btn.active b { opacity: .9; }
+.seg-btn.dim-edition { opacity: .55; }
+
+.edition-note { font-size: .72rem; color: var(--dim); }
+
+/* device shelf + detail, side by side */
+.device-layout { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(420px, 1.5fr); gap: .9rem; }
+@media (max-width: 1100px) { .device-layout { grid-template-columns: 1fr; } }
+
+.device-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
+  gap: .5rem; max-height: 62vh; overflow: auto; padding-right: .2rem;
+}
+.device-card {
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: .55rem .65rem; cursor: pointer; transition: border-color .12s, transform .12s;
+}
+.device-card:hover { border-color: var(--accent); transform: translateY(-1px); }
+.device-card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(56, 189, 248, .35) inset; }
+.device-card .dev-head { display: flex; justify-content: space-between; gap: .4rem; align-items: baseline; }
+.device-card .dev-label { font-weight: 600; font-size: .84rem; }
+.device-card .dev-sub { font-size: .7rem; color: var(--dim); margin-top: .15rem; }
+.device-card .dev-ports { font-family: var(--mono); font-size: .68rem; color: var(--accent-2); margin-top: .25rem; }
+.device-card .dev-count { font-size: .68rem; color: var(--dim); }
+
+.tag-dev { background: #17202c; color: var(--dim); border: 1px solid var(--line); }
+.risk-low { color: var(--ok); }
+.risk-medium { color: var(--warn); }
+.risk-high { color: var(--bad); }
+.risk-critical { color: var(--crit); }
+
+.dev-kv { display: grid; grid-template-columns: auto 1fr; gap: .18rem .8rem; font-size: .8rem; }
+.dev-kv b { color: var(--dim); font-weight: 500; text-transform: uppercase; font-size: .68rem; letter-spacing: .05em; padding-top: .12rem; }
+.briefing {
+  background: var(--bg-3); border-left: 2px solid var(--accent-2); border-radius: 6px;
+  padding: .5rem .65rem; font-size: .8rem; color: var(--fg); margin: .6rem 0;
+}
+.pill-row { display: flex; flex-wrap: wrap; gap: .3rem; margin: .35rem 0; }
+.pill-row .pill { background: var(--bg-3); border: 1px solid var(--line); border-radius: 999px; padding: .1rem .5rem; font-size: .68rem; color: var(--dim); }
+
+/* the attack list: one row per attack, with what it costs and what it proves */
+.attack-table { width: 100%; border-collapse: collapse; font-size: .78rem; }
+.attack-table th {
+  text-align: left; color: var(--dim); font-weight: 600; font-size: .67rem;
+  text-transform: uppercase; letter-spacing: .06em; border-bottom: 1px solid var(--line);
+  padding: .3rem .35rem; position: sticky; top: 0; background: var(--bg);
+}
+.attack-table td { padding: .32rem .35rem; border-bottom: 1px solid rgba(34, 48, 70, .55); vertical-align: top; }
+.attack-table tr:hover td { background: rgba(56, 189, 248, .06); }
+.attack-table .aname { font-family: var(--mono); font-size: .74rem; color: var(--accent-2); white-space: nowrap; }
+.attack-table .adesc { color: var(--dim); }
+.attack-table .cat { font-size: .68rem; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; }
+.attack-table tr.loud td { background: rgba(248, 113, 113, .06); }
+.attack-scroll { max-height: 46vh; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); }
+.noise-quiet { color: var(--ok); }
+.noise-silent { color: var(--ok); }
+.noise-moderate { color: var(--warn); }
+.noise-loud { color: var(--bad); }
+.noise-extreme { color: var(--crit); }
+
+/* the help panel: the catalogue answers even with the advisor switched off */
+.help-card textarea, .help-card input[type=text] { width: 100%; }
+.help-answer {
+  background: var(--bg-3); border: 1px solid var(--line); border-radius: 8px;
+  padding: .55rem .65rem; font-size: .82rem; white-space: pre-wrap; min-height: 3.2rem;
+  max-height: 40vh; overflow: auto; margin-top: .5rem;
+}
+.help-src { font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+.help-src.advisor { color: var(--accent); }
+.toolbar-row { display: flex; flex-wrap: wrap; gap: .45rem; align-items: center; margin-bottom: .6rem; }
+.toolbar-row input[type=search], .toolbar-row input[type=text] { min-width: 150px; }

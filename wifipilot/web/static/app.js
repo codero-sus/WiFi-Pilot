@@ -142,6 +142,7 @@ function render() {
   renderProgress(SNAPSHOT);
   renderSettings(SNAPSHOT);
   renderPlatform(SNAPSHOT);
+  renderEditions(SNAPSHOT);
 }
 
 function renderHeader(state) {
@@ -180,7 +181,8 @@ function renderHeader(state) {
     aiBadge.textContent = 'ai: off · deterministic planner';
     aiBadge.className = 'badge badge-off';
   } else {
-    const providerNames = { ollama: 'ollama', openrouter: 'openrouter (cloud)', none: 'off' };
+    const providerNames = { ollama: 'ollama', cortex: 'cortex (local)',
+      openrouter: 'openrouter (cloud)', none: 'off' };
     aiBadge.textContent = `ai: ${providerNames[ai.provider] || ai.provider || '—'}`
       + (ai.model ? ` · ${ai.model}` : '') + (ai.cloud ? ' · cloud' : '');
     aiBadge.className = 'badge ' + (ai.available
@@ -294,7 +296,8 @@ function renderAdvisor(state) {
   const policy = ai.policy || {};
   const config = state.config || {};
   const off = ai.disabled || ai.provider === 'none' || !!config.ai_disabled;
-  const labels = { ollama: 'Ollama (local)', openrouter: 'OpenRouter (cloud)', none: 'off' };
+  const labels = { ollama: 'Ollama (local)', cortex: 'Cortex LLMHoster (local)',
+    openrouter: 'OpenRouter (cloud)', none: 'off' };
   const providerLabel = labels[ai.provider] || ai.provider || '—';
   const reach = off ? '<span class="dim">no model in use</span>'
     : (ai.available
@@ -565,12 +568,299 @@ function appendChatToken(piece) {
 }
 
 /* ------------------------------------------------------------- actions */
+/* ==================================================================== */
+/* editions, devices, the attack catalogue and the help panel            */
+/* ==================================================================== */
+
+const EDITIONS = {
+  all: { label: 'every edition', hint: 'WiFi, Bluetooth and IP attacks are all planned' },
+  wifi: { label: 'WiFi', hint: 'access points, handshakes, WPS, rogue APs, deauth — the radio' },
+  bluetooth: { label: 'Bluetooth', hint: 'BLE and classic: KNOB, BIAS, BlueBorne, HID injection' },
+  it: { label: 'IT', hint: 'cameras, printers, servers, PLCs, IoT — the devices behind the AP' },
+};
+
+let CATALOG = [];            // every attack, from /api/catalog
+let DEVICES = [];            // the device shelf, from /api/devices
+let GROUPS = [];
+let DEMO_HOSTS = [];
+let SELECTED = { device: '', host: '', port: 0, detail: null };
+let CAT_LIMIT = 150;
+
+function editionCounts(state) {
+  return ((state || SNAPSHOT || {}).edition || {}).attacks || {};
+}
+
+function renderEditions(state) {
+  const summary = (state || {}).edition || {};
+  const counts = summary.attacks || {};
+  const active = summary.active || 'all';
+  const total = summary.total || Object.values(counts).reduce((a, b) => a + b, 0);
+  $$('#edition-switch .seg-btn').forEach((btn) => {
+    const id = btn.dataset.edition;
+    btn.classList.toggle('active', id === active);
+    const badge = btn.querySelector('b');
+    if (badge) badge.textContent = id === 'all' ? total : (counts[id] || 0);
+  });
+  const names = { all: 'all', wifi: 'WiFi', bluetooth: 'Bluetooth', it: 'IT' };
+  const badge = $('#edition-badge');
+  if (badge) {
+    badge.textContent = `edition: ${names[active] || active}`;
+    badge.className = 'badge ' + (active === 'all' ? 'badge-idle' : 'badge-run');
+  }
+  const note = $('#edition-note');
+  if (note) note.textContent = (EDITIONS[active] || {}).hint || '';
+  const tabCount = $('#tab-count-devices');
+  if (tabCount) tabCount.textContent = total || (CATALOG.length || 0);
+}
+
+function setEdition(id) {
+  api('/api/edition', { edition: id }).then((result) => {
+    if (!result) return;
+    toast(`edition: ${id === 'all' ? 'all three' : id} — ${(result.attacks && result.attacks[id]) || result.total} attacks enabled`);
+    if (SNAPSHOT) { SNAPSHOT.edition = result; renderEditions(SNAPSHOT); }
+    loadDevices();
+    loadCatalogue();
+  });
+}
+
+/* ------------------------------------------------------------ devices */
+function loadDevices() {
+  return api('/api/devices', null, 'GET').then((data) => {
+    if (!data) return;
+    DEVICES = data.devices || [];
+    GROUPS = data.groups || [];
+    DEMO_HOSTS = data.demo_hosts || [];
+    const groupSel = $('#sel-device-group');
+    if (groupSel && groupSel.options.length <= 1) {
+      GROUPS.forEach((group) => {
+        const option = document.createElement('option');
+        option.value = group.id;
+        option.textContent = group.label;
+        groupSel.appendChild(option);
+      });
+    }
+    const hostSel = $('#sel-demo-host');
+    if (hostSel) {
+      const previous = hostSel.value;
+      hostSel.innerHTML = '<option value="">pick a simulated host…</option>'
+        + DEMO_HOSTS.map((host) => `<option value="${host.ip}">${host.ip} · ${escapeHtml(host.label || host.name || '')}${host.device ? ' · ' + escapeHtml(host.device) : ''}</option>`).join('');
+      hostSel.value = previous;
+    }
+    renderDeviceGrid();
+  });
+}
+
+function renderDeviceGrid() {
+  const grid = $('#device-grid');
+  if (!grid) return;
+  const needle = ($('#inp-device-filter').value || '').toLowerCase();
+  const group = $('#sel-device-group').value;
+  const onlyActive = $('#chk-device-domain').checked;
+  const edition = ((SNAPSHOT || {}).edition || {}).active || 'all';
+  const rows = DEVICES.filter((dev) => {
+    if (group && dev.group !== group) return false;
+    if (onlyActive && edition !== 'all' && dev.domain !== edition) return false;
+    if (!needle) return true;
+    return [dev.id, dev.label, dev.group_label, dev.description, (dev.protocols || []).join(' '),
+            (dev.vendors || []).join(' '), (dev.ports || []).join(' ')]
+      .join(' ').toLowerCase().includes(needle);
+  });
+  const scope = onlyActive && edition !== 'all' ? ` the ${edition} edition` : ' every edition';
+  $('#device-summary').textContent = `${rows.length} of ${DEVICES.length} device types${scope}`;
+  grid.innerHTML = rows.map((dev) => `
+    <div class="device-card ${dev.id === SELECTED.device ? 'selected' : ''}" data-pick-device="${dev.id}">
+      <div class="dev-head">
+        <span class="dev-label">${escapeHtml(dev.label)}</span>
+        <span class="dev-count">${dev.attack_count != null ? dev.attack_count : (dev.attacks || []).length} attacks</span>
+      </div>
+      <div class="dev-sub">${escapeHtml(dev.group_label || dev.group)} · <span class="risk-${dev.risk}">${escapeHtml(dev.risk || '')}</span></div>
+      <div class="dev-ports">${(dev.ports || []).slice(0, 8).join(' · ') || 'no fixed port'}</div>
+    </div>`).join('') || '<span class="dim">no device type matches that filter</span>';
+}
+
+function pickDevice(id, host) {
+  api('/api/device', { device: id, host: host || $('#inp-it-host').value || '', port: Number($('#inp-it-port').value) || 0 })
+    .then((result) => {
+      if (!result) return;
+      SELECTED.device = id;
+      SELECTED.host = (result.selected || {}).host || '';
+      SELECTED.port = (result.selected || {}).port || 0;
+      SELECTED.detail = result.device || null;
+      if (SELECTED.host) $('#inp-it-host').value = SELECTED.host;
+      renderDeviceGrid();
+      renderDevicePanel();
+    });
+}
+
+function renderDevicePanel() {
+  const detail = SELECTED.detail;
+  const body = $('#dev-body');
+  if (!detail) {
+    $('#dev-title').textContent = 'Pick a device';
+    return;
+  }
+  $('#dev-title').innerHTML = `${escapeHtml(detail.label)} <span class="dim" style="font-weight:400">· ${escapeHtml(detail.group_label || detail.group)} · <span class="risk-${detail.risk}">${escapeHtml(detail.risk || '')} risk</span></span>`;
+  $('#dev-briefing').textContent = detail.briefing || detail.description || '';
+  const attacks = detail.attacks || [];
+  const discovery = attacks.filter((a) => a.category === 'discovery');
+  const loud = attacks.filter((a) => ['loud', 'extreme'].includes(a.noise));
+  const pills = (items) => items.map((item) => `<span class="pill">${escapeHtml(item)}</span>`).join('');
+  body.innerHTML = `
+    <div class="dev-kv">
+      <b>address</b><span class="mono">${escapeHtml(SELECTED.host || 'not set — point the attacks at a host above')}${SELECTED.port ? ':' + SELECTED.port : ''}</span>
+      <b>ports</b><span class="mono">${(detail.ports || []).join(', ') || '—'}</span>
+      <b>protocols</b><span>${(detail.protocols || []).join(', ') || '—'}</span>
+      <b>vendors</b><span>${(detail.vendors || []).join(', ') || 'any'}</span>
+      <b>attack mix</b><span>${attacks.length} apply · ${discovery.length} discovery · ${loud.length} loud</span>
+    </div>
+    <h4>How you recognise it</h4>
+    <div class="pill-row">${pills(detail.tells || []) || '<span class="dim">no single tell — fingerprint it from the answers</span>'}</div>
+    <h4>What to run first</h4>
+    <div class="pill-row">${pills((detail.plan || detail.attack_names || []).slice(0, 8))}</div>
+    <h4>Attacks for this device (${attacks.length})</h4>
+    <div class="attack-scroll">
+      <table class="attack-table">
+        <thead><tr><th>attack</th><th>what it does</th><th>category</th><th>noise</th><th>port</th><th></th></tr></thead>
+        <tbody>${attacks.map(attackRow).join('')}</tbody>
+      </table>
+    </div>`;
+}
+
+function attackRow(row) {
+  const loud = ['loud', 'extreme'].includes(row.noise);
+  const description = row.description || row.label || '';
+  return `<tr class="${loud ? 'loud' : ''}">
+    <td class="aname">${escapeHtml(row.name)}</td>
+    <td class="adesc">${escapeHtml(description.slice(0, 170))}${description.length > 170 ? '…' : ''}</td>
+    <td class="cat">${escapeHtml(row.category || '')}</td>
+    <td class="noise-${row.noise}">${escapeHtml(row.noise || '')}</td>
+    <td class="mono dim">${row.port || '—'}</td>
+    <td>
+      <button class="chip" data-run-attack="${escapeHtml(row.name)}" title="run it through the engine">▶</button>
+      <button class="chip" data-explain="${escapeHtml(row.name)}" title="what it does, what the defender sees">?</button>
+    </td>
+  </tr>`;
+}
+
+/* --------------------------------------------------- attack catalogue */
+function loadCatalogue() {
+  return api('/api/catalog', null, 'GET').then((data) => {
+    if (!data) return;
+    CATALOG = data.attacks || [];
+    const categorySel = $('#sel-attack-category');
+    if (categorySel && categorySel.options.length <= 1) {
+      Array.from(new Set(CATALOG.map((a) => a.category))).sort().forEach((name) => {
+        const option = document.createElement('option');
+        option.value = name;
+        option.textContent = name;
+        categorySel.appendChild(option);
+      });
+    }
+    const tabCount = $('#tab-count-devices');
+    if (tabCount && !CATALOG.length) tabCount.textContent = '0';
+    renderCatalogue();
+  });
+}
+
+function renderCatalogue() {
+  const body = $('#cat-body');
+  if (!body) return;
+  const needle = ($('#inp-attack-filter').value || '').toLowerCase();
+  const category = $('#sel-attack-category').value;
+  const domain = $('#sel-attack-domain').value;
+  const onlyDevice = $('#chk-only-device').checked && SELECTED.device;
+  const rows = CATALOG.filter((row) => {
+    if (category && row.category !== category) return false;
+    if (domain && row.domain !== domain) return false;
+    if (onlyDevice && !(row.devices || []).includes(SELECTED.device)) return false;
+    if (!needle) return true;
+    return [row.name, row.label, row.description, row.protocol, (row.devices || []).join(' ')]
+      .join(' ').toLowerCase().includes(needle);
+  });
+  $('#cat-count').textContent = `${rows.length} of ${CATALOG.length}`;
+  const shown = rows.slice(0, CAT_LIMIT);
+  body.innerHTML = shown.map(attackRow).join('')
+    + (rows.length > shown.length
+      ? `<tr><td colspan="7" class="dim">${rows.length - shown.length} more — narrow the filter (the table shows the first ${CAT_LIMIT})</td></tr>`
+      : '')
+    || '<tr><td colspan="7" class="dim">nothing matches that filter</td></tr>';
+}
+
+/* --------------------------------------------------------------- help */
+function helpAnswer(payload, question) {
+  const box = $('#help-answer');
+  const source = $('#help-src');
+  box.textContent = 'looking it up…';
+  source.textContent = '';
+  return api('/api/help', payload).then((data) => {
+    if (!data) { box.textContent = 'the help panel could not be reached'; return; }
+    box.textContent = data.answer || '';
+    source.textContent = data.source === 'advisor'
+      ? 'answered by the advisor, grounded in the catalogue'
+      : 'answered from the catalogue — no model was called';
+    source.className = 'help-src ' + (data.source === 'advisor' ? 'advisor' : '');
+  });
+}
+
+function explainAttack(name) {
+  $('#help-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  return api('/api/explain', { name, device: SELECTED.device || '' }).then((data) => {
+    if (!data) return;
+    $('#help-answer').textContent = data.answer || '';
+    $('#help-src').textContent = data.source === 'advisor'
+      ? 'answered by the advisor, grounded in the catalogue'
+      : 'answered from the catalogue — no model was called';
+    $('#help-src').className = 'help-src ' + (data.source === 'advisor' ? 'advisor' : '');
+  });
+}
+
+function askHelp(question) {
+  const text = (question || $('#inp-help').value || '').trim();
+  if (!text) { toast('type a question, or press ? on an attack row', true); return; }
+  return helpAnswer({ question: text, device: SELECTED.device || '' });
+}
+
+function runAttack(name, bssid) {
+  const host = SELECTED.host || $('#inp-it-host').value || '';
+  const port = Number($('#inp-it-port').value) || 0;
+  const chain = (host || port)
+    ? api('/api/device', { host, port })
+    : Promise.resolve(null);
+  return chain.then(() => api('/api/attack', { attack: name, bssid: bssid || '' }))
+    .then((result) => {
+      if (result) toast(result.message || `queued ${name}`);
+    });
+}
+
+function runDiscoverySet() {
+  const detail = SELECTED.detail;
+  if (!detail) { toast('pick a device first', true); return; }
+  const rows = (detail.attacks || []).filter((row) => row.category === 'discovery');
+  if (!rows.length) { toast('no discovery attack for this device — run the ones in the list', true); return; }
+  const host = SELECTED.host || $('#inp-it-host').value || '';
+  const port = Number($('#inp-it-port').value) || 0;
+  api('/api/device', { host, port }).then(() => {
+    let queued = 0;
+    rows.slice(0, 6).forEach((row, index) => {
+      setTimeout(() => {
+        api('/api/attack', { attack: row.name, bssid: '', reason: 'device discovery set' })
+          .then((result) => { if (result) queued += 1; });
+      }, index * 900);                       // one at a time: the engine runs one job
+    });
+    toast(`queued the discovery rows for ${detail.label} (${Math.min(rows.length, 6)})`);
+  });
+}
+
+/* ------------------------------------------------------------ wiring */
 function wire() {
+  loadCatalogue();
+  loadDevices();
   $$('.tab').forEach((tab) => tab.onclick = () => {
     $$('.tab').forEach((t) => t.classList.remove('active'));
     $$('.tabpane').forEach((p) => p.classList.remove('active'));
     tab.classList.add('active');
     $('#tab-' + tab.dataset.tab).classList.add('active');
+    if (tab.dataset.tab === 'devices' && !DEVICES.length) loadDevices();
   });
 
   $('#btn-campaign').onclick = () => api('/api/campaign', {
@@ -605,6 +895,13 @@ function wire() {
     api('/api/ai/provider', { provider, consent: $('#chk-or-consent').checked })
       .then(() => loadModels(provider === 'auto' ? '' : provider));
   };
+  $('#btn-cortex').onclick = () => api('/api/ai/provider', {
+    provider: 'cortex', host: $('#inp-cortex-host').value.trim() || undefined,
+  }).then((r) => {
+    if (!r) return;
+    toast('provider: ' + (r.provider || 'cortex') + ' — a local model served by Cortex LLMHoster');
+    loadModels('cortex');
+  });
   $('#btn-or-key').onclick = () => api('/api/ai/key', { key: $('#inp-or-key').value })
     .then(() => { $('#inp-or-key').value = ''; loadModels('openrouter'); });
   $('#chk-or-redact').onchange = (e) =>
@@ -617,6 +914,49 @@ function wire() {
   $('#inp-model-search').onkeydown = (e) => { if (e.key === 'Enter') loadModels(''); };
   $('#chk-free').onchange = () => loadModels('');
   $('#btn-pull').onclick = () => api('/api/ai/pull', { model: $('#inp-pull').value });
+  $$('#edition-switch .seg-btn').forEach((btn) => btn.onclick = () => setEdition(btn.dataset.edition));
+  $('#btn-devices-refresh').onclick = () => loadDevices();
+  $('#inp-device-filter').oninput = renderDeviceGrid;
+  $('#sel-device-group').onchange = renderDeviceGrid;
+  $('#chk-device-domain').onchange = renderDeviceGrid;
+  $('#sel-demo-host').onchange = () => {
+    const host = $('#sel-demo-host').value;
+    if (!host) return;
+    $('#inp-it-host').value = host;
+    const row = DEMO_HOSTS.find((entry) => entry.ip === host);
+    if (row && row.device) pickDevice(row.device, host);
+    else api('/api/device', { host }).then(() => toast(`IT attacks point at ${host}`));
+  };
+  $('#btn-point-host').onclick = () => {
+    const host = $('#inp-it-host').value.trim();
+    const port = Number($('#inp-it-port').value) || 0;
+    if (!host) { toast('type a host (or pick a simulated one)', true); return; }
+    api('/api/device', { host, port, device: SELECTED.device || '' })
+      .then((result) => {
+        if (!result) return;
+        SELECTED.host = host;
+        SELECTED.port = port;
+        $('#select-note').textContent = `the IT and Bluetooth attacks now talk to ${host}${port ? ':' + port : ''}`;
+        toast(`pointing the IT attacks at ${host}${port ? ':' + port : ''}`);
+        renderDevicePanel();
+      });
+  };
+  $('#btn-run-plan').onclick = runDiscoverySet;
+  $('#inp-attack-filter').oninput = renderCatalogue;
+  $('#sel-attack-category').onchange = renderCatalogue;
+  $('#sel-attack-domain').onchange = renderCatalogue;
+  $('#chk-only-device').onchange = renderCatalogue;
+  $('#btn-help').onclick = () => askHelp('');
+  $('#inp-help').onkeydown = (event) => { if (event.key === 'Enter') askHelp(''); };
+  $('#btn-help-explain').onclick = () => {
+    const name = (SELECTED.device && ((SELECTED.detail || {}).attacks || [])[0] || {}).name;
+    if (name) explainAttack(name);
+    else toast('pick a device (or press ? on an attack row)', true);
+  };
+  $$('.chip[data-helpq]').forEach((chip) => chip.onclick = () => {
+    $('#inp-help').value = chip.dataset.helpq;
+    askHelp('');
+  });
   $('#btn-chat').onclick = sendChat;
   $('#inp-chat').onkeydown = (e) => { if (e.key === 'Enter') sendChat(); };
   $$('.chip[data-q]').forEach((chip) => chip.onclick = () => {
@@ -631,7 +971,7 @@ function wire() {
   $('#inp-filter').oninput = () => SNAPSHOT && renderTargets(SNAPSHOT);
 
   document.body.addEventListener('click', (event) => {
-    const target = event.target.closest('[data-attack],[data-crack],[data-crack-mask],[data-detail],[data-toggle-attack],[data-tag]');
+    const target = event.target.closest('[data-attack],[data-crack],[data-crack-mask],[data-detail],[data-toggle-attack],[data-tag],[data-pick-device],[data-run-attack],[data-explain],[data-run-attack-row]');
     if (!target) return;
     if (target.dataset.attack) {
       const select = document.querySelector(`select[data-attack-select="${target.dataset.attack}"]`);
@@ -651,6 +991,12 @@ function wire() {
       api('/api/tag', { bssid: target.dataset.tag, tag: name });
     } else if (target.dataset.detail) {
       showDetail(target.dataset.detail);
+    } else if (target.dataset.pickDevice) {
+      pickDevice(target.dataset.pickDevice);
+    } else if (target.dataset.runAttack) {
+      runAttack(target.dataset.runAttack, '');
+    } else if (target.dataset.explain) {
+      explainAttack(target.dataset.explain);
     } else if (target.dataset.toggleAttack) {
       toggleAttack(target.dataset.toggleAttack);
     }

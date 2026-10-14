@@ -14,8 +14,10 @@ and the aircrack-ng suite; there is no supported macOS or Windows build, and
 wifipilot validates and executes it — the model never touches the radio. No model is required
 to run. The deterministic planner scores targets, picks attacks, triages failures and chooses
 cracking strategy on its own, offline and free; the **optional** advisor adds a model on top —
-a local one served by [Ollama](https://ollama.com) (nothing leaves the machine) or, opt-in
-with an API key and a spend cap, [OpenRouter](https://openrouter.ai). With the advisor off,
+a local one served by [Ollama](https://ollama.com) or
+[Cortex LLMHoster](https://github.com/codero-sus/Cortex_LLMHoster) (nothing leaves the
+machine) or, opt-in with an API key and a spend cap,
+[OpenRouter](https://openrouter.ai). With the advisor off,
 wifipilot never opens a socket to anything but your radio.
 
 ```bash
@@ -55,7 +57,7 @@ wp.ai(disable=True)                     # deterministic planner only, nothing se
 - [Real engagement](#real-engagement)
 - [The terminal UI](#the-terminal-ui)
 - [The web UI](#the-web-ui)
-- [Optional: the advisor (Ollama or OpenRouter)](#optional-the-advisor-ollama-or-openrouter)
+- [Optional: the advisor (a local model, or OpenRouter)](#optional-the-advisor-a-local-model-or-openrouter)
 - [Attacks](#attacks) — [reference for every attack](docs/ATTACKS.md)
 - [Cracking](#cracking)
 - [CLI reference](#cli-reference)
@@ -77,11 +79,11 @@ wp.ai(disable=True)                     # deterministic planner only, nothing se
 
 | document | what is in it |
 | --- | --- |
-| [docs/ATTACKS.md](docs/ATTACKS.md) | all 236 attacks: what each answers, what it costs, what it puts on the air, how to read the result, and its failure modes |
+| [docs/ATTACKS.md](docs/ATTACKS.md) | all 534 attacks, edition by edition and category by category: what each answers, what it costs, what it puts on the air, how to read the result, and its failure modes — plus the device shelf |
 | [docs/TUI.md](docs/TUI.md) | the terminal dashboard: every panel, the three `AI:` states, the plain-text fallback, `--json` behaviour |
 | [docs/web-ui.md](docs/web-ui.md) | the browser UI screen by screen, its controls, and the full REST/WebSocket surface |
 | [docs/PYTHON-API.md](docs/PYTHON-API.md) | the pipeline and the library surface: `import wifipilot as wp`, run objects, hooks, the advisor switch |
-| [docs/AI-PROVIDERS.md](docs/AI-PROVIDERS.md) | the two model providers, key handling, costs, the privacy model — and how to turn all of it off |
+| [docs/AI-PROVIDERS.md](docs/AI-PROVIDERS.md) | the model providers (Ollama, Cortex LLMHoster, OpenRouter), key handling, costs, the privacy model — and how to turn all of it off |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | modules, data flow, the three front ends, the safety model, performance work |
 | [docs/ETHICS-AND-LEGAL.md](docs/ETHICS-AND-LEGAL.md) | the authorisation gate and the law, before you point this at anything |
 | [CHANGELOG.md](CHANGELOG.md) | what changed, batch by batch |
@@ -168,7 +170,9 @@ aircrack-ng suite properly) and rebuilds everything around it:
   situation report every N seconds and proposes the next actions with reasoning
 - **failure triage**: natural-language diagnosis of why an attack failed and what to do next
 - **chat**: ask about the running engagement ("what is the biggest risk we found?")
-- **local by default** (Ollama): free, offline, nothing leaves the machine
+- **local by default**: free, offline, nothing leaves the machine — Ollama, or
+  [Cortex LLMHoster](https://github.com/codero-sus/Cortex_LLMHoster) when you would rather
+  have `llama.cpp` started for you behind an OpenAI-shaped API
 - **cloud on request** (OpenRouter): opt-in with an API key, spend cap, provider routing and
   identifier redaction — SSIDs, BSSIDs, client MACs and recovered PSKs become
   `ssid-1`/`bssid-1`/`mac-1`/`psk-1` before they are sent, and are mapped back before the
@@ -308,6 +312,13 @@ wifipilot --provider openrouter --ai-budget 0.50 ai providers --probe
 wifipilot --provider openrouter --model openai/gpt-4o-mini attack -d 45m
 ```
 
+Or the local OpenAI-compatible host, if that is what you already run:
+
+```bash
+cortex-llmhoster --config cortex.toml           # 127.0.0.1:8624 by default
+wifipilot --provider cortex --cortex-model qwen-local attack -d 45m
+```
+
 OpenRouter is off until you enable it; identifiers are pseudonymised by default; see
 [docs/AI-PROVIDERS.md](docs/AI-PROVIDERS.md) for key handling, costs and the privacy model.
 
@@ -322,7 +333,7 @@ import wifipilot as wp
 # rehearse the whole pipeline with no radio and no risk
 wp.attack(target=all, mode="force", demo=True, duration="2m")
 
-# a real, authorised engagement; "force" runs all 248 attacks, "stealth" is listen-only
+# a real, authorised engagement; "force" runs all 534 attacks, "stealth" is listen-only
 wp.authorize("change ticket CHG-4711, client ACME Labs")
 result = wp.attack(target="Cafe Guest", mode="default", duration="45m",
                    on_event=lambda event: print(event.kind, event.data))
@@ -447,7 +458,7 @@ proxy or an SSH tunnel (`ssh -L 8787:localhost:8787 box`).
 > The UI binds `0.0.0.0` by default so containers and tunnels work out of the box. On an
 > untrusted network, bind loopback instead: `wifipilot web --host 127.0.0.1`.
 
-## Optional: the advisor (Ollama or OpenRouter)
+## Optional: the advisor (a local model, or OpenRouter)
 
 **Skip this section if you do not want a model in the loop.** Everything above works without
 it; this is the extra. Two providers, one advisor. Switching is a flag, a config key, a
@@ -502,10 +513,12 @@ Details, including the full failure matrix and model recommendations:
 
 ## Attacks
 
-**248 attacks**, and the list is not a tool inventory: every entry either answers a
-question an assessment has to answer or produces loot that can be cited. They are grouped
-by what they cost (`wifipilot attacks` prints the same catalogue the planner, the web UI
-and the report read):
+**534 attacks in three editions** — 213 on the WiFi radio, 35 on Bluetooth, 286 against
+the devices and services behind the bridge — and the list is not a tool inventory: every
+entry either answers a question an assessment has to answer or produces loot that can be
+cited. They are grouped by what they cost (`wifipilot attacks` prints the same catalogue
+the planner, the web UI and the report read; `wifipilot attacks --domain it` prints one
+edition, `wifipilot --edition it attack` plans one):
 
 | family | what it is | examples |
 |---|---|---|
@@ -517,6 +530,8 @@ and the report read):
 | **dos** | deliberate disruption, opt-in and time-capped, with detection as the finding | `deauth_flood`, `assoc_flood`, `null_data_flood`, `eapol_start_flood`, `sae_commit_flood`, `tkip_michael`, `wids_confusion` |
 | **bluetooth** | the second radio: censuses, beacons, trackers, pairing and the link layer | `bt_device_census`, `bt_tracker_detect`, `bt_le_scan`, `bt_beacon_clone`, `bt_gatt_enumeration` |
 | **network** | the layer behind the bridge: DHCP, TCP/IP, name resolution, layer 2, IoT services | `dhcp_starvation`, `dhcp_lease_audit`, `syn_flood`, `rogue_ra`, `llmnr_poisoning`, `pjl_printer_audit` |
+| **discovery** (IT) | the service and device census, one protocol at a time, and the two audits every service gets: the version read checked against the advisory list and the proof that the protocol carries its traffic in the clear | `it_http_discover`, `it_mdns_service_census`, `it_host_discovery`, `it_rtsp_version_audit`, `it_telnet_cleartext_audit` |
+| **exploit** (IT) | the device and service attacks: default credentials, anonymous access, unauthenticated writes, config dumps, protocol abuse — cameras, printers, PLCs, building systems, servers, VoIP and smart home | `it_rtsp_anonymous`, `it_ipp_default_creds`, `it_modbus_unauth_write`, `it_s7comm_config_dump`, `it_sip_default_creds`, `it_kasa_unauth_write` |
 
 Every attack carries a category, a **noise** level (how visible it is), an **impact**
 level (what changes for the site if it works) and a sentence about **what a defender
@@ -1038,7 +1053,9 @@ bully, hcxtools, hashcat and Ollama. Use it only where you are allowed to.
 
 ## Every attack at a glance
 
-The full reference for each of the **248 attacks** — what it answers, what it costs, what goes on the air, how it fails — is in [docs/ATTACKS.md](docs/ATTACKS.md); this is the index. `wifipilot attacks` prints it with the metadata, `--json` returns it, and `--no-radio` filters it to the attacks that transmit nothing.
+The full reference for each of the **534 attacks** — what it answers, what it costs, what goes on the air, how it fails — is in [docs/ATTACKS.md](docs/ATTACKS.md); this is the index. `wifipilot attacks` prints it with the metadata, `--json` returns it, and `--no-radio` filters it to the attacks that transmit nothing.
+
+Three editions, one registry: **Bluetooth 35**, **IT devices 286**, **WiFi 213** — plus **65 device types** that carry the attacks applying to them. `wifipilot --edition it` (or the web UI's edition switch) plans one of them; `wifipilot attacks --domain it` prints it; `wifipilot.devices()` returns the shelf.
 
 * **Offline analysis (no radio at all) (121)** — `loot_audit`, `eapol_audit`, `wep_audit`, `pixie_offline`, `eap_md5_crack`, `crack_sweep`, `rogue_detect`, `twin_detect`, `roam_audit`, `wps_lockout_audit`, `capture_quality`, `hash_audit`, `wordlist_audit`, `wordlist_mine`, `crack_plan`, `vendor_fingerprint`, `beacon_timeline`, `cleartext_sniff`, `pmk_check`, `loot_manifest`, `krack_detect`, `kr00k_detect`, `fragattacks_detect`, `ft_audit`, `beacon_rate_audit`, `tsf_clone_detect`, `client_fingerprint`, `mschapv2_crack`, `mic_check`, `nonce_reuse_audit`, `key_version_audit`, `tkip_countermeasures_audit`, `group_cipher_audit`, `cipher_downgrade_audit`, `rsn_ie_audit`, `ie_anomaly_audit`, `malformed_ie_audit`, `wildcard_probe_audit`, `randomised_mac_ratio`, `probe_privacy_audit`, `assoc_history_audit`, `client_vendor_audit`, `client_count_audit`, `data_frame_audit`, `protected_ratio_audit`, `duration_field_audit`, `retransmit_audit`, `fragment_audit`, `beacon_interval_audit`, `tsf_skew_audit`, `assoc_response_audit`, `auth_response_audit`, `ssid_length_audit`, `encryption_inventory`, `bssid_oui_audit`, `signal_histogram`, `channel_usage_audit`, `channel_overlap_audit`, `handshake_message_audit`, `pmkid_presence_audit`, `eapol_retry_audit`, `wpa3_transition_audit`, `sa_query_activity`, `eapol_logoff_audit`, `llc_snap_audit`, `qos_audit`, `power_save_audit`, `broadcast_storm_audit`, `gratuitous_arp_audit`, `arp_scan_detect`, `dhcp_fingerprint_audit`, `duplicate_seq_audit`, `deauth_storm_detect`, `auth_flood_detect`, `probe_flood_detect`, `pcap_report`, `capture_coverage`, `beacon_rate_histogram`, `auth_algorithm_inventory`, `station_inventory`, `quality_histogram`, `vendor_ie_inventory`, `hidden_ap_audit`, `extended_capability_audit`, `rrm_measurement_audit`, `neighbour_report_audit`, `ft_mobility_audit`, `bss_load_audit`, `interworking_audit`, `hs20_audit`, `wmm_parameter_audit`, `wps_config_audit`, `country_power_audit`, `ssid_hygiene_audit`, `security_mismatch_audit`, `client_capability_audit`, `frame_control_audit`, `airtime_estimate`, `probe_response_latency_audit`, `eapol_key_flags_audit`, `group_rekey_audit`, `eapol_timing_audit`, `bt_device_census`, `bt_tracker_detect`, `bt_tracker_follow`, `bt_ibeacon_audit`, `bt_eddystone_audit`, `bt_address_privacy`, `bt_manufacturer_census`, `bt_service_census`, `bt_interval_audit`, `bt_channel_audit`, `bt_connectable_audit`, `bt_pairing_audit`, `bt_gatt_audit`, `bt_feature_audit`, `dhcp_lease_audit`, `ipv6_prefix_audit`, `iot_credential_audit`, `iot_service_census`, `ssdp_device_census`
 * **Surveys the air, transmits nothing (27)** — `passive`, `rogue_ap`, `ie_audit`, `pmf_audit`, `saewolf`, `sae_group_audit`, `hidden_ssid`, `pnl_harvest`, `tracker`, `ap_admin_audit`, `upnp_audit`, `snmp_audit`, `dns_audit`, `wpad_audit`, `rogue_dhcp_detect`, `arp_spoof_detect`, `ipv6_ra_audit`, `mac_filter_probe`, `channel_sweep`, `bt_le_scan`, `bt_hci_inquiry`, `bt_sdp_browse`, `bt_rfcomm_scan`, `bt_gatt_enumeration`, `mqtt_recon`, `rtsp_camera_audit`, `pjl_printer_audit`
@@ -1047,7 +1064,9 @@ The full reference for each of the **248 attacks** — what it answers, what it 
 * **WEP (6)** — `arp_replay`, `wep_ivs`, `wep_p0841`, `wep_chopchop`, `wep_fragment`, `wep_hirte`
 * **Enterprise (802.1X) (8)** — `enterprise`, `eap_identity_harvest`, `eap_method_probe`, `certificate_audit`, `ttls_inner_audit`, `eap_tls_version`, `radius_secret_test`, `rogue_radius`
 * **Rogue infrastructure and lures (41)** — `eapol_logoff`, `karma_detect`, `csa_attack`, `ssid_bruteforce`, `ssid_confusion`, `ap_isolation_audit`, `pmf_downgrade_probe`, `btm_hijack`, `evil_twin`, `karma`, `rogue_dhcp`, `dns_sink`, `captive_portal`, `arp_mitm`, `beacon_clone`, `wpa3_downgrade_twin`, `bt_beacon_clone`, `bt_tracker_clone`, `bt_connectable_lure`, `forged_dhcp_release`, `dhcp_nak_injection`, `dhcp_option_injection`, `tcp_reset_injection`, `icmp_redirect_injection`, `icmp_unreachable_injection`, `rogue_ra`, `ns_na_spoof`, `llmnr_poisoning`, `nbns_poisoning`, `mdns_poisoning`, `stp_root_takeover`, `lldp_spoof`, `cdp_spoof`, `vlan_double_tag_hop`, `bt_bias`, `bt_knob`, `bt_bluebugging`, `bt_blesa`, `bt_bluesnarf`, `bt_hid_injection`, `airgeddon_portal`
-* **Denial-of-service tests (opt-in) (33)** — `deauth_flood`, `auth_flood`, `assoc_flood`, `null_data_flood`, `probe_flood`, `eapol_start_flood`, `sae_commit_flood`, `tkip_michael`, `wids_confusion`, `beacon_flood`, `disassoc_flood`, `rts_flood`, `cts_flood`, `channel_switch_flood`, `sa_query_flood`, `tdls_teardown_flood`, `probe_response_flood`, `dhcp_discover_flood`, `bt_adv_name_flood`, `bt_adv_dos`, `bt_pairing_flood`, `bt_l2cap_echo_flood`, `dhcp_starvation`, `dhcp_flood`, `syn_flood`, `udp_flood`, `udp_reflection`, `ra_flood`, `bt_blueborne`, `bt_sweyntooth`, `bt_bluesmack`, `krack_replay`, `fragattacks_inject`
+* **Discovery and fingerprinting (no radio either) (99)** — `it_http_discover`, `it_http_banner`, `it_http_version_audit`, `it_http_json_discover`, `it_http_json_version_audit`, `it_http_json_jenkins_audit`, `it_mqtt_discover`, `it_mqtt_version_audit`, `it_coap_discover`, `it_coap_version_audit`, `it_modbus_discover`, `it_modbus_version_audit`, `it_bacnet_discover`, `it_bacnet_version_audit`, `it_rtsp_discover`, `it_rtsp_version_audit`, `it_onvif_discover`, `it_onvif_version_audit`, `it_ipp_discover`, `it_ipp_version_audit`, `it_pjl_discover`, `it_pjl_version_audit`, `it_telnet_banner`, `it_telnet_version_audit`, `it_sip_discover`, `it_sip_version_audit`, `it_cwmp_discover`, `it_cwmp_version_audit`, `it_smb_discover`, `it_smb_version_audit`, `it_ldap_discover`, `it_ldap_version_audit`, `it_redis_discover`, `it_redis_version_audit`, `it_memcached_discover`, `it_memcached_version_audit`, `it_mongo_discover`, `it_mongo_version_audit`, `it_kasa_discover`, `it_kasa_version_audit`, `it_cast_discover`, `it_cast_version_audit`, `it_airplay_discover`, `it_airplay_version_audit`, `it_adb_discover`, `it_adb_version_audit`, `it_vnc_discover`, `it_vnc_version_audit`, `it_pjlink_discover`, `it_pjlink_version_audit`, `it_dicom_discover`, `it_dicom_version_audit`, `it_s7comm_discover`, `it_s7comm_version_audit`, `it_cip_discover`, `it_cip_version_audit`, `it_dnp3_discover`, `it_dnp3_version_audit`, `it_iec104_discover`, `it_iec104_version_audit`, `it_opcua_discover`, `it_opcua_version_audit`, `it_ssh_banner`, `it_ssh_version_audit`, `it_rdp_discover`, `it_rdp_version_audit`, `it_postgres_discover`, `it_postgres_version_audit`, `it_mysql_discover`, `it_mysql_version_audit`, `it_rsync_discover`, `it_rsync_version_audit`, `it_ftp_banner`, `it_ftp_version_audit`, `it_smtp_discover`, `it_smtp_version_audit`, `it_miio_discover`, `it_miio_version_audit`, `it_ssdp_discover`, `it_ssdp_version_audit`, `it_mdns_discover`, `it_mdns_service_census`, `it_mdns_version_audit`, `it_host_discovery`, `it_device_inventory`, `it_port_exposure`, `it_cleartext_service_audit`, `it_firmware_advisory_audit`, `it_camera_exposure_audit`, `it_printer_exposure_audit`, `it_ot_exposure_audit`, `it_medical_device_audit`, `it_container_exposure_audit`, `it_database_exposure_audit`, `it_share_enumeration`, `it_voip_exposure_audit`, `it_smart_home_audit`, `it_iot_service_census`, `it_exposure_report`
+* **Device and service attacks (IP, not radio) (158)** — `it_http_version`, `it_http_default_creds`, `it_http_auth_bypass`, `it_http_config_dump`, `it_http_cleartext`, `it_http_json_unauth_read`, `it_http_json_unauth_write`, `it_http_json_config_dump`, `it_http_json_cluster_read`, `it_http_json_search_read`, `it_http_json_cleartext_audit`, `it_mqtt_anonymous`, `it_mqtt_default_creds`, `it_mqtt_subscribe`, `it_mqtt_publish`, `it_mqtt_cleartext_audit`, `it_coap_unauth_read`, `it_coap_unauth_write`, `it_coap_fuzz`, `it_coap_cleartext_audit`, `it_modbus_unauth_read`, `it_modbus_unauth_write`, `it_modbus_config_dump`, `it_modbus_fuzz`, `it_modbus_cleartext_audit`, `it_bacnet_unauth_read`, `it_bacnet_unauth_write`, `it_bacnet_config_dump`, `it_bacnet_cleartext_audit`, `it_rtsp_anonymous`, `it_rtsp_default_creds`, `it_rtsp_version`, `it_rtsp_config_dump`, `it_rtsp_cleartext_audit`, `it_onvif_version`, `it_onvif_config_dump`, `it_onvif_default_creds`, `it_onvif_stream_uri`, `it_onvif_cleartext_audit`, `it_ipp_version`, `it_ipp_anonymous`, `it_ipp_default_creds`, `it_ipp_config_dump`, `it_ipp_cleartext_audit`, `it_pjl_version`, `it_pjl_config_dump`, `it_pjl_unauth_write`, `it_pjl_filesys_audit`, `it_pjl_cleartext_audit`, `it_telnet_version`, `it_telnet_default_creds`, `it_telnet_cleartext`, `it_sip_challenge_audit`, `it_sip_enum`, `it_sip_default_creds`, `it_sip_cleartext`, `it_sip_cleartext_audit`, `it_cwmp_config_dump`, `it_cwmp_unauth_write`, `it_cwmp_version`, `it_cwmp_cleartext_audit`, `it_smb_version`, `it_smb_signing_audit`, `it_smb_null_session`, `it_smb_cleartext_audit`, `it_ldap_anonymous`, `it_ldap_version`, `it_ldap_default_creds`, `it_ldap_unauth_read`, `it_ldap_cleartext_audit`, `it_redis_anonymous`, `it_redis_version`, `it_redis_config_dump`, `it_redis_unauth_write`, `it_redis_cleartext_audit`, `it_memcached_version`, `it_memcached_unauth_read`, `it_memcached_unauth_write`, `it_memcached_cleartext_audit`, `it_mongo_version`, `it_mongo_anonymous`, `it_mongo_unauth_read`, `it_mongo_cleartext_audit`, `it_kasa_anon_read`, `it_kasa_unauth_write`, `it_kasa_version`, `it_kasa_cleartext_audit`, `it_cast_unauth_read`, `it_cast_unauth_write`, `it_cast_cleartext_audit`, `it_airplay_version`, `it_airplay_auth_audit`, `it_airplay_cleartext_audit`, `it_adb_anonymous`, `it_adb_version`, `it_adb_unauth_read`, `it_adb_cleartext_audit`, `it_vnc_anonymous`, `it_vnc_version`, `it_vnc_default_creds`, `it_vnc_cleartext_audit`, `it_pjlink_version`, `it_pjlink_unauth_write`, `it_pjlink_cleartext_audit`, `it_dicom_echo`, `it_dicom_config_dump`, `it_dicom_version`, `it_dicom_cleartext_audit`, `it_s7comm_version`, `it_s7comm_unauth_read`, `it_s7comm_config_dump`, `it_s7comm_cleartext_audit`, `it_cip_version`, `it_cip_unauth_read`, `it_cip_cleartext_audit`, `it_dnp3_unauth_read`, `it_dnp3_version`, `it_dnp3_cleartext_audit`, `it_iec104_unauth_read`, `it_iec104_version`, `it_iec104_cleartext_audit`, `it_opcua_version`, `it_opcua_endpoint_audit`, `it_opcua_cleartext_audit`, `it_ssh_version`, `it_ssh_kex_audit`, `it_ssh_default_creds`, `it_rdp_nla_audit`, `it_rdp_version`, `it_postgres_anonymous`, `it_postgres_version`, `it_postgres_default_creds`, `it_postgres_cleartext_audit`, `it_mysql_version`, `it_mysql_tls_audit`, `it_mysql_default_creds`, `it_mysql_cleartext_audit`, `it_rsync_modules`, `it_rsync_unauth_read`, `it_rsync_version`, `it_rsync_cleartext_audit`, `it_ftp_version`, `it_ftp_anonymous`, `it_ftp_default_creds`, `it_ftp_cleartext`, `it_smtp_version`, `it_smtp_open_relay`, `it_smtp_starttls_audit`, `it_smtp_cleartext`, `it_miio_token`, `it_miio_version`, `it_miio_cleartext_audit`, `it_ssdp_version`, `it_ssdp_unauth_write`, `it_ssdp_cleartext_audit`, `it_mdns_config_dump`, `it_mdns_cleartext_audit`, `it_default_credential_sweep`
+* **Denial-of-service tests (opt-in) (62)** — `deauth_flood`, `auth_flood`, `assoc_flood`, `null_data_flood`, `probe_flood`, `eapol_start_flood`, `sae_commit_flood`, `tkip_michael`, `wids_confusion`, `beacon_flood`, `disassoc_flood`, `rts_flood`, `cts_flood`, `channel_switch_flood`, `sa_query_flood`, `tdls_teardown_flood`, `probe_response_flood`, `dhcp_discover_flood`, `bt_adv_name_flood`, `bt_adv_dos`, `bt_pairing_flood`, `bt_l2cap_echo_flood`, `dhcp_starvation`, `dhcp_flood`, `syn_flood`, `udp_flood`, `udp_reflection`, `ra_flood`, `bt_blueborne`, `bt_sweyntooth`, `bt_bluesmack`, `krack_replay`, `fragattacks_inject`, `it_http_flood`, `it_mqtt_flood`, `it_coap_flood`, `it_modbus_flood`, `it_bacnet_flood`, `it_rtsp_flood`, `it_ipp_flood`, `it_pjl_flood`, `it_sip_flood`, `it_smb_flood`, `it_ldap_flood`, `it_redis_flood`, `it_memcached_flood`, `it_mongo_flood`, `it_kasa_flood`, `it_cast_flood`, `it_adb_flood`, `it_vnc_flood`, `it_pjlink_flood`, `it_dicom_flood`, `it_s7comm_flood`, `it_cip_flood`, `it_dnp3_flood`, `it_iec104_flood`, `it_opcua_flood`, `it_ssh_flood`, `it_rdp_flood`, `it_postgres_flood`, `it_miio_flood`
 
-<!-- 248 attacks -->
+<!-- 534 attacks -->
 <!-- attack-index:end -->
