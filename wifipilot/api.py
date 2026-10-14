@@ -57,7 +57,8 @@ __all__ = [
     "configure", "config", "demo", "authorize", "ai", "set_provider", "providers",
     "advisor_status",
     "scan", "attack", "crack", "analyze", "export", "suggest_masks", "loot", "report",
-    "strategies", "catalogue", "targets", "select", "selected", "note", "notes", "tag", "history",
+    "strategies", "catalogue", "editions", "simulations", "devices", "device",
+    "targets", "select", "selected", "note", "notes", "tag", "history",
     "vendor", "identify", "passwords", "advice", "benchmark", "hash_stats",
     "merge_hashes", "rescue_capture", "wordlist_stats", "expand_wordlist",
     "rules_info", "loot_manifest", "verify_loot",
@@ -1100,6 +1101,46 @@ def editions() -> List[Dict[str, object]]:
         row["attacks"] = counts.get(str(row.get("id")), total)
         rows.append(row)
     return rows
+
+
+def simulations(edition: str = "") -> Dict[str, Any]:
+    """The simulated environments a demo run meets, and what they are made of.
+
+    Demo mode is a simulation, not a stub: :mod:`wifipilot.blesim` answers HCI the way a
+    controller does and :mod:`wifipilot.itsim` answers the protocols a segment speaks, so
+    a demo run goes through the same parsers, the same decoders and the same verdicts as
+    a live one.  This is that simulation in data form — the Bluetooth floor's devices,
+    profiles and link roles, and the IT segment's hosts, ports and responders — for a
+    script, the CLI (``wifipilot sim``) or a UI that wants to show what a demo is made of.
+
+    >>> import wifipilot as wp
+    >>> data = wp.simulations("bluetooth")["bluetooth"]
+    >>> data["devices"] > 40 and data["trackers"] >= 1
+    True
+    >>> wp.simulations("it")["it"]["hosts"]
+    51
+    """
+    wanted = (edition or "").strip().lower()
+    if wanted in ("bt", "ble", "blue"):
+        wanted = "bluetooth"
+    if wanted not in ("", "all", "bluetooth", "it"):
+        raise TargetError(f"no such edition: {edition!r} (bluetooth, it or all)")
+
+    out: Dict[str, Any] = {"edition": wanted or "all"}
+    if wanted in ("", "all", "bluetooth"):
+        from . import blesim
+
+        out["bluetooth"] = dict(blesim.summary(),
+                                link_roles=dict(blesim.LINK_ROLES),
+                                weakness_order=list(blesim.WEAKNESS_ORDER),
+                                catalog=blesim.ble_catalog())
+    if wanted in ("", "all", "it"):
+        from . import itsim
+
+        lan = itsim.demo_lan()
+        out["it"] = dict(lan.summary(), weakness_order=list(itsim.WEAKNESS_ORDER),
+                         catalog=lan.catalog())
+    return out
 
 
 def devices(edition: str = "", group: str = "", device: str = "") -> List[Dict[str, object]]:

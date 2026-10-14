@@ -159,6 +159,10 @@ wp.editions()                                              # {'wifi': 213, 'blue
 len(wp.devices())                                          # 65 device types
 wp.device("printer")["plan"]                                # what to run against one
 wp.device("nope")                                          # {} — unknown ids answer empty
+wp.simulations()                                            # what a --demo run meets: the
+                                                            #  simulated floor and segment
+wp.simulations("bluetooth")["bluetooth"]["devices"]         # 46 simulated devices, 8 postures
+wp.simulations("it")["it"]["hosts"]                         # 51 simulated hosts, 45 responders
 wp.catalogue(offline_only=True)                             # the ten that need no radio
 wp.catalogue(category="dos")                                # the denial-of-service tests
 

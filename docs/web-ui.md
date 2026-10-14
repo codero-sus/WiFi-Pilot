@@ -120,6 +120,7 @@ GET  /api/survey              GET  /api/pins        GET  /api/pmk/cache
 POST /api/pmk/verify          GET  /api/eap
 GET  /api/editions            POST /api/edition     GET  /api/catalog
 GET  /api/devices             POST /api/device      POST /api/help
+GET  /api/sim
 ```
 
 The three editions and the device shelf are endpoints too: `/api/editions` returns the
@@ -129,6 +130,11 @@ filters the library does (`?domain=it`, `?device=ip_camera`, `?q=rtsp`, `?catego
 `?port=9100`) with every device's label, ports, protocols and the names of the attacks that
 fit it, and `POST /api/device` picks one (`{"device": "ip_camera", "host": "10.0.0.9",
 "port": 554}`) — the host lands in `config.it_host`, so the next IT attack talks to it.
+`GET /api/sim` returns the two simulated environments a demo run meets — the Bluetooth
+floor (`blesim.py`: 46 devices, their postures, link roles and per-device rows) and the IT
+segment (`itsim.py`: 51 hosts, their ports, profiles and the 45 responders behind them) —
+from the same function the CLI (`wifipilot sim`) and the library (`wp.simulations()`) read,
+so what the UI says a simulation contains is what it contains.
 `POST /api/help` is the offline assistant, and it is useful with no model at all: a
 question is resolved against the catalogue first — a device type by its id or its label
 word ("how do I test a printer?" answers with the printer's briefing, its ports and the

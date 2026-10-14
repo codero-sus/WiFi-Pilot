@@ -58,6 +58,8 @@ __all__ = [
     "session", "engine", "subscribe", "stop", "reset", "is_running",
     # editions and the device shelf
     "editions", "devices", "device",
+    # the simulated environments a demo run meets
+    "simulations",
 ]
 
 TOOL_NAME = "wifipilot"
@@ -85,7 +87,7 @@ from .api import (  # noqa: E402  (import at the end: api.py imports config/mode
     ScanResult, TargetError, WifiPilotError, advisor_status, analyze, attack, authorize,
     config, configure, crack, current_run, demo, engine, export, is_running, loot,
     suggest_masks, strategies, catalogue, targets, select, selected, note, notes, tag, history,
-    editions, devices, device,
+    editions, devices, device, simulations,
     vendor, identify, passwords, advice, benchmark, hash_stats, merge_hashes,
     rescue_capture, wordlist_stats, expand_wordlist, rules_info, loot_manifest,
     verify_loot, survey, probes, pins, reveal, eap, decode, pmk_verify, pmk_convert,

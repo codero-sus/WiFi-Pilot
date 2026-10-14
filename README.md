@@ -372,6 +372,16 @@ the scanner parses them, the planner scores them, the attacks run and produce ca
 are *cryptographically valid* (real PBKDF2/PTK/AES-CMAC values), and the cracker cracks them.
 Only the radio is fake — which is why the demo is also the test suite's end-to-end test.
 
+The two non-radio editions have their own simulation, and neither is a stub:
+
+| simulated environment | what answers | look at it |
+|---|---|---|
+| **Bluetooth floor** — `blesim.py` | a virtual controller (HCI in, H4 events out) and 46 devices across 8 posture profiles: a KNOB-vulnerable soundbar, an open GATT band, a fragile stack, an OBEX object store, HID hosts, trackers and beacons. The L2CAP, ATT, SMP, SDP, RFCOMM, AT and OBEX engines answer with real protocol bytes, so the same parsers read a demo run and a live one — and the floor is also written as a real `LINKTYPE_BLUETOOTH_LE_LL_WITH_PHDR` capture for the offline audits | `wifipilot sim --domain bluetooth --list` |
+| **IT segment** — `itsim.py` | 51 hosts (routers, cameras, PLCs, printers, a domain controller) across six postures, with 72 open ports and 45 protocol responders — HTTP, SMB, Modbus, IPP, LDAP, MySQL, MQTT, CoAP, SSDP, mDNS and the rest | `wifipilot sim --domain it --list` |
+
+`wifipilot sim` (or `wp.simulations()` / `GET /api/sim`) prints what both contain, including
+every simulated device and host, so a demo run can be inspected rather than taken on faith.
+
 ## Real engagement
 
 ```bash

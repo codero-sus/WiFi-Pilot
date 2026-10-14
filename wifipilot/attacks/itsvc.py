@@ -64,22 +64,19 @@ class ItTarget:
         return itdev.device_type_label(self.device) if self.device else "unknown device"
 
 
-#: one shared simulated network per process: every IT attack in a demo run meets the same
-#: devices, which is what makes a demo comparable with the last one.
-_LAN: Optional[VirtualLan] = None
-
-
+#: the simulated segment is owned by :mod:`wifipilot.itsim` — it is the simulation, not
+#: the attacks, that holds the state — and read from here so every IT attack in a demo
+#: run meets the same hosts, which is what makes a demo comparable with the last one.
 def demo_lan() -> VirtualLan:
-    global _LAN
-    if _LAN is None:
-        _LAN = VirtualLan(build_lan())
-    return _LAN
+    """The shared simulated segment (see :func:`wifipilot.itsim.demo_lan`)."""
+    from .. import itsim
+    return itsim.demo_lan()
 
 
-def reset_demo_lan() -> None:
+def reset_demo_lan() -> VirtualLan:
     """Start a fresh simulated segment (used by the tests, and by a new demo session)."""
-    global _LAN
-    _LAN = None
+    from .. import itsim
+    return itsim.reset_demo_lan()
 
 
 def target_from(ctx: AttackContext, ap: Optional[AccessPoint],

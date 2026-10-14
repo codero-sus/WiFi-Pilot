@@ -152,7 +152,8 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
         data["edition"] = summary
         data["devices"] = {"selected": {"host": getattr(config, "it_host", ""),
                                         "port": getattr(config, "it_port", 0),
-                                        "device": getattr(config, "it_device", "")},
+                                        "device": getattr(config, "it_device", ""),
+                                        "bt": getattr(config, "bt_target", "")},
                            "counts": summary["attacks"]}
         if getattr(config, "it_device", ""):
             data["device"] = device_payload(str(config.it_device),
@@ -234,6 +235,13 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
             return []
         return lan_catalog(build_lan())
 
+    def demo_ble() -> List[Dict[str, Any]]:
+        """The simulated Bluetooth floor, so a device can be picked by its address."""
+        try:
+            from ..blesim import ble_catalog
+        except Exception:                                       # pragma: no cover
+            return []
+        return ble_catalog()
     @app.get("/api/editions")
     async def api_editions() -> Dict[str, Any]:
         return edition_summary()
@@ -307,9 +315,57 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
             people = people[:limit]
         return {"count": len(people), "groups": DEVICE_GROUPS, "devices": people,
                 "demo_hosts": demo_hosts() if state.demo else [],
+                "demo_ble": demo_ble() if state.demo else [],
                 "selected": {"host": getattr(config, "it_host", ""),
                              "port": getattr(config, "it_port", 0),
-                             "device": getattr(config, "it_device", "")}}
+                             "device": getattr(config, "it_device", ""),
+                             "bt": getattr(config, "bt_target", "")}}
+
+    @app.get("/api/sim")
+    async def api_sim(domain: str = Query(""),
+                      limit: int = Query(0, description="rows to include (0 = all)")) -> Dict[str, Any]:
+        """What the simulated environments contain — the same data ``wifipilot sim`` prints.
+
+        A demo run is a simulation, not a stub, and this is what the simulation is made of:
+        the Bluetooth floor's devices with their profiles and roles, and the IT segment's
+        hosts with their ports and the responders behind them.  The UI's simulated-device
+        picker, the CLI and ``wp.simulations()`` all read this one answer.
+        """
+        from ..api import simulations
+        from ..itdev import domain_label
+        try:
+            data = simulations(domain)
+        except Exception as exc:                                # unknown edition
+            raise HTTPException(status_code=400, detail=str(exc))
+        if domain:
+            data["edition_label"] = domain_label(domain.strip().lower())
+        if limit and limit > 0:
+            for key in ("bluetooth", "it"):
+                block = data.get(key)
+                if block and isinstance(block.get("catalog"), list):
+                    block["catalog"] = block["catalog"][:limit]
+        return data
+
+    @app.post("/api/sim/target")
+    async def api_sim_target(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+        """Point the Bluetooth attacks at a simulated device (the floor's own address list)."""
+        address = str(payload.get("address") or "").strip().lower()
+        if not address:
+            raise HTTPException(status_code=400, detail="address required")
+        from ..blesim import ble, ble_catalog
+
+        device: Dict[str, Any] = {}
+        if address != "auto":
+            row = ble().by_address(address)
+            if row is None:
+                raise HTTPException(status_code=404,
+                                    detail=f"no simulated device at {address}")
+            device = row.to_dict()
+        config.bt_target = "" if address == "auto" else address
+        return {"ok": True, "selected": {"bt": getattr(config, "bt_target", ""),
+                                         "bt_auto": not address or address == "auto"},
+                "device": device,
+                "count": len(ble_catalog())}
 
     @app.post("/api/device")
     async def api_select_device(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
