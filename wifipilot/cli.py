@@ -51,7 +51,123 @@ try:
     from rich.text import Text
     HAVE_RICH = True
 except ImportError:  # pragma: no cover
+    # rich is the *only* runtime dependency of the core CLI, and it is a nicety: the
+    # panels, tables and colour are there to make a long run readable, not to make it
+    # work.  A machine that has no rich — a minimal container, a locked-down consultant's
+    # laptop, an air-gapped box — still has to be able to run an assessment, so the
+    # names the rest of this module uses are defined here as plain stand-ins that render
+    # to text.  Without them the first ``Panel(...)`` in a command raises NameError, and
+    # "the optional dependency is missing" becomes a crash rather than a plainer run.
     HAVE_RICH = False
+
+    class _PlainStyle:                                  # pragma: no cover
+        """The ``rich.box`` names, so ``box=rich_box.MINIMAL`` still resolves."""
+
+        def __getattr__(self, name: str) -> None:
+            return None
+
+    class Text:                                         # pragma: no cover
+        """A string that accepts rich's ``append`` and renders to text."""
+
+        def __init__(self, value: Any = "", style: str = "", **kwargs: Any) -> None:
+            self.parts: List[str] = []
+            if value:
+                self.parts.append(str(value))
+
+        def append(self, value: Any = "", style: str = "", **kwargs: Any) -> "Text":
+            self.parts.append(str(value))
+            return self
+
+        def __str__(self) -> str:
+            return "".join(self.parts)
+
+        def __bool__(self) -> bool:
+            return bool("".join(self.parts))
+
+    class Group:                                        # pragma: no cover
+        """Several renderables, printed one after another."""
+
+        def __init__(self, *items: Any) -> None:
+            self.items = list(items)
+
+        def __str__(self) -> str:
+            return "\n".join(str(item) for item in self.items)
+
+    class Panel:                                        # pragma: no cover
+        """A boxed renderable: without rich, a title and the text under it."""
+
+        def __init__(self, renderable: Any = "", title: str = "", **kwargs: Any) -> None:
+            self.renderable, self.title = renderable, title
+
+        def __str__(self) -> str:
+            body = str(self.renderable)
+            if not self.title:
+                return body
+            rule = "-" * min(72, max(8, len(self.title) + 4))
+            return f"{self.title}\n{rule}\n{body}"
+
+    class Table:                                        # pragma: no cover
+        """A table: the columns, then the rows as tab-separated lines."""
+
+        def __init__(self, title: str = "", box: Any = None, **kwargs: Any) -> None:
+            self.title = title
+            self.columns: List[str] = []
+            self.rows: List[List[str]] = []
+
+        def add_column(self, name: str = "", **kwargs: Any) -> None:
+            self.columns.append(str(name))
+
+        def add_row(self, *values: Any, **kwargs: Any) -> None:
+            self.rows.append([str(value) for value in values])
+
+        def add_section(self, *args: Any, **kwargs: Any) -> None:
+            self.rows.append([])
+
+        def __str__(self) -> str:
+            lines = ["\t".join(self.columns)] if self.columns else []
+            lines.extend("\t".join(row) for row in self.rows)
+            if self.title:
+                lines.insert(0, self.title)
+            return "\n".join(lines)
+
+    class ProgressBar:                                  # pragma: no cover
+        """A bar as a percentage, which is what the number was for."""
+
+        def __init__(self, total: float = 100.0, completed: float = 0.0,
+                     width: int = 40, **kwargs: Any) -> None:
+            self.total, self.completed = float(total or 1.0), float(completed)
+
+        def __str__(self) -> str:
+            percent = 0.0 if not self.total else self.completed / self.total * 100.0
+            return f"{percent:5.1f}%"
+
+    class Console:                                      # pragma: no cover
+        """A console that prints: markup is dropped by ``C.strip`` at the call sites."""
+
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        def print(self, *items: Any, **kwargs: Any) -> None:
+            for item in items:
+                print(C.strip(str(item)))
+
+        def rule(self, title: str = "", **kwargs: Any) -> None:
+            print(f"--- {title} ---" if title else "---")
+
+    class Live:                                         # pragma: no cover
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> "Live":
+            return self
+
+        def __exit__(self, *exc: Any) -> bool:
+            return False
+
+        def update(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+    rich_box = _PlainStyle()
 
 
 # --------------------------------------------------------------------------- #

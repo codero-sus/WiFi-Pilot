@@ -115,7 +115,7 @@ That uniformity is what makes the simulation possible: modules branch on `ctx.de
 packet source only (`ctx.radio` instead of a subprocess), while validation, cracking,
 reporting and UI rendering stay identical.
 
-The 162 attacks are grouped into modules by *what they need*, which is also how the
+The 236 attacks are grouped into modules by *what they need*, which is also how the
 tests and the docs are organised:
 
 | module | attacks | radio |
@@ -127,6 +127,9 @@ tests and the docs are organised:
 | `attacks/capture2.py` | `handshake_broadcast`, `hcxdump_capture` | transmit |
 | `attacks/wps2.py` | `wps_ap_pin`, `wps_lockout_probe`, `wps_pbc` | transmit |
 | `attacks/survey2.py` | `sae_group_audit` | none (reads a capture, or one short listen) |
+| `attacks/offline3.py`, `attacks/offline4.py` | 74 further offline analyses — the frame-level decoders, the protocol audits and the byte-mask work (`ie_audit`, `krack_detect`, `hash_audit`, `eap_md5_crack`, …) | none — files only |
+| `attacks/btattacks.py` | 26 Bluetooth and BLE attacks: 14 offline audits of an LE capture (`bt_device_census`, `bt_tracker_detect`, `bt_pairing_audit`, `bt_gatt_audit`, …) and 12 that use the host's own controller (`bt_le_scan`, `bt_beacon_clone`, `bt_pairing_flood`, `bt_gatt_enumeration`, …) | offline half none; live half needs an HCI adapter |
+| `attacks/netdos.py` | 29 attacks on the network behind the bridge: 5 capture audits (`dhcp_lease_audit`, `ipv6_prefix_audit`, `iot_credential_audit`, `iot_service_census`, `ssdp_device_census`) and 24 that build real DHCP, TCP/IP, ICMPv6, STP, LLDP/CDP, VLAN and device-service traffic | transmit (the audits none) |
 
 `attacks/meta.py` describes each attack for the *reader* rather than the runner: its
 category, its noise level, its impact and one sentence about what a defender sees.
