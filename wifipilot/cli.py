@@ -79,7 +79,7 @@ except ImportError:  # pragma: no cover
             return self
 
         def __str__(self) -> str:
-            return "".join(self.parts)
+            return C.strip_markup("".join(self.parts))
 
         def __bool__(self) -> bool:
             return bool("".join(self.parts))
@@ -91,7 +91,7 @@ except ImportError:  # pragma: no cover
             self.items = list(items)
 
         def __str__(self) -> str:
-            return "\n".join(str(item) for item in self.items)
+            return C.strip_markup("\n".join(str(item) for item in self.items))
 
     class Panel:                                        # pragma: no cover
         """A boxed renderable: without rich, a title and the text under it."""
@@ -100,7 +100,7 @@ except ImportError:  # pragma: no cover
             self.renderable, self.title = renderable, title
 
         def __str__(self) -> str:
-            body = str(self.renderable)
+            body = C.strip_markup(str(self.renderable))
             if not self.title:
                 return body
             rule = "-" * min(72, max(8, len(self.title) + 4))
@@ -149,7 +149,7 @@ except ImportError:  # pragma: no cover
 
         def print(self, *items: Any, **kwargs: Any) -> None:
             for item in items:
-                print(C.strip(str(item)))
+                print(C.strip_markup(str(item)))
 
         def rule(self, title: str = "", **kwargs: Any) -> None:
             print(f"--- {title} ---" if title else "---")
@@ -2817,10 +2817,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     console = Console(no_color=args.no_color or bool(os.environ.get("NO_COLOR")),
                       soft_wrap=True, stderr=bool(args.json)) if HAVE_RICH else None
     if console is None:
+        # Without rich the console is plainer, not different: prose still goes to stderr
+        # when --json asked for a machine-readable stdout (or the JSON parser would meet
+        # a banner), and rich markup is dropped rather than printed as literal tags.
         class _FallbackConsole:  # pragma: no cover
-            def print(self, *items, **kwargs):
-                print(*[C.strip(str(i)) for i in items])
-        console = _FallbackConsole()
+            def __init__(self, stderr: bool = False, **kwargs: Any) -> None:
+                self.stream = sys.stderr if stderr else sys.stdout
+
+            def print(self, *items: Any, **kwargs: Any) -> None:
+                print(*[C.strip_markup(str(item)) for item in items], file=self.stream)
+
+            def rule(self, title: str = "", **kwargs: Any) -> None:
+                print(f"--- {title} ---" if title else "---", file=self.stream)
+        console = _FallbackConsole(stderr=bool(args.json))
 
     command = args.command or "attack"
     if command in ("scan", "attack", "demo") and not args.json:

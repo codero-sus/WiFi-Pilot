@@ -31,6 +31,37 @@ IS_TTY = bool(getattr(sys.stdout, "isatty", lambda: False)())
 NO_COLOR = bool(os.environ.get("NO_COLOR")) or not IS_TTY
 
 
+#: The rich styles wifipilot's own output uses, named so the fallback console (the one
+#: that runs when ``rich`` is not installed) can drop the tags instead of printing them.
+#: The list is deliberately a vocabulary rather than "anything in brackets": ``[WPA2]``,
+#: ``[200 OK]`` and ``[1, 2]`` are data, and the no-rich path may not eat them.
+MARKUP_ATTRIBUTES = ("bold", "b", "dim", "italic", "i", "underline", "u", "blink",
+                     "reverse", "r", "strike", "s", "conceal", "reset")
+MARKUP_COLOURS = ("black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+                  "grey", "gray", "bright_black", "bright_red", "bright_green",
+                  "bright_yellow", "bright_blue", "bright_magenta", "bright_cyan",
+                  "bright_white")
+#: the palette as an alternation, longest first so ``bright_red`` wins over ``red``.
+#: The ``on_`` forms are their own alternatives on purpose: writing ``on_X|X`` inside a
+#: pattern means "on_X or X" — the prefix binds to the first alternative only, which is
+#: how a three-word tag like ``[bold green on_red]`` slips through unstripped.
+MARKUP_COLOUR_ALT = "|".join(sorted(MARKUP_COLOURS, key=len, reverse=True))
+MARKUP_ON_ALT = "|".join("on_" + colour
+                         for colour in sorted(MARKUP_COLOURS, key=len, reverse=True))
+MARKUP_ATTRIBUTE_ALT = "|".join(sorted(MARKUP_ATTRIBUTES, key=len, reverse=True))
+#: one style token: an attribute, a background, or a colour
+MARKUP_TOKEN = ("(?:" + MARKUP_ATTRIBUTE_ALT + "|" + MARKUP_ON_ALT + "|"
+                + MARKUP_COLOUR_ALT + ")")
+
+#: one opening or closing rich tag: one or more style tokens, a hex colour, or a link
+MARKUP_TAG = re.compile(
+    r"\[(/?)(?:" + MARKUP_TOKEN + r"(?:[ ]" + MARKUP_TOKEN + r")*"
+    r"|#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})"
+    r"|link(?:=[^\[\]]*)?"
+    r")\]"
+)
+
+
 class C:
     """ANSI colour helpers (degrade to no-ops when not on a TTY)."""
 
@@ -53,6 +84,20 @@ class C:
     @staticmethod
     def strip(text: str) -> str:
         return re.sub(r"\033\[[0-9;]*m", "", text)
+
+    #: the markup pattern, reachable from the class as well as the module
+    MARKUP_TAG = MARKUP_TAG
+
+    @staticmethod
+    def strip_markup(text: str) -> str:
+        """ANSI escapes *and* rich markup gone: what a rich-less console can print.
+
+        With ``rich`` installed, ``[green]ok[/green]`` is a colour; without it, the tags
+        would be part of the text a script reads.  So the fallback console runs the string
+        through here — the tags are dropped, the text stays, and data that happens to be
+        in brackets ("[WPA2]", "[200 OK]") is untouched because it is not a style.
+        """
+        return C.MARKUP_TAG.sub("", C.strip(text))
 
 
 # --------------------------------------------------------------------------- #
