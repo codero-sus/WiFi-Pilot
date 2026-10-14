@@ -9,6 +9,8 @@ implied otherwise would be the most expensive kind of wrong.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from wifipilot import synth
@@ -513,8 +515,13 @@ def test_cli_accepts_every_new_attack_and_lists_them_in_help(capsys):
     with pytest.raises(SystemExit):
         cli.main(["--demo", "attack", "--help"])
     text = capsys.readouterr().out
-    assert "evil_twin" in text and "saewolf" in text and "deauth_flood" in text
     assert "twin-interface" in text
+    # the catalogue outgrew the help text: the names live in their own command now
+    assert "wifipilot attacks" in text
+
+    assert cli.main(["--demo", "--no-ai", "attacks", "--json"]) == 0
+    listing = json.loads(capsys.readouterr().out)
+    assert set(NEW_ATTACKS) <= {row["name"] for row in listing["attacks"]}
 
     # an unknown name is refused with the list of the ones that exist
     code = cli.main(["--demo", "--no-ai", "attack", "--attacks", "saewolf,nope"])

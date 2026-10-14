@@ -22,6 +22,10 @@ sys.path.insert(0, ROOT)
 
 from wifipilot.attacks import (attack_catalog, category_label)   # noqa: E402
 from wifipilot.attacks.meta import NOISE_STYLE, IMPACT_STYLE     # noqa: E402
+from wifipilot.itdev import device_catalog                       # noqa: E402
+
+#: the three toolboxes the operator can hold, in the order the UI shows them
+DOMAIN_LABELS = {"wifi": "WiFi", "bluetooth": "Bluetooth", "it": "IT devices"}
 
 START = "<!-- catalogue:start -->"
 END = "<!-- catalogue:end -->"
@@ -33,6 +37,8 @@ FAMILIES = [("offline", "Offline analysis (no radio at all)"),
             ("capture", "Capture requests (frames on air)"),
             ("wps", "WPS"), ("wep", "WEP"), ("enterprise", "Enterprise (802.1X)"),
             ("rogue", "Rogue infrastructure and lures"),
+            ("discovery", "Discovery and fingerprinting (no radio either)"),
+            ("exploit", "Device and service attacks (IP, not radio)"),
             ("dos", "Denial-of-service tests (opt-in)")]
 
 
@@ -50,6 +56,14 @@ def render() -> str:
         noise[str(entry["noise"])] = noise.get(str(entry["noise"]), 0) + 1
         impact[str(entry["impact"])] = impact.get(str(entry["impact"]), 0) + 1
 
+    domains = {}
+    for entry in catalog:
+        domain = str(entry.get("domain", "wifi"))
+        domains[domain] = domains.get(domain, 0) + 1
+    domain_line = ", ".join(f"**{DOMAIN_LABELS.get(key, key)} {value}**"
+                            for key, value in sorted(domains.items()))
+    device_total = len(device_catalog())
+
     lines = [START, "",
              "## 11. The complete catalogue",
              "",
@@ -59,7 +73,13 @@ def render() -> str:
              "code: `wifipilot attacks` prints the same list, `--json` returns it, and the "
              "web UI, the planner and the report are all built from it.",
              "",
-             "How to read the columns: **noise** is what a defender sees "
+             f"They are split into three editions — {domain_line} — and **{device_total} "
+             "device types** carry the attacks that apply to them. The **edition** column "
+             "below is that split: `wifipilot --edition it` (or the web UI's first control) "
+             "plans only those attacks, and `wifipilot attacks --domain it` prints them.",
+             "",
+             "How to read the columns: **edition** is which toolbox the attack belongs to, "
+             "**noise** is what a defender sees "
              f"({', '.join(f'{key} {value}' for key, value in sorted(noise.items()))}), "
              "**impact** is what the *network* loses when the attack works "
              f"({', '.join(f'{key} {value}' for key, value in sorted(impact.items()))}), and "
@@ -72,8 +92,8 @@ def render() -> str:
         if not entries:
             continue
         lines += [f"### {label} — {len(entries)}", "",
-                  "| attack | answers | noise | impact | tool | defender sees |",
-                  "| --- | --- | --- | --- | --- | --- |"]
+                  "| attack | answers | edition | noise | impact | tool | defender sees |",
+                  "| --- | --- | --- | --- | --- | --- | --- |"]
         for entry in entries:
             flags = []
             if entry["default_enabled"]:
@@ -82,14 +102,14 @@ def render() -> str:
                 flags.append("injects")
             name = f"`{entry['name']}`" + (f" <br>_{', '.join(flags)}_" if flags else "")
             lines.append(f"| {name} | {_clean(entry['label'])} | "
+                         f"{DOMAIN_LABELS.get(str(entry.get('domain')), entry.get('domain'))} | "
                          f"{NOISE_STYLE.get(str(entry['noise']), '') or entry['noise']} | "
                          f"{IMPACT_STYLE.get(str(entry['impact']), '') or entry['impact']} | "
                          f"{_clean(entry['tool'])} | {_clean(entry['detection'])} |")
         lines.append("")
 
     leftovers = [entry for entry in catalog
-                 if entry["category"] not in ("offline", "survey", "capture", "wps", "wep",
-                                              "enterprise", "rogue", "dos")]
+                 if entry["category"] not in {name for name, _ in FAMILIES}]
     if leftovers:                                              # pragma: no cover - new family
         lines += [f"### Other — {len(leftovers)}", "",
                   "| attack | answers | category |", "| --- | --- | --- |"]
@@ -98,8 +118,56 @@ def render() -> str:
                          f"{category_label(str(entry['category']))} |")
         lines.append("")
 
+    lines += render_devices(catalog)
     lines += [f"<!-- {len(catalog)} attacks -->", END, ""]
     return "\n".join(lines)
+
+
+def render_devices(catalog) -> list:
+    """Section 12: the editions, and the device types with the attacks that apply.
+
+    Generated for the same reason the catalogue is: the device shelf is a table in the
+    code (``wifipilot/itdev.py``), and a hand-copied version of it would be wrong the
+    first time a device type or a port was added.
+    """
+    devices = device_catalog()
+    rows = []
+    for device in devices:
+        names = [entry["name"] for entry in catalog
+                 if device["id"] in (entry.get("devices") or [])]
+        if not names:
+            continue
+        shown = ", ".join(f"`{name}`" for name in names[:5])
+        if len(names) > 5:
+            shown += f", +{len(names) - 5} more"
+        rows.append((device, names, shown))
+    lines = ["## 12. The editions and the device shelf", "",
+             "Every attack is stamped with an **edition** (which toolbox it belongs to) and "
+             "with the **device types** it works against. That is what the web UI's edition "
+             "switch and device picker are drawn from, what `wifipilot --edition` selects, and "
+             "what `wifipilot.itdev.classify` returns when you point the tool at a fingerprint:",
+             "",
+             "| device type | edition | group | ports | answers | attacks |",
+             "| --- | --- | --- | --- | --- | --- |"]
+    for device, names, shown in rows:
+        ports = ", ".join(str(port) for port in device["ports"]) or "—"
+        lines.append(f"| **{_clean(device['label'])}** (`{device['id']}`) | "
+                     f"{DOMAIN_LABELS.get(device['domain'], device['domain'])} | "
+                     f"{_clean(device.get('group_label', device['group']))} | `{ports}` | "
+                     f"{_clean(', '.join(device['protocols']))} | {len(names)} — {shown} |")
+    lines += ["",
+              "The shelf is what the planner walks when the IT edition is selected: for each "
+              "device it proposes the discovery rows first (cheap, quiet, and they name the "
+              "model), then the attacks that the fingerprint justifies. The same list is "
+              "served by the web UI at `/api/devices` and by the CLI:",
+              "",
+              "```console",
+              "$ wifipilot --edition it --attacks it_http_discover,it_httpservices --demo attack",
+              "$ wifipilot attacks --domain it          # print the IT edition",
+              "$ wifipilot --edition bluetooth attack    # plan BLE/classic only",
+              "```",
+              ""]
+    return lines
 
 
 def render_index() -> str:
@@ -110,6 +178,12 @@ def render_index() -> str:
     because a hand-written list of a hundred and sixty names is a list that is wrong.
     """
     catalog = attack_catalog()
+    domains: dict = {}
+    for entry in catalog:
+        domain = str(entry.get("domain", "wifi"))
+        domains[domain] = domains.get(domain, 0) + 1
+    editions = ", ".join(f"**{DOMAIN_LABELS.get(key, key)} {value}**"
+                         for key, value in sorted(domains.items()))
     lines = [RSTART, "",
              "## Every attack at a glance",
              "",
@@ -118,6 +192,12 @@ def render_index() -> str:
              "[docs/ATTACKS.md](docs/ATTACKS.md); this is the index. "
              "`wifipilot attacks` prints it with the metadata, `--json` returns it, and "
              "`--no-radio` filters it to the attacks that transmit nothing.",
+             "",
+             f"Three editions, one registry: {editions} — plus **{len(device_catalog())} "
+             "device types** that carry the attacks applying to them. "
+             "`wifipilot --edition it` (or the web UI's edition switch) plans one of them; "
+             "`wifipilot attacks --domain it` prints it; `wifipilot.devices()` returns the "
+             "shelf.",
              ""]
     for category, label in FAMILIES:
         names = [entry["name"] for entry in catalog if entry["category"] == category]

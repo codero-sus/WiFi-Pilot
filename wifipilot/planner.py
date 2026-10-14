@@ -191,7 +191,38 @@ def attackable_hidden(ap: AccessPoint) -> bool:
 
 
 def preferred_attacks(ap: AccessPoint, config: Config) -> List[str]:
-    """Which attack should this AP get, best first, given its current state?"""
+    """Everything this target should get, best first.
+
+    The wireless ladder is what this module was built around: capture, crack, survey,
+    WPS, WEP, the twins.  The two *editions* beside it — Bluetooth and the IT services
+    behind the bridge — are not chosen by target state at all: the bridge carries them
+    whatever the AP's encryption is, so the only gate is that the operator named them
+    (``config.attacks``) and that a denial-of-service test is not running in stealth.
+    """
+    out = _wireless_attacks(ap, config)
+    out.extend(edition_attacks(config))
+    return _prune(out, ap)
+
+
+def edition_attacks(config: Config) -> List[str]:
+    """The named Bluetooth and IT attacks, in the order the operator listed them."""
+    from .attacks.meta import ATTACK_META
+
+    out: List[str] = []
+    for name in config.attacks:
+        if name not in ATTACK_NAMES:
+            continue
+        if not name.startswith(("it_", "bt_", "ble_")):
+            continue
+        meta = ATTACK_META.get(name, {})
+        if meta.get("category") == "dos" and config.stealth:
+            continue
+        out.append(name)
+    return out
+
+
+def _wireless_attacks(ap: AccessPoint, config: Config) -> List[str]:
+    """Which wireless attack should this AP get, best first, given its current state?"""
     enabled = [a for a in config.attacks if a in planner_actions()]
     caps = registry.capabilities() if not config.demo else {k: True for k in (
         "aircrack", "airodump", "deauth", "monitor", "wps", "wash", "pmkid",

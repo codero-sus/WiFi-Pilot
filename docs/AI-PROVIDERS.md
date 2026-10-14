@@ -1,4 +1,4 @@
-# AI providers: Ollama (local) and OpenRouter (cloud)
+# AI providers: Ollama and Cortex LLMHoster (local), OpenRouter (cloud)
 
 **Why "AI-piloted" and "optional" are not a contradiction.** The pilot is the advisor: it
 proposes which attack to run against which target, and wifipilot validates the proposal
@@ -8,7 +8,7 @@ describes what the tool *can* do, not a requirement to run a model.
 
 wifipilot's "auto think" needs a model. It does not need to have one: the deterministic
 planner runs every engagement on its own, and the advisor is an additive extra. This page is
-about the two ways to give it a model.
+about the ways to give it a model.
 
 **Turning it off is one switch with several spellings** (all identical):
 
@@ -30,18 +30,20 @@ advisor tab is greyed out with a single button to bring it back.
 
 Choose a provider per run, per config file, or from the web UI:
 
-| | **Ollama** (default) | **OpenRouter** |
-|---|---|---|
-| Where the model runs | your machine (`127.0.0.1:11434`) | a third-party cloud service |
-| Cost | free (your CPU/GPU) | pay per token, some models free |
-| Data leaving the box | nothing | SSIDs, BSSIDs, client MACs, and *unless you turn redaction off* nothing else |
-| Best models for planning | 7–14B instruct (qwen2.5, llama3.1) | anything; small fast models are plenty |
-| Setup | `ollama serve` + `ollama pull` | an API key from <https://openrouter.ai/keys> |
-| Works offline | yes | no |
+| | **Ollama** (default) | **Cortex LLMHoster** | **OpenRouter** |
+|---|---|---|---|
+| Where the model runs | your machine (`127.0.0.1:11434`) | your machine (`127.0.0.1:8624`) | a third-party cloud service |
+| Cost | free (your CPU/GPU) | free (your CPU/GPU) | pay per token, some models free |
+| Data leaving the box | nothing | nothing | SSIDs, BSSIDs, client MACs, and *unless you turn redaction off* nothing else |
+| Best models for planning | 7–14B instruct (qwen2.5, llama3.1) | the GGUF you point it at | anything; small fast models are plenty |
+| Setup | `ollama serve` + `ollama pull` | `cortex-llmhoster --config cortex.toml` (it starts `llama.cpp` itself) | an API key from <https://openrouter.ai/keys> |
+| Works offline | yes | yes | no |
+| API | Ollama's own | OpenAI-compatible (`/v1/chat/completions`) | OpenAI-compatible |
 
 Select with the command line (`--provider`), the config file (`ai_provider`), or the
-**Model provider** card in the web UI. `auto` (the default) prefers your local Ollama
-and only falls back to OpenRouter if it is explicitly enabled *and* has a key.
+**Model provider** card in the web UI. `auto` (the default) prefers a local model
+(Ollama, then Cortex LLMHoster) and only falls back to OpenRouter if it is explicitly
+enabled *and* has a key.
 
 ```bash
 wifipilot ai providers                       # what is configured, what is missing
@@ -55,6 +57,47 @@ planner in `wifipilot/planner.py` does the job, and every plan is labelled `heur
 (or `planner`, in the dashboard, when the advisor was disabled on purpose).
 
 ---
+
+## Cortex LLMHoster (local, OpenAI-compatible)
+
+`Cortex LLMHoster <https://github.com/codero-sus/Cortex_LLMHoster>`_ is a local model host:
+you give it GGUF paths (or a command that starts your own OpenAI-compatible engine) in
+`cortex.toml` and it starts, supervises and serves them behind the OpenAI API, with a
+dashboard for the details. It is the middle ground between Ollama (easy, but its own API and
+its own model store) and running `llama-server` by hand (every flag is yours to forget).
+
+wifipilot treats it as what it is — a **local service on the loopback interface**:
+
+* nothing is probed until `cortex.enabled` is true (or you pass `--provider cortex`);
+* the host must be loopback (`127.0.0.1`, `localhost`, `::1`) unless
+  `cortex.allow_remote_host=true` says otherwise, because the API has no transport security
+  of its own;
+* the key is optional: Cortex runs keyless on a trusted listener
+  (`CORTEX_API_AUTH_ENABLED=false`), and when a key *is* configured it is read from
+  `CORTEX_API_KEY` and sent as a bearer token, never logged and never returned over the API;
+* nothing leaves the machine, so no consent flag and no identifier redaction is involved.
+
+```bash
+cortex-llmhoster --config cortex.toml          # start the hoster (default 127.0.0.1:8624)
+wifipilot --provider cortex ai status          # wifipilot talks to it
+wifipilot --provider cortex --cortex-model qwen-local attack -d 45m
+wifipilot ai providers                         # the three providers, side by side
+```
+
+```json
+{
+  "cortex": {
+    "enabled": true,
+    "host": "http://127.0.0.1:8624",
+    "model": "qwen-local"
+  }
+}
+```
+
+`--cortex-host` overrides the URL for one run (`--provider cortex --cortex-host
+http://127.0.0.1:9000`), and the web UI's **Model provider** card has a `use cortex` button
+and the host field next to it. A model that is slow to load is expected: this provider's
+default timeout is 300 s, not 120.
 
 ## Ollama (local, private — the default)
 

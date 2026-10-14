@@ -93,12 +93,12 @@ the effective engagement settings.
 | **Cancel attack** | cancels only the running attack, the campaign continues |
 | **Rescan** | 20 s extra discovery |
 | **Think now** | forces one advisor cycle and shows the plan |
-| **switch provider** | moves the advisor between local Ollama and OpenRouter (the cloud switch asks for consent) |
+| **switch provider** | moves the advisor between the local Ollama, the local **Cortex LLMHoster** (`POST /api/ai/provider {"provider":"cortex"}` — a local OpenAI-compatible host, keyless, nothing leaves the machine) and OpenRouter (the cloud switch asks for consent) |
 | **save key** | stores an OpenRouter key in the config file; the value is never echoed back |
 | **scope** | paste BSSIDs to restrict the campaign |
 | **simulation** | switches between live and simulated radio (rebuilds the engine) |
 | **I have written authorisation** | required for any live attack; without it the API returns 403 |
-| **Attack toggles** | the engine's catalog (in `/api/state`) lists all 248 attacks with their label, tool, description, **category, noise, impact and a "what a defender sees" line**, whether they need injection, whether their tools are installed and whether they are enabled in the current config. The disruptive ones (`wps_pin`, `pmkid_flood`, `handshake_broadcast`, `evil_twin`, `karma`, `eapol_logoff`, the ten floods, the WEP enablers, the lures) start unticked, and the ten offline analyses plus the read-only decoders (`ie_audit`, `pnl_harvest`, `pmf_audit`, `saewolf`) are marked as transmitting nothing — tick those freely. The chips are **grouped by category** with an enabled counter per group (`0/10`), the offline ones are suffixed `· offline`, and hovering a chip shows `category · noise · impact` plus the blue-team sentence for that attack, so enabling one is a decision rather than a guess |
+| **Attack toggles** | the engine's catalog (in `/api/state`) lists all 534 attacks with their label, tool, description, **category, noise, impact and a "what a defender sees" line**, whether they need injection, whether their tools are installed and whether they are enabled in the current config. The disruptive ones (`wps_pin`, `pmkid_flood`, `handshake_broadcast`, `evil_twin`, `karma`, `eapol_logoff`, the ten floods, the WEP enablers, the lures) start unticked, and the ten offline analyses plus the read-only decoders (`ie_audit`, `pnl_harvest`, `pmf_audit`, `saewolf`) are marked as transmitting nothing — tick those freely. The chips are **grouped by category** with an enabled counter per group (`0/10`), the offline ones are suffixed `· offline`, and hovering a chip shows `category · noise · impact` plus the blue-team sentence for that attack, so enabling one is a decision rather than a guess |
 
 ## REST API
 
@@ -118,7 +118,26 @@ GET  /api/report              GET  /api/export     GET  /api/file
 GET  /api/events              WS   /ws
 GET  /api/survey              GET  /api/pins        GET  /api/pmk/cache
 POST /api/pmk/verify          GET  /api/eap
+GET  /api/editions            POST /api/edition     GET  /api/catalog
+GET  /api/devices             POST /api/device      POST /api/help
 ```
+
+The three editions and the device shelf are endpoints too: `/api/editions` returns the
+counts (`wifi 213 / bluetooth 35 / it 286`, `total 534`), `/api/catalog` takes the same
+filters the library does (`?domain=it`, `?device=ip_camera`, `?q=rtsp`, `?category=dos`,
+`?offline=1`), `/api/devices` answers the shelf (`?edition=it`, `?group=iot`, `?q=camera`,
+`?port=9100`) with every device's label, ports, protocols and the names of the attacks that
+fit it, and `POST /api/device` picks one (`{"device": "ip_camera", "host": "10.0.0.9",
+"port": 554}`) — the host lands in `config.it_host`, so the next IT attack talks to it.
+`POST /api/help` is the offline assistant, and it is useful with no model at all: a
+question is resolved against the catalogue first — a device type by its id or its label
+word ("how do I test a printer?" answers with the printer's briefing, its ports and the
+attacks that fit it), an attack by its name or its distinctive words ("what does deauth
+do?" → `deauth_flood`, "is there a krack check?" → `krack_detect`) — and the answer says
+`source: "catalogue"`. When a model **is** reachable (Ollama or Cortex LLMHoster on this
+machine, or OpenRouter if you enabled it) the same context is handed to it and the answer
+comes back as `source: "advisor"`, so the panel is never a blank box and never a
+hallucination when nothing is running.
 
 Example — run a campaign from a script and stream events:
 

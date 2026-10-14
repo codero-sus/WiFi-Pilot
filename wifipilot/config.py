@@ -58,6 +58,55 @@ class OllamaConfig:
 
 
 @dataclass
+class CortexConfig:
+    """Cortex LLMHoster settings — a *local* model host, on this machine.
+
+    `Cortex LLMHoster <https://github.com/codero-sus/Cortex_LLMHoster>`_ runs GGUF models
+    behind an OpenAI-compatible API (``/v1/chat/completions``, ``/v1/models``) and starts
+    them itself, which is the piece Ollama does not give you: ``llama.cpp`` flags, a
+    starting model, and a dashboard.  Because it is local, nothing needs to leave the
+    machine for the advisor to work — but the listener is a *local service*, so this
+    client refuses any host that is not loopback unless the operator says otherwise.
+    """
+
+    enabled: bool = False              # opt-in: wifipilot does not probe services it was
+                                       # not told about, not even on localhost
+    host: str = "http://127.0.0.1:8624"
+    model: str = ""                    # "" = the hoster's default model
+    api_key: str = ""                  # usually CORTEX_API_KEY in the environment
+    api_key_env: str = "CORTEX_API_KEY"
+    fallback_models: List[str] = field(default_factory=lambda: [
+        "qwen-local", "llama3-local", "mistral-local",
+    ])
+    temperature: float = 0.15
+    max_tokens: int = 700
+    timeout: float = 300.0             # a local model loading a GGUF can take a while
+    json_mode: bool = False            # llama.cpp grammars are per-model; opt in per host
+    stream: bool = True
+    allow_remote_host: bool = False    # refuse a non-loopback host unless explicitly set
+
+    def base(self) -> str:
+        return self.host.rstrip("/")
+
+    def api_key_value(self) -> str:
+        """The environment first, then the literal config value.
+
+        Cortex can run keyless (``CORTEX_API_AUTH_ENABLED=false`` on a trusted listener),
+        so an empty key is not an error here — it is the keyless mode.
+        """
+        return (os.environ.get(self.api_key_env or "CORTEX_API_KEY", "") or "").strip() \
+            or (self.api_key or "").strip()
+
+    def key_hint(self) -> str:
+        key = self.api_key_value()
+        if not key:
+            return "none (keyless local listener)"
+        source = "environment (CORTEX_API_KEY)" if os.environ.get(
+            self.api_key_env or "CORTEX_API_KEY") else "config file"
+        return f"set ({len(key)} chars, {source})"
+
+
+@dataclass
 class OpenRouterConfig:
     """OpenRouter settings — a *cloud* provider, so everything here is opt-in.
 
@@ -196,6 +245,17 @@ class Config:
     #: the network's DNS domain, for the WPAD audit
     domain: str = ""
     #: the Bluetooth address a live Bluetooth attack targets (pairing, SDP, RFCOMM)
+    # -- the IT edition ----------------------------------------------------- #
+    #: which edition a run plans in: "wifi", "bluetooth", "it" or "all".  The catalogue
+    #: is one list; the edition decides which of it the planner and the UI offer.
+    edition: str = "all"
+    #: the host an IT attack talks to when the operator has named one (a camera, a
+    #: printer, a PLC).  Empty means: use the target AP's address, or the gateway.
+    it_host: str = ""
+    #: the port an IT attack should use, when it is not the protocol's own default
+    it_port: int = 0
+    #: the device type the operator picked in the web UI (its label is used in reports)
+    it_device: str = ""
     bt_target: str = ""
     #: how long a Bluetooth command may wait for its controller event
     bt_timeout: float = 2.0
@@ -273,6 +333,7 @@ class Config:
     #: auto | ollama | openrouter | none  ("auto" prefers the local model)
     ai_provider: str = "auto"
     ollama: OllamaConfig = field(default_factory=OllamaConfig)
+    cortex: CortexConfig = field(default_factory=CortexConfig)
     openrouter: OpenRouterConfig = field(default_factory=OpenRouterConfig)
 
     # ------------------------------------------------------------------ #
@@ -498,13 +559,20 @@ class Config:
         name = (provider or self.ai_provider or "auto").strip().lower()
         if name == "openrouter":
             return self.openrouter
+        if name == "cortex":
+            return self.cortex
         if name == "ollama":
             return self.ollama
         if name in ("none", "off", "disabled"):
             return self.ollama          # inert: nothing is called while AI is off
-        # auto: the provider that would actually be used
-        return self.ollama if self.ollama.enabled else (
-            self.openrouter if self.openrouter.enabled else self.ollama)
+        # auto: the provider that would actually be used, in the order auto resolves
+        if self.ollama.enabled:
+            return self.ollama
+        if getattr(self, "cortex", None) is not None and self.cortex.enabled:
+            return self.cortex
+        if self.openrouter.enabled:
+            return self.openrouter
+        return self.ollama
 
     def ai_off(self) -> bool:
         """True when the operator asked for no AI at all.
@@ -549,7 +617,8 @@ class Config:
         if self.ai_off():
             return "none", ("AI advisor disabled "
                             "(ai_provider=none, --no-ai/--disable-ai or WIFIPILOT_NO_AI)")
-        return select_provider(self.ai_provider, self.ollama, self.openrouter, probe=probe)
+        return select_provider(self.ai_provider, self.ollama, self.openrouter, probe=probe,
+                               cortex=self.cortex)
 
     def to_dict(self, redact_secrets: bool = False) -> Dict[str, Any]:
         data = asdict(self)
@@ -567,6 +636,7 @@ class Config:
     def from_dict(cls, data: Dict[str, Any]) -> "Config":
         data = dict(data)
         ollama_data = data.pop("ollama", None) or {}
+        cortex_data = data.pop("cortex", None) or {}
         openrouter_data = data.pop("openrouter", None) or {}
         # pseudo-keys returned by to_dict(redact_secrets=True) are not config fields
         for key in ("ai_provider_resolved", "ai_disabled"):
@@ -578,6 +648,10 @@ class Config:
         for key, value in ollama_data.items():
             if key in ollama_known:
                 setattr(cfg.ollama, key, value)
+        cortex_known = {f.name for f in fields(CortexConfig)}
+        for key, value in cortex_data.items():
+            if key in cortex_known:
+                setattr(cfg.cortex, key, value)
         openrouter_known = {f.name for f in fields(OpenRouterConfig)}
         for key, value in openrouter_data.items():
             if key in openrouter_known:

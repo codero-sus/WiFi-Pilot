@@ -44,7 +44,7 @@ def test_ai_is_on_by_default(clean_env):
     config = Config()
     assert config.ai_off() is False
     assert config.ai_enabled() is True
-    assert config.active_provider(probe=False)[0] in ("ollama", "openrouter")
+    assert config.active_provider(probe=False)[0] in ("ollama", "cortex", "openrouter", "none")
 
 
 def test_provider_none_switches_ai_off(clean_env):
@@ -95,7 +95,7 @@ def test_ai_disable_and_restore(clean_env):
 
     back = api.ai(disable=False)
     assert back["disabled"] is False and back["enabled"] is True
-    assert back["provider"] in ("ollama", "openrouter")
+    assert back["provider"] in ("ollama", "cortex", "openrouter", "none")
 
 
 def test_ai_provider_none_is_the_same_as_disable(clean_env):

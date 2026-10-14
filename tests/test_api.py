@@ -95,9 +95,9 @@ def test_configure_provider_and_model_routing():
 
 def test_provider_helpers_report_status():
     rows = wp.providers()
-    assert {row["name"] for row in rows} == {"ollama", "openrouter"}
+    assert {row["name"] for row in rows} == {"ollama", "cortex", "openrouter"}
     status = wp.advisor_status()
-    assert status["provider"] in ("ollama", "openrouter", "none")
+    assert status["provider"] in ("ollama", "cortex", "openrouter", "none")
     assert "cloud" in status and "policy" in status
     with pytest.raises(ValueError):
         wp.set_provider("gpt-9000")
@@ -386,7 +386,7 @@ def test_report_without_a_run_is_an_error():
 def test_providers_and_advisor_status_without_probing():
     providers = wp.providers(probe=False)
     assert providers and all("name" in entry for entry in providers)
-    assert wp.advisor_status()["provider"] in ("none", "ollama", "openrouter")
+    assert wp.advisor_status()["provider"] in ("none", "ollama", "cortex", "openrouter")
 
 
 def test_non_linux_raises_platform_error_for_calls_but_not_for_import(monkeypatch):

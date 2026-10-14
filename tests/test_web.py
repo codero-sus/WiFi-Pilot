@@ -186,7 +186,7 @@ def test_provider_endpoints_and_secret_handling(client):
 
     config = client.get("/api/config").json()
     assert config["config"]["openrouter"]["api_key"] == ""
-    assert {row["name"] for row in config["providers"]} == {"ollama", "openrouter"}
+    assert {row["name"] for row in config["providers"]} == {"ollama", "cortex", "openrouter"}
 
 
 def test_provider_switch_cycle_keeps_the_ui_working(client):
@@ -196,7 +196,7 @@ def test_provider_switch_cycle_keeps_the_ui_working(client):
     for provider in ("openrouter", "auto", "none", "ollama", "auto"):
         response = client.post("/api/ai/provider", json={"provider": provider})
         assert response.status_code == 200, (provider, response.text)
-        assert response.json()["provider"] in ("ollama", "openrouter", "none")
+        assert response.json()["provider"] in ("ollama", "cortex", "openrouter", "none")
         state = client.get("/api/state")
         assert state.status_code == 200
         assert "advisor" in state.json()

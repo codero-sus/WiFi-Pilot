@@ -106,7 +106,9 @@ def test_the_famous_wave_is_registered():
         assert name in ATTACK_CLASSES, name
         assert name in DEFAULT_ORDER, name
         assert name in ATTACK_NAMES, name
-    assert len(DEFAULT_ORDER) == 248
+    # 248 from the famous/Bluetooth waves + 213 services-and-devices + the 73
+    # cross-cutting version/cleartext audits every service now carries
+    assert len(DEFAULT_ORDER) == 534
 
 
 def test_registry_and_documentation_agree():

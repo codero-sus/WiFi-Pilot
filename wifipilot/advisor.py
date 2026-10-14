@@ -40,12 +40,12 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
-from .config import OllamaConfig, OpenRouterConfig
+from .config import CortexConfig, OllamaConfig, OpenRouterConfig
 from .deps import registry
 from .events import EK
 from .llm import (LLMAuthError, LLMClient, LLMCreditError, LLMError, LLMPolicyError,
-                  LLMRateLimitError, ModelInfo, OllamaClient, OpenRouterClient,
-                  build_client, provider_status, select_provider)
+                  LLMRateLimitError, CortexClient, ModelInfo, OllamaClient,
+                  OpenRouterClient, build_client, provider_status, select_provider)
 from .planner import (MAX_ACTIONS, PLANNER_ACTIONS, Plan, heuristic_plan,
                       validate_plan)
 from .session import Session
@@ -262,25 +262,37 @@ class Advisor:
     PROVIDER_ALIASES = {"": "auto", "off": "none", "disabled": "none", "no": "none",
                         "false": "none", "local": "ollama", "cloud": "openrouter"}
 
+    #: what the status line says about a provider the operator named outright
+    PROVIDER_REASONS = {"ollama": "explicitly selected local Ollama",
+                        "cortex": "explicitly selected Cortex LLMHoster",
+                        "openrouter": "explicitly selected OpenRouter",
+                        "none": "AI advisor disabled"}
+
     def _concrete_provider(self, candidate: str = "") -> str:
-        """Resolve 'auto'/aliases/config defaults into ollama | openrouter | none.
+        """Resolve 'auto'/aliases/config defaults into ollama | cortex | openrouter | none.
 
         The advisor must never hold an "auto" provider: it owns one transport, and
         the client's config object must belong to that same transport.
         """
         name = self.PROVIDER_ALIASES.get((candidate or "").strip().lower(),
                                          (candidate or "").strip().lower())
-        if name in ("ollama", "openrouter", "none"):
+        if name in self.PROVIDER_REASONS:
+            # an explicit choice carries its own explanation: without this the status
+            # line keeps the reason of whatever "auto" resolved to last
+            self.provider_reason = self.PROVIDER_REASONS[name]
             return name
         resolved, self.provider_reason = select_provider(
             self.session.config.ai_provider, self.session.config.ollama,
-            self.session.config.openrouter, probe=False)
-        return resolved if resolved in ("ollama", "openrouter", "none") else "none"
+            self.session.config.openrouter, probe=False,
+            cortex=getattr(self.session.config, "cortex", None))
+        return resolved if resolved in ("ollama", "cortex", "openrouter", "none") else "none"
 
     def _infer_provider(self, config: Optional[Any]) -> str:
         """A provider can be named explicitly, or inferred from the config object."""
         if isinstance(config, OpenRouterConfig):
             return "openrouter"
+        if isinstance(config, CortexConfig):
+            return "cortex"
         if isinstance(config, OllamaConfig):
             return "ollama"
         return self._concrete_provider(self.provider_explicit)
@@ -339,7 +351,8 @@ class Advisor:
     def _make_client(self) -> LLMClient:
         """A transport that matches :attr:`provider`, never a mismatched leftover."""
         client = build_client(self.provider, self.session.config.ollama,
-                              self.session.config.openrouter, self.bus)
+                              self.session.config.openrouter, self.bus,
+                              getattr(self.session.config, "cortex", None))
         if client is None:
             # provider "none": nothing is ever called, but the object must still be
             # coherent (its config is the one the dashboard reads for policy).
@@ -351,12 +364,17 @@ class Advisor:
         """The client must read the config object of *its own* provider."""
         if self.client is None:
             return
-        expected = "openrouter" if isinstance(self.client, OpenRouterClient) else "ollama"
+        if isinstance(self.client, OpenRouterClient):
+            expected, provider_config = "openrouter", self.session.config.openrouter
+        elif isinstance(self.client, CortexClient):
+            expected = "cortex"
+            provider_config = getattr(self.session.config, "cortex", CortexConfig())
+        else:
+            expected, provider_config = "ollama", self.session.config.ollama
         if self.provider not in ("none", expected):
             self.provider = expected
-        self.client.config = (self.session.config.openrouter if expected == "openrouter"
-                              else self.session.config.ollama)
-        self._config = self.client.config
+        self.client.config = provider_config
+        self._config = provider_config
 
     def is_cloud(self) -> bool:
         return self.provider == "openrouter"
@@ -544,8 +562,8 @@ class Advisor:
             "provider": self.provider,
             "provider_reason": self.provider_reason,
             "provider_label": {
-                "ollama": "Ollama (local)", "openrouter": "OpenRouter (cloud)",
-                "none": "disabled",
+                "ollama": "Ollama (local)", "cortex": "Cortex LLMHoster (local)",
+                "openrouter": "OpenRouter (cloud)", "none": "disabled",
             }.get(self.provider, self.provider),
             "cloud": self.is_cloud(),
             "enabled": bool(getattr(self.config, "enabled", False)),
@@ -579,7 +597,8 @@ class Advisor:
                 "label": info.get("label", ""),
             } if info else {},
             "providers": provider_status(self.session.config.ollama,
-                                         self.session.config.openrouter),
+                                         self.session.config.openrouter,
+                                         cortex=getattr(self.session.config, "cortex", None)),
             "policy": policy,
             "actions": list(PLANNER_ACTIONS),
         }

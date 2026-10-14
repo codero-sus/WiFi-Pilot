@@ -649,7 +649,7 @@ def providers(probe: bool = False) -> List[Dict[str, Any]]:
     """What is configured for each provider, and (optionally) whether it answers."""
     from .llm import provider_status
     cfg = config()
-    return provider_status(cfg.ollama, cfg.openrouter, probe=probe)
+    return provider_status(cfg.ollama, cfg.openrouter, probe=probe, cortex=cfg.cortex)
 
 
 def advisor_status() -> Dict[str, Any]:
@@ -1033,24 +1033,32 @@ def strategies() -> List[Dict[str, object]]:
 
 
 def catalogue(category: str = "", noise: str = "", offline_only: bool = False,
-              default_only: bool = False) -> List[Dict[str, object]]:
+              default_only: bool = False, domain: str = "",
+              device: str = "") -> List[Dict[str, object]]:
     """Every attack this build ships, with what it costs and what a defender sees.
 
     The same data the CLI's ``wifipilot attacks`` prints, the web UI's toggles are
     built from and the planner reads: ``name``, ``label``, ``tool``, ``description``,
     ``requires``, ``needs_injection``, ``category``, ``noise``, ``impact``,
-    ``detection``, ``offline`` and ``default_enabled``.
+    ``detection``, ``offline``, ``default_enabled``, and the two fields the edition
+    switch and the device picker are built from — ``domain`` (``wifi``, ``bluetooth``
+    or ``it``) and ``devices`` (the device types the attack works against).
 
     >>> import wifipilot as wp
     >>> len(wp.catalogue())
-    54
+    534
     >>> [entry["name"] for entry in wp.catalogue(offline_only=True)][:3]
     ['loot_audit', 'eapol_audit', 'wep_audit']
+    >>> names = [entry["name"] for entry in wp.catalogue(domain="it")]
+    >>> len(names), names[:2]
+    (286, ['it_http_discover', 'it_http_banner'])
 
     Filters are exact matches on the metadata table: ``category="dos"`` for the
     denial-of-service tests, ``noise="silent"`` for everything that transmits nothing,
-    ``offline_only=True`` for the ten attacks that need no radio at all, and
-    ``default_only=True`` for exactly what :class:`~wifipilot.config.Config` enables.
+    ``offline_only=True`` for the attacks that need no radio at all, ``domain="it"``
+    for one edition, ``device="ip_camera"`` for the attacks that apply to one kind of
+    device, and ``default_only=True`` for exactly what :class:`~wifipilot.config.Config`
+    enables.
     """
     from .attacks import attack_catalog
 
@@ -1063,7 +1071,98 @@ def catalogue(category: str = "", noise: str = "", offline_only: bool = False,
         entries = [entry for entry in entries if entry["offline"]]
     if default_only:
         entries = [entry for entry in entries if entry["default_enabled"]]
+    if domain:
+        entries = [entry for entry in entries
+                   if str(entry.get("domain", "wifi")) == domain.strip().lower()]
+    if device:
+        entries = [entry for entry in entries
+                   if device in (entry.get("devices") or [])]
     return entries
+
+
+def editions() -> List[Dict[str, object]]:
+    """The three editions (and ``all``) with how many attacks and device types each has.
+
+    >>> import wifipilot as wp
+    >>> [(row["id"], row["attacks"]) for row in wp.editions()]
+    [('wifi', 213), ('bluetooth', 35), ('it', 286), ('all', 534)]
+    """
+    from .itdev import edition_catalog
+
+    counts: Dict[str, int] = {}
+    for entry in catalogue():
+        key = str(entry.get("domain", "wifi"))
+        counts[key] = counts.get(key, 0) + 1
+    total = sum(counts.values())
+    rows: List[Dict[str, object]] = []
+    for edition in edition_catalog():
+        row = dict(edition)
+        row["attacks"] = counts.get(str(row.get("id")), total)
+        rows.append(row)
+    return rows
+
+
+def devices(edition: str = "", group: str = "", device: str = "") -> List[Dict[str, object]]:
+    """The device shelf: every device type this build knows how to test.
+
+    This is what the web UI's device picker, the per-device attack list and the
+    planner's IT edition are built from: each row carries the ports and protocols used
+    to recognise the device, what it tells you about itself, and the attacks that apply
+    to it (``attacks`` = the metadata rows, ``attack_names`` the same as names).
+
+    >>> import wifipilot as wp
+    >>> [row["id"] for row in wp.devices(device="camera")]
+    ['ip_camera', 'camera_doorbell']
+    >>> wp.devices(device="printer")[0]["label"], wp.devices(device="printer")[0]["ports"][:3]
+    ('Network printer', [80, 161, 443])
+
+    ``edition`` filters on the edition the device belongs to (``wifi``, ``bluetooth``,
+    ``it``), ``group`` on the shelf it sits on (``network``, ``server``, ``iot``, ``ot``,
+    ``voip``, ``consumer``, ``mobile``, ``bt``) and ``device`` matches the id, the label
+    or one of its protocols.
+    """
+    from .itdev import device_catalog
+
+    known = {str(entry["name"]): entry for entry in catalogue()}
+    needle = device.strip().lower()
+    rows: List[Dict[str, object]] = []
+    for row in device_catalog():
+        row = dict(row)
+        if edition and edition.strip().lower() != "all" and row["domain"] != edition.strip().lower():
+            continue
+        if group and row["group"] != group:
+            continue
+        if needle and needle not in (row["id"] + " " + row["label"] + " "
+                                     + " ".join(row["protocols"])).lower():
+            continue
+        names = [name for name in row["attack_names"] if name in known]
+        row["attacks"] = [known[name] for name in names]
+        row["attack_names"] = names
+        rows.append(row)
+    return rows
+
+
+def device(device_id: str) -> Dict[str, object]:
+    """One device type, with the attacks that apply to it and the plan to start with.
+
+    >>> import wifipilot as wp
+    >>> "it_rtsp_anonymous" in wp.device("ip_camera")["attack_names"]
+    True
+    >>> wp.device("no_such_device")
+    {}
+    """
+    from .itdev import device_type, plan_for_device
+
+    wanted = device_type(device_id)
+    if wanted is None:
+        return {}
+    row = wanted.to_dict()
+    names = [entry["name"] for entry in
+             (entry for entry in catalogue() if device_id in (entry.get("devices") or []))]
+    row["attack_names"] = names
+    row["attacks"] = [entry for entry in catalogue() if device_id in (entry.get("devices") or [])]
+    row["plan"] = plan_for_device(wanted) or names[:6]
+    return row
 
 
 def _offline_session() -> Any:

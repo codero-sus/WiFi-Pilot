@@ -256,12 +256,13 @@ DEFAULT_ORDER = [
 from . import btattacks as _batch_btattacks                    # noqa: E402
 from . import btred as _batch_btred                            # noqa: E402
 from . import famous as _batch_famous                          # noqa: E402
+from . import itsvc as _batch_itsvc                            # noqa: E402
 from . import netdos as _batch_netdos                          # noqa: E402
 from . import offline3 as _batch_offline3                      # noqa: E402
 from . import offline4 as _batch_offline4                      # noqa: E402
 
 BATCH_MODULES = (_batch_offline3, _batch_offline4, _batch_btattacks,
-                 _batch_netdos, _batch_btred, _batch_famous)
+                 _batch_netdos, _batch_btred, _batch_famous, _batch_itsvc)
 
 
 def _register_batches() -> List[str]:
@@ -324,13 +325,18 @@ OPT_IN_ATTACKS = tuple(name for name in DEFAULT_ORDER
     # a site did not ask to be attacked just because it asked to be assessed.
     "airgeddon_portal", "krack_replay", "fragattacks_inject",
     "bt_blueborne", "bt_bias", "bt_knob", "bt_bluebugging", "bt_blesa",
-    "bt_sweyntooth", "bt_bluesnarf", "bt_bluesmack", "bt_hid_injection")
+    "bt_sweyntooth", "bt_bluesnarf", "bt_bluesmack", "bt_hid_injection") + tuple(
+    # the IT edition: every attack that talks to a *service* on the network is opt-in.
+    # A site that asked for a wireless assessment did not ask for its printers, cameras
+    # and PLCs to be greeted by name, so the whole wave is behind an explicit choice.
+    name for name in DEFAULT_ORDER if name.startswith("it_"))
 
 __all__ = [
     "Attack", "AttackContext", "AttackOutcome", "ATTACK_CLASSES", "DEFAULT_ORDER",
     "DEFAULT_ENABLED", "OFFLINE_ATTACKS", "OPT_IN_ATTACKS", "DOS_ATTACKS",
     "MDK4_FLOODS", "ATTACK_META",
-    "CATEGORIES", "NOISE_LEVELS", "IMPACT_LEVELS", "NOISE_STYLE", "IMPACT_STYLE",
+    "CATEGORIES", "DOMAINS", "DOMAIN_IDS",
+    "NOISE_LEVELS", "IMPACT_LEVELS", "NOISE_STYLE", "IMPACT_STYLE",
     "category_label", "meta_for", "validate",
     "HandshakeAttack", "HandshakeBroadcastAttack", "HcxdumpCaptureAttack",
     "PmkidAttack", "PixieDustAttack", "WpsPinAttack", "WpsApPinAttack",
@@ -407,6 +413,10 @@ def attack_catalog() -> List[Dict[str, object]]:
             "category_label": category_label(str(meta["category"])),
             "noise": meta["noise"], "impact": meta["impact"],
             "detection": meta["detection"],
+            "domain": meta.get("domain", "wifi"),
+            "devices": list(meta.get("devices", []) or []),
+            "port": meta.get("port", 0),
+            "protocol": meta.get("protocol", ""),
             # "offline" means no radio at all: the category is the test, not the
             # silence — a PMKID request is silent but it is not analysis
             "offline": meta["category"] == "offline" and not cls.needs_injection,

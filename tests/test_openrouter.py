@@ -431,7 +431,7 @@ def test_build_client_and_provider_status():
                       OpenRouterClient)
     assert build_client("none", config.ollama, config.openrouter) is None
     rows = provider_status(config.ollama, config.openrouter)
-    assert {row["name"] for row in rows} == {"ollama", "openrouter"}
+    assert {row["name"] for row in rows} == {"ollama", "cortex", "openrouter"}
     assert rows[1]["configured"] is False
 
 
@@ -608,7 +608,8 @@ def test_advisor_status_exposes_provider_details(session, monkeypatch):
     assert "set (" in status["key"]["hint"]
     assert "sk-or" not in json.dumps(status)           # never leak the key
     assert status["models"][0]["price"] == "$0.15/$0.6 per 1M tokens in/out"
-    assert {row["name"] for row in status["providers"]} == {"ollama", "openrouter"}
+    assert {row["name"] for row in status["providers"]} == {"ollama", "cortex",
+                                                              "openrouter"}
 
 
 def test_offline_message_differs_per_provider(session):
@@ -701,7 +702,7 @@ def test_switching_back_to_auto_keeps_client_and_config_in_step(session, monkeyp
 
     session.config.ai_provider = "auto"          # as POST /api/config would
     advisor.configure("auto", announce=False)
-    assert advisor.provider in ("ollama", "openrouter", "none")
+    assert advisor.provider in ("ollama", "cortex", "openrouter", "none")
     if advisor.provider == "openrouter":
         assert isinstance(advisor.client.config, OpenRouterConfig)
     else:
@@ -725,7 +726,7 @@ def test_provider_aliases(session):
     assert advisor.provider == "none"
     assert advisor._concrete_provider("cloud") == "openrouter"
     assert advisor._concrete_provider("local") == "ollama"
-    assert advisor._concrete_provider("garbage") in ("ollama", "openrouter", "none")
+    assert advisor._concrete_provider("garbage") in ("ollama", "cortex", "openrouter", "none")
 
 
 def test_disabled_provider_never_calls_out(session, monkeypatch):

@@ -205,7 +205,18 @@ def _global_arguments(parser: argparse.ArgumentParser, suppress: bool = False) -
     add(parser, "--stealth", action="store_true",
                         help="listen-only: never deauthenticate and no online PIN attacks")
     add(parser, "--attacks", default="",
-                        help=f"comma separated attack list (from: {', '.join(ATTACK_NAMES)})")
+                        help="comma separated attack list; `wifipilot attacks` prints the "
+                             f"{len(ATTACK_NAMES)} names, `wifipilot attacks --domain it` "
+                             "the IT ones")
+    add(parser, "--edition", default="", choices=("", "wifi", "bluetooth", "it", "all"),
+                        help="which edition to plan for: wifi, bluetooth, it or all "
+                             "(the switches the planner, the catalogue and the web UI use)")
+    add(parser, "--it-host", default="", metavar="IP",
+                        help="the host the IT attacks talk to (default: the target, then "
+                             "the gateway; the web UI's device list sets this for you)")
+    add(parser, "--it-port", type=int, default=0, metavar="PORT",
+                        help="the port an IT attack should use instead of its protocol's "
+                             "own default")
     add(parser, "--wps-pin", action="store_true",
                         help="enable the online WPS PIN attack (slow, disruptive, off by default)")
     add(parser, "--reveal-with-probe", action="store_true",
@@ -234,10 +245,16 @@ def _global_arguments(parser: argparse.ArgumentParser, suppress: bool = False) -
     add(ai, "--offline", dest="no_ai", action="store_true",
                     help="alias for --no-ai: nothing leaves the machine but the radio")
     add(ai, "--provider", default="",
-                    choices=["", "auto", "ollama", "openrouter", "none"],
-                    help="model provider: auto (prefer local Ollama), ollama, openrouter, none")
+                    choices=["", "auto", "ollama", "cortex", "openrouter", "none"],
+                    help="model provider: auto (prefer a local model), ollama, cortex "
+                         "(Cortex LLMHoster), openrouter, none")
     add(ai, "--model", default="", help="model name for the active provider")
     add(ai, "--ollama-host", default="", help="Ollama base URL")
+    add(ai, "--cortex-host", default="", metavar="URL",
+                    help="Cortex LLMHoster base URL (default http://127.0.0.1:8624) — "
+                         "a local, OpenAI-compatible model host")
+    add(ai, "--cortex-model", default="", metavar="NAME",
+                    help="model to ask on the Cortex LLMHoster (default: the hoster's)")
     add(ai, "--openrouter-key", default="",
                     help="OpenRouter API key (prefer the OPENROUTER_API_KEY environment "
                          "variable: a key on the command line lands in your shell history)")
@@ -372,6 +389,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_attacks.add_argument("--noise", default="", metavar="LEVEL",
                            help="only attacks at this noise level (silent, quiet, "
                                 "moderate, loud, extreme)")
+    # (the global --edition already selects an edition for a run; this one narrows the
+    #  listing, and both spellings work here because the fallback below reads either)
+    p_attacks.add_argument("--domain", default="", metavar="EDITION",
+                           help="only this edition (wifi, bluetooth, it, all)")
+    p_attacks.add_argument("--device", default="", metavar="TYPE",
+                           help="only the attacks that fit a device type from the shelf "
+                                "(printer, ip_camera, smart_tv, ...; see `wifipilot devices`)")
 
     p_bench = sub.add_parser("benchmark", parents=[common],
                              help="measure this machine's candidate rate (no radio)")
@@ -637,6 +661,7 @@ def apply_cli_config(args: argparse.Namespace) -> Config:
         budget = parse_duration(args.timeout, config.attack_timeout)
         config.attack_timeout = budget
         config.crack_timeout = budget
+    edition = (getattr(args, "edition", "") or "").strip().lower()
     attacks = [a for a in (args.attacks or "").replace(" ", "").split(",") if a]
     if attacks:
         unknown = [a for a in attacks if a not in ATTACK_NAMES]
@@ -647,6 +672,19 @@ def apply_cli_config(args: argparse.Namespace) -> Config:
     elif args.wps_pin:
         if "wps_pin" not in config.attacks:
             config.attacks = [*config.attacks, "wps_pin"]
+    if edition:
+        # the edition switch: naming an edition *is* the plan, so the attacks that
+        # belong to it become the enabled list (an explicit --attacks still wins)
+        config.edition = edition
+        if not attacks:
+            from .attacks import ATTACK_META
+            config.attacks = [name for name in ATTACK_NAMES
+                              if edition == "all"
+                              or ATTACK_META.get(name, {}).get("domain", "wifi") == edition]
+    if getattr(args, "it_host", ""):
+        config.it_host = str(args.it_host).strip()
+    if getattr(args, "it_port", 0):
+        config.it_port = int(args.it_port)
     if getattr(args, "reveal_with_probe", False):
         config.reveal_with_probe = True
     if getattr(args, "broadcast_handshake", False):
@@ -672,6 +710,7 @@ def apply_cli_config(args: argparse.Namespace) -> Config:
     if args.no_ai:
         config.ai_provider = "none"
         config.ollama.enabled = False
+        config.cortex.enabled = False
         config.openrouter.enabled = False
     if getattr(args, "openrouter_key", ""):
         config.openrouter.api_key = args.openrouter_key
@@ -689,10 +728,18 @@ def apply_cli_config(args: argparse.Namespace) -> Config:
         resolved = config.active_provider(probe=False)[0]
         if resolved == "openrouter":
             config.openrouter.model = args.model
+        elif resolved == "cortex":
+            config.cortex.model = args.model
         else:
             config.ollama.model = args.model
     if args.ollama_host:
         config.ollama.host = args.ollama_host
+    if getattr(args, "cortex_host", ""):
+        config.cortex.host = args.cortex_host
+        config.cortex.enabled = True
+    if getattr(args, "cortex_model", ""):
+        config.cortex.model = args.cortex_model
+        config.cortex.enabled = True
     if args.think_interval:
         interval = parse_duration(args.think_interval, 45.0)
         config.ollama.think_interval = interval
@@ -2405,6 +2452,23 @@ def command_attacks(args, config: Config, console) -> int:
         entries = [entry for entry in entries if entry["noise"] == args.noise.strip().lower()]
     if args.only_offline:
         entries = [entry for entry in entries if entry["offline"]]
+    wanted_domain = (getattr(args, "domain", "") or getattr(args, "edition", "")
+                     or "").strip().lower()
+    if wanted_domain:
+        entries = [entry for entry in entries if entry.get("domain") == wanted_domain]
+    wanted_device = (getattr(args, "device", "") or "").strip().lower()
+    device_plan: List[str] = []
+    if wanted_device:
+        from .itdev import DEVICE_TYPES, device_type, plan_for_device
+        chosen = device_type(wanted_device) or next(
+            (dev for dev in DEVICE_TYPES if wanted_device in dev.id
+             or wanted_device in dev.label.lower()), None)
+        if not chosen:
+            console.print(f"[yellow]no device type called {wanted_device!r} in the shelf "
+                          "[/yellow][dim](`wifipilot devices` lists them)[/dim]")
+            return 1
+        device_plan = plan_for_device(chosen.id)
+        entries = [entry for entry in entries if str(entry["name"]) in set(device_plan)]
     if args.json:
         print(json.dumps({"count": len(entries), "attacks": entries,
                           "offline_attacks": list(OFFLINE_ATTACKS)}, indent=2))
@@ -2418,8 +2482,13 @@ def command_attacks(args, config: Config, console) -> int:
         grouped.setdefault(str(entry["category"]), []).append(entry)
     total = len(attack_catalog())
     console.print(f"[bold]{len(entries)} of {total} attacks[/bold]"
+                  + (f"  [dim](the {wanted_domain} edition)[/dim]" if wanted_domain else "")
                   + ("  [dim](the ones that transmit nothing)[/dim]"
                      if args.only_offline else ""))
+    if wanted_device:
+        console.print(f"[dim]device shelf: {chosen.label} · {len(device_plan)} attacks fit it · "
+                      "`wifipilot attack --edition it --it-host <ip> --attacks "
+                      + ",".join(device_plan[:3]) + ",...`[/dim]")
     for category, items in grouped.items():
         console.print(f"\n[bold]{category_label(category)}[/bold] "
                       f"[dim]({len(items)})[/dim]")
@@ -2617,7 +2686,8 @@ def command_ai(args, config: Config, console) -> int:
         return 0
 
     if action == "providers":
-        rows = provider_status(config.ollama, config.openrouter, probe=bool(args.probe))
+        rows = provider_status(config.ollama, config.openrouter, probe=bool(args.probe),
+                               cortex=config.cortex)
         active = advisor.provider
         if args.json:
             print(json.dumps({"active": active, "providers": rows}, indent=2))

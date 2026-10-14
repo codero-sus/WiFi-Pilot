@@ -32,7 +32,16 @@ Impact is what the engagement report will say:
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Any, Dict, List
+
+
+def _domains() -> List[Dict[str, str]]:
+    """The edition table, from itdev; a lazy import keeps the module importable alone."""
+    try:
+        from ..itdev import DOMAINS as domains
+        return [dict(entry) for entry in domains]
+    except Exception:                                     # pragma: no cover - defensive
+        return [{"id": "wifi", "label": "Wi-Fi", "description": ""}]
 
 #: category -> one-line description, in the order the docs and the CLI show them
 CATEGORIES: List[Dict[str, str]] = [
@@ -52,7 +61,17 @@ CATEGORIES: List[Dict[str, str]] = [
      "description": "access points and frames we are not supposed to be able to send"},
     {"name": "dos", "label": "Denial-of-service tests",
      "description": "deliberate disruption, with detection as the finding"},
+    {"name": "discovery", "label": "Discovery & fingerprinting",
+     "description": "finds hosts, services and versions, and reads what they volunteer"},
+    {"name": "exploit", "label": "Service exploitation",
+     "description": "protocol-level abuse: default credentials, bypasses, unauthenticated "
+                    "reads and writes"},
 ]
+
+#: the editions, re-exported from :mod:`wifipilot.itdev` so the metadata validator can
+#: check a domain without importing the attack package it is validating.
+DOMAINS: List[Dict[str, str]] = _domains()
+DOMAIN_IDS = {entry["id"] for entry in DOMAINS}
 
 NOISE_LEVELS = ("silent", "quiet", "moderate", "loud", "extreme")
 IMPACT_LEVELS = ("none", "info", "degraded", "outage", "loot")
@@ -373,21 +392,51 @@ def register_batch(module) -> List[str]:
     for name, row in dict(getattr(module, "META", {}) or {}).items():
         if name not in ATTACK_META:
             added.append(name)
-        ATTACK_META[name] = dict(row)
+        entry = dict(row)
+        entry.setdefault("domain", _domain_of(name, entry))
+        ATTACK_META[name] = entry
     return added
 
 
-def meta_for(name: str, **overrides: str) -> Dict[str, str]:
-    """The metadata for one attack, with the class's own attributes winning."""
+def _domain_of(name: str, row: Dict[str, Any]) -> str:
+    """Which edition an attack belongs to: the row's own answer, else its name.
+
+    The Bluetooth modules predate the edition field, and their names are the honest
+    signal: everything that talks to a controller, a GATT server or a profile starts
+    with ``bt_`` or ``ble_``.  Everything else is the wireless work this tool began as.
+    """
+    if row.get("domain"):
+        return str(row["domain"])
+    return "bluetooth" if name.startswith(("bt_", "ble_", "blue")) else "wifi"
+
+
+def meta_for(name: str, **overrides: str) -> Dict[str, Any]:
+    """The metadata for one attack, with the class's own attributes winning.
+
+    Beyond the three axes the planner sorts by, a row may carry the *edition*
+    (``domain``: wifi, bluetooth or it), the device types it applies to (``devices``) and
+    the port/protocol it speaks — which is what the web UI's edition switch, its device
+    list and its per-device attack list are built from.
+    """
     meta = dict(ATTACK_META.get(name, {}))
     meta.setdefault("category", "capture")
     meta.setdefault("noise", "moderate")
     meta.setdefault("impact", "info")
     meta.setdefault("detection", "")
+    meta.setdefault("domain", "wifi")
+    meta.setdefault("devices", [])
     for key, value in overrides.items():
         if value:
             meta[key] = value
     return meta
+
+
+def _device_ids() -> set:
+    try:
+        from ..itdev import device_ids
+        return set(device_ids())
+    except Exception:                                     # pragma: no cover - defensive
+        return set()
 
 
 def category_label(name: str) -> str:
@@ -420,10 +469,20 @@ def validate() -> List[str]:
             problems.append(f"{name}: unknown impact {meta.get('impact')!r}")
         if not meta.get("detection"):
             problems.append(f"{name}: no detection note")
+        domain = meta.get("domain", "wifi")
+        if domain not in DOMAIN_IDS:
+            problems.append(f"{name}: unknown domain {domain!r}")
+        devices = meta.get("devices") or []
+        if isinstance(devices, str):
+            problems.append(f"{name}: devices must be a list, not a string")
+        else:
+            unknown = [dev for dev in devices if dev not in _device_ids()]
+            if unknown:
+                problems.append(f"{name}: unknown device type(s) {', '.join(unknown[:3])}")
     for name in sorted(set(ATTACK_META) - known):
         problems.append(f"{name}: metadata for an attack that does not exist")
     return problems
 
 
-__all__ = ["ATTACK_META", "CATEGORIES", "IMPACT_LEVELS", "IMPACT_STYLE", "NOISE_LEVELS",
+__all__ = ["ATTACK_META", "CATEGORIES", "DOMAINS", "DOMAIN_IDS", "IMPACT_LEVELS", "IMPACT_STYLE", "NOISE_LEVELS",
            "NOISE_STYLE", "category_label", "meta_for", "register_batch", "validate"]
