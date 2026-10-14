@@ -397,6 +397,26 @@ def build_parser() -> argparse.ArgumentParser:
                            help="only the attacks that fit a device type from the shelf "
                                 "(printer, ip_camera, smart_tv, ...; see `wifipilot devices`)")
 
+    p_devices = sub.add_parser("devices", parents=[common],
+                               help="the device shelf: what a device is, and how to test it")
+    p_devices.add_argument("--domain", default="", metavar="EDITION",
+                           help="only this edition's devices (wifi, bluetooth, it, all)")
+    p_devices.add_argument("--group", default="", metavar="NAME",
+                           help="only this shelf (network, server, iot, ot, voip, consumer, "
+                                "mobile, bt, ...)")
+    p_devices.add_argument("--type", default="", metavar="ID",
+                           help="one device type: the ports and protocols that find it, and "
+                                "the attacks that fit it")
+
+    p_sim = sub.add_parser("sim", parents=[common],
+                           help="the simulated environments a --demo run is made of")
+    p_sim.add_argument("--domain", default="", metavar="EDITION",
+                       help="bluetooth, it — or both (the default)")
+    p_sim.add_argument("--list", dest="rows", action="store_true",
+                       help="list every simulated device, not just the shape of the floor")
+    p_sim.add_argument("--limit", type=int, default=60, metavar="N",
+                       help="rows to list (default 60)")
+
     p_bench = sub.add_parser("benchmark", parents=[common],
                              help="measure this machine's candidate rate (no radio)")
     p_bench.add_argument("--seconds", type=float, default=5.0)
@@ -2432,6 +2452,152 @@ def _export_path(out: str, capture: str, suffix: str) -> str:
     return out
 
 
+def _device_filter(args) -> str:
+    """The edition a listing was narrowed to, from either spelling of the flag."""
+    return (getattr(args, "domain", "") or getattr(args, "edition", "") or "").strip().lower()
+
+
+def command_devices(args, config: Config, console) -> int:
+    """The device shelf in the terminal: what the device is, and what fits it.
+
+    The same table the web UI's picker and the API read (``wifipilot.api.devices`` and
+    ``wifipilot.api.device``): a device type, the ports and protocols that identify it, and
+    the attacks in the catalogue that apply to it.  The plan it prints starts with the
+    discovery rows on purpose — a discovery row names the model, and the model decides
+    which of the rest is worth running.
+    """
+    from .api import device as device_detail
+    from .api import devices as device_rows
+
+    wanted = (getattr(args, "type", "") or "").strip().lower()
+    if wanted:
+        matches = device_rows(device=wanted)
+        ids = {str(row["id"]) for row in matches}
+        if not matches:
+            print(f"error: no device type matches {wanted!r} "
+                  "(`wifipilot devices` lists them)", file=sys.stderr)
+            return 1
+        if len(matches) > 1 and wanted not in ids:
+            print(f"error: {wanted!r} matches {len(matches)} device types: "
+                  + ", ".join(sorted(ids)), file=sys.stderr)
+            return 1
+        detail = device_detail(str(matches[0]["id"]))
+        if args.json:
+            print(json.dumps(detail, indent=2))
+            return 0
+        console.print(f"[bold]{detail['label']}[/bold]  [dim]({detail['id']} · "
+                      f"{detail.get('group_label', '')} · the {detail['domain']} edition)[/dim]")
+        ports = ", ".join(str(port) for port in detail["ports"]) or "none declared"
+        protocols = ", ".join(detail["protocols"]) or "none declared"
+        console.print(f"  found by: {ports}")
+        console.print(f"  it answers: {protocols}")
+        if detail.get("risk"):
+            console.print(f"  [dim]{detail['risk']}[/dim]")
+        names = list(detail["attack_names"])
+        console.print(f"[bold]{len(names)} attack(s) apply[/bold]"
+                      + (f" — start with: {', '.join(list(detail['plan'])[:6])}"
+                         if detail.get("plan") else ""))
+        for row in detail["attacks"]:
+            console.print(f"  · {row['name']}  [dim]{row.get('label', '')}[/dim]")
+        return 0
+
+    rows = device_rows(edition=_device_filter(args), group=(getattr(args, "group", "") or "").strip())
+    if args.json:
+        print(json.dumps({"count": len(rows), "devices": rows}, indent=2))
+        return 0 if rows else 1
+    if not rows:
+        console.print("[yellow]no device type matches that filter[/yellow]"
+                      "  [dim](`wifipilot devices --domain it` — the shelf is per edition)[/dim]")
+        return 1
+    console.print(f"[bold]{len(rows)} device type(s)[/bold]"
+                  + (f"  [dim](the {_device_filter(args)} edition)[/dim]"
+                     if _device_filter(args) else "")
+                  + f"  [dim]({sum(len(row['attack_names']) for row in rows)} attack "
+                    "suggestion(s) in total)[/dim]")
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(str(row.get("group_label", "")), []).append(row)
+    for group, members in grouped.items():
+        console.print(f"[bold]{group or 'other'}[/bold] [dim]({len(members)})[/dim]")
+        for row in members:
+            ports = ", ".join(str(port) for port in row["ports"][:4]) or "—"
+            console.print(f"  {row['id']:24s} {row['label']:26s} [dim]{ports:26s} "
+                          f"{len(row['attack_names'])} attack(s)[/dim]")
+    console.print("[dim]`wifipilot devices --type <id>` shows one device and its plan[/dim]")
+    return 0
+
+
+def command_sim(args, config: Config, console) -> int:
+    """What the simulated environments contain.
+
+    Demo mode is a simulation, not a stub: :mod:`wifipilot.blesim` answers HCI the way a
+    controller does and :mod:`wifipilot.itsim` answers the protocols a segment speaks, so
+    a demo run meets devices, refuses what a hardened one refuses, and goes through the
+    same parsers as a live run.  This prints that world — from the same function the API
+    and the web UI read (``wifipilot.api.simulations``).
+    """
+    from .api import simulations
+
+    wanted = _device_filter(args)
+    if wanted in ("ble", "bt", "blue"):
+        wanted = "bluetooth"
+    if wanted not in ("", "all", "bluetooth", "it"):
+        print(f"error: unknown edition {wanted!r} (bluetooth, it or all)", file=sys.stderr)
+        return 1
+    try:
+        data = simulations("" if wanted in ("", "all") else wanted)
+    except Exception as exc:                                     # pragma: no cover
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    limit = max(1, int(getattr(args, "limit", 60)))
+    console.print("[bold]simulated environments[/bold]  [dim]what a --demo run is made "
+                  "of (no radio, real code paths)[/dim]")
+    bluetooth = data.get("bluetooth")
+    if bluetooth:
+        rssi = bluetooth["rssi_range"]
+        console.print(f"[bold]Bluetooth floor[/bold]  {bluetooth['devices']} device(s) · "
+                      f"{bluetooth['profiles']} profile(s) · RSSI {rssi[0]}..{rssi[1]} dBm")
+        console.print("  " + ", ".join(f"{name} ×{count}" for name, count
+                                       in sorted(bluetooth["by_profile"].items())))
+        console.print(f"  [dim]trackers {bluetooth['trackers']} · beacons "
+                      f"{bluetooth['beacons']} · classic {bluetooth['classic']} · GATT "
+                      f"servers {bluetooth['gatt_servers']} · roles: "
+                      f"{', '.join(sorted(bluetooth['link_roles']))}[/dim]")
+        if getattr(args, "rows", False):
+            for row in bluetooth["catalog"][:limit]:
+                addr = row.get("address", "")
+                console.print(f"  {addr:18s} {row.get('name', '') or '(no name)':22s} "
+                              f"[dim]{row.get('device', ''):16s} {row.get('profile', ''):13s} "
+                              f"{row.get('rssi', '')} dBm"
+                              + (f" · {row['tracker']} tracker" if row.get("tracker") else "")
+                              + (f" · {row['beacon']} beacon" if row.get("beacon") else "")
+                              + "[/dim]")
+    it = data.get("it")
+    if it:
+        console.print(f"[bold]IT segment[/bold]  {it['hosts']} host(s) · "
+                      f"{it['profiles']} profile(s) · {len(it['open_ports'])} port(s) · "
+                      f"{len(it['responders'])} responder(s)")
+        console.print("  " + ", ".join(f"{name} ×{count}" for name, count
+                                       in sorted(it["by_profile"].items())))
+        console.print(f"  [dim]{', '.join(sorted(it['responders']))}[/dim]")
+        if getattr(args, "rows", False):
+            for row in it["catalog"][:limit]:
+                console.print(f"  {row.get('ip', ''):15s} {row.get('hostname', ''):20s} "
+                              f"[dim]{row.get('device_label', ''):20s} "
+                              f"{row.get('profile', ''):15s} "
+                              f"{', '.join(str(port) for port in row.get('ports', [])[:6])}"
+                              "[/dim]")
+    if not bluetooth and not it:                                 # pragma: no cover
+        console.print("[yellow]nothing to show for that edition[/yellow]")
+        return 1
+    console.print("[dim]`wifipilot sim --list` prints the devices; `--json` prints it "
+                  "all for a script[/dim]")
+    return 0
+
+
 def command_attacks(args, config: Config, console) -> int:
     """The catalogue, grouped by what an attack costs and what it produces.
 
@@ -2934,6 +3100,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "tag": command_tag,
         "vendor": command_vendor,
         "attacks": command_attacks,
+        "devices": command_devices,
+        "sim": command_sim,
         "benchmark": command_benchmark,
         "advice": command_advice,
         "wordlist": command_wordlist,

@@ -32,7 +32,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from . import itproto as proto
 from .itdev import DeviceType, classify, device_type
 
-__all__ = ["LanHost", "VirtualLan", "build_lan", "lan_catalog", "RESPONDERS"]
+__all__ = ["LanHost", "VirtualLan", "build_lan", "lan_catalog", "RESPONDERS",
+           "demo_lan", "reset_demo_lan", "summary"]
 
 #: every host gets one of these: they decide what answers, and how it answers.
 #: the shape of a device's posture.  The boolean flags are read by the responders, so
@@ -1273,6 +1274,7 @@ class VirtualLan:
         return out
 
     def summary(self) -> Dict[str, Any]:
+        """What the segment is, for the CLI and the API to print or hand to a browser."""
         by_device: Dict[str, int] = {}
         by_profile: Dict[str, int] = {}
         for host in self.hosts:
@@ -1280,4 +1282,43 @@ class VirtualLan:
             by_profile[host.profile_name] = by_profile.get(host.profile_name, 0) + 1
         return {"hosts": len(self.hosts), "exchanges": self.exchanges,
                 "by_device": by_device, "by_profile": by_profile,
+                "profiles": len(PROFILES),
+                "responders": sorted(RESPONDERS),
+                "devices": sorted(by_device),
                 "open_ports": sorted({port for host in self.hosts for port in host.ports})}
+
+    def catalog(self) -> List[Dict[str, Any]]:
+        """The hosts as rows: what a UI needs to draw the simulated segment."""
+        return lan_catalog(self.hosts)
+
+
+#: one simulated segment per process: every IT attack in a demo run meets the same
+#: devices, which is what makes a demo comparable with the last one.  The singleton lives
+#: here rather than in the attack module so that the *simulation* owns its own state —
+#: :mod:`wifipilot.attacks.itsvc` reads it through :func:`demo_lan`.
+_LAN: Optional[VirtualLan] = None
+
+
+def demo_lan() -> VirtualLan:
+    """The shared simulated segment, built on first use."""
+    global _LAN
+    if _LAN is None:
+        _LAN = VirtualLan(build_lan())
+    return _LAN
+
+
+def reset_demo_lan() -> VirtualLan:
+    """Start a fresh simulated segment (a new demo session, and the tests)."""
+    global _LAN
+    _LAN = VirtualLan(build_lan())
+    return _LAN
+
+
+def summary() -> Dict[str, Any]:
+    """The simulated segment's shape, without the exchange counters."""
+    return demo_lan().summary()
+
+
+def catalog() -> List[Dict[str, Any]]:
+    """The simulated segment as rows, for the API and the web UI."""
+    return demo_lan().catalog()

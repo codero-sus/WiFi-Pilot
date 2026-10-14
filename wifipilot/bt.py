@@ -770,6 +770,18 @@ def acl_packet(handle: int, payload: bytes, pb: int = 0, bc: int = 0) -> bytes:
             + bytes(payload))
 
 
+def l2cap_echo_request(payload: bytes = b"\x00\x00\x00\x00", identifier: int = 1) -> bytes:
+    """An L2CAP signalling **echo request** (code 0x08) carrying ``payload``.
+
+    The echo is the one signalling command every stack must answer — which is why it is
+    both the flood's packet and the ping-of-death's: the remote end copies the payload
+    into a buffer and sends it back.  The code byte matters: ``0x0A`` is an *information
+    request*, and a device answering that is answering a question about itself, not an
+    echo, so an attack that calls 0x0A an echo is describing the wrong PDU.
+    """
+    return bytes([0x08, identifier & 0xFF]) + struct.pack("<H", len(payload)) + bytes(payload)
+
+
 def l2cap_frame(cid: int, payload: bytes, identifier: int = 0) -> bytes:
     """An L2CAP frame for the fixed channels: length, channel ID, then the payload."""
     return struct.pack("<HH", len(payload), cid & 0xFFFF) + bytes(payload)
@@ -881,9 +893,12 @@ def parse_hci_event(packet: bytes) -> Dict[str, Any]:
         if subevent == 0x02:
             out["reports"] = parse_advertising_reports(parameters[1:])
         elif subevent in (0x01, 0x0D) and len(parameters) >= 13:
+            # subevent, status, connection handle (2), role, address type, address (6)
             out["status"] = parameters[1]
             out["status_text"] = hci_status_name(parameters[1])
-            out["address"] = mac_text(parameters[5:11])
+            out["handle"] = int.from_bytes(parameters[2:4], "little")
+            out["address_type"] = parameters[5]
+            out["address"] = mac_text(parameters[6:12])
     return out
 
 
@@ -918,6 +933,9 @@ def parse_advertising_reports(data: bytes) -> List[Dict[str, Any]]:
                  "structures": parse_ad(payload), "rssi": rssi}
         entry["name"] = payload_name(entry["structures"])
         entry["tracker"] = tracker_of(entry["structures"])
+        # the parsed structures under the same key a capture record uses, so a scanner
+        # and a capture reader fold into a device map the same way
+        entry["ad"] = entry["structures"]
         entry["company"] = next((company_name(item["company_id"])
                                  for item in entry["structures"]
                                  if item.get("company_id") is not None), "")
@@ -934,18 +952,20 @@ def parse_inquiry_results(parameters: bytes) -> List[Dict[str, Any]]:
     count = parameters[0]
     offset = 1
     for _index in range(count):
-        if offset + 14 > len(parameters):
+        # one inquiry response is thirteen bytes: the address, the page scan repetition
+        # mode, a reserved byte, the class of device (three) and the clock offset (two)
+        if offset + 13 > len(parameters):
             break
         address = mac_text(parameters[offset:offset + 6])
-        class_of_device = int.from_bytes(parameters[offset + 9:offset + 12], "little")
+        class_of_device = int.from_bytes(parameters[offset + 8:offset + 11], "little")
         reports.append({"address": address,
                         "page_scan_repetition": parameters[offset + 6] & 0x03,
-                        "clock_offset": int.from_bytes(parameters[offset + 12:offset + 14],
+                        "clock_offset": int.from_bytes(parameters[offset + 11:offset + 13],
                                                        "little") & 0x7FFF,
                         "class_of_device": class_of_device,
                         "major_class": (class_of_device >> 8) & 0x1F,
                         "major_class_text": major_class_name(class_of_device)})
-        offset += 14
+        offset += 13
     return reports
 
 
@@ -958,6 +978,11 @@ def iter_hci_events(sock: Any, seconds: float = 5.0, limit: int = 5000) -> Itera
     while count < limit and _time.time() < deadline:
         packet = hci_recv(sock, timeout=max(0.05, min(0.5, deadline - _time.time())))
         if not packet:
+            # a simulated controller knows when it has finished reporting; a real one
+            # cannot say anything a timeout does not already say, so only the simulated
+            # socket gets to end the loop early
+            if hasattr(sock, "has_events") and not sock.has_events():
+                return
             continue
         count += 1
         yield parse_hci_event(packet)
@@ -1315,6 +1340,29 @@ def ascii_preview(data: bytes, limit: int = 60) -> str:
     return "".join(chr(byte) if 32 <= byte < 127 else "." for byte in data[:limit])
 
 
+def parse_acl_packet(packet: bytes) -> Dict[str, Any]:
+    """Read an H4 ACL packet: ``(handle, flags, L2CAP frame)`` for the controller's answers.
+
+    A controller reports the peer's data as an ACL packet: the packet type, the connection
+    handle with the packet-boundary flags, the length, and then the L2CAP frame.  An
+    attack that sends ACL data and reads the answer needs this to see what came back —
+    without it, the answer is a hex string somebody has to search by hand.
+    """
+    out: Dict[str, Any] = {"type": packet[0] if packet else 0, "handle": 0, "flags": 0,
+                           "length": 0, "payload": b"", "l2cap": None}
+    body = packet[1:] if packet[:1] == bytes([HCI_ACL_PACKET]) else packet
+    if len(body) < 4:
+        return out
+    handle_flags = int.from_bytes(body[0:2], "little")
+    out["handle"] = handle_flags & 0x0FFF
+    out["flags"] = handle_flags >> 12
+    out["length"] = int.from_bytes(body[2:4], "little")
+    payload = body[4:4 + out["length"]] if out["length"] else body[4:]
+    out["payload"] = payload
+    out["l2cap"] = parse_l2cap(payload)
+    return out
+
+
 def parse_data_channel(frame: bytes) -> Dict[str, Any]:
     """Parse a *data-channel* record (link type 251/256) into LL/L2CAP/ATT/SMP fields.
 
@@ -1536,26 +1584,36 @@ def sdp_service_search_attribute(transaction: int = 1, uuids: Sequence[int] = (0
         body += b"\x19" + struct.pack(">H", uuid & 0xFFFF)
     body += bytes([0x09]) + struct.pack(">H", max_records)           # max attribute bytes
     body += continuation or b"\x35\x03\x09\x00\x01"                  # attribute ID list
-    return struct.pack(">HBH", 0x06, 0x0001, len(body) + 1)[:5] + bytes([len(body)]) \
-        + bytes(body) if False else struct.pack(">BHBH", 0x06, 0x0001, len(body), 0xFFFF) \
-        + bytes(body)
+    # the PDU header is PduId, TransactionId and the *parameter* length: the sequence
+    # above is the parameter, and nothing else goes between the two
+    return struct.pack(">BHH", 0x06, transaction & 0xFFFF, len(body)) + bytes(body)
 
 
 def parse_sdp(data: bytes) -> List[Dict[str, Any]]:
     """Read service records out of an SDP response: ``(attribute, value)`` pairs.
 
-    The attribute list is a sequence of attributes wrapped in descriptor lists; the ones
-    a report quotes are ``0x0000``/``0x0001`` (service class IDs), ``0x0004`` (protocol
-    descriptor list, which carries the RFCOMM channel), ``0x0005`` (browse group) and
-    ``0x0100`` (service name).
+    Two shapes arrive here.  A real device answers with BER data elements — a ``0x35``
+    sequence of ``0x30`` attribute lists, each a ``0x09`` attribute identifier followed by
+    its value — and that is what :func:`_sdp_ber_records` walks.  A payload that is
+    already a bare attribute stream (or a client's own hand-rolled request echoed back)
+    falls through to the flat walk below, because a parser that gives up on the second
+    shape stops working the moment a device answers with the first.
+
+    The attributes a report quotes are ``0x0000``/``0x0001`` (service class IDs),
+    ``0x0004`` (the protocol descriptor list, which carries the RFCOMM channel),
+    ``0x0005`` (browse group) and ``0x0100`` (the service name).
     """
+    records = _sdp_ber_records(_sdp_parameters(data))
+    if records:
+        return records
     out: List[Dict[str, Any]] = []
+    body = _sdp_parameters(data)
     index = 0
-    while index + 3 <= len(data):
+    while index + 3 <= len(body):
         # an attribute is a 2-byte id followed by a size byte and a value of that size
-        attribute = int.from_bytes(data[index:index + 2], "big")
-        size = data[index + 2]
-        raw = data[index + 3:index + 3 + size]
+        attribute = int.from_bytes(body[index:index + 2], "big")
+        size = body[index + 2]
+        raw = body[index + 3:index + 3 + size]
         if len(raw) < size:
             break
         entry: Dict[str, Any] = {"attribute": f"0x{attribute:04x}",
@@ -1580,6 +1638,146 @@ def parse_sdp(data: bytes) -> List[Dict[str, Any]]:
         out.append(entry)
         index += 3 + size
     return out
+
+
+def _sdp_parameters(data: bytes) -> bytes:
+    """The parameter bytes of an SDP PDU, or the data itself when it has no header.
+
+    A whole SDP PDU is PduId, TransactionId (two bytes) and the length of the parameters;
+    what an L2CAP payload under PSM 1 carries is normally the first form, and a caller
+    that hands in a bare attribute stream gets it walked as it stands.
+    """
+    if len(data) >= 5 and data[0] in (0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07):
+        length = int.from_bytes(data[3:5], "big")
+        return data[5:5 + length] if length else data[5:]
+    return data
+
+
+def _ber_size(data: bytes, offset: int) -> Tuple[int, int]:
+    """``(size, bytes used)`` for the BER length that starts at ``offset``."""
+    if offset >= len(data):
+        return 0, 0
+    first = data[offset]
+    if first < 0x80:
+        return first, 1
+    count = first & 0x7F
+    if not count or offset + 1 + count > len(data):
+        return 0, 1
+    return int.from_bytes(data[offset + 1:offset + 1 + count], "big"), 1 + count
+
+
+def _ber_content(data: bytes) -> bytes:
+    """The content of the data element at the start of ``data``."""
+    size, header = _ber_size(data, 1)
+    return data[1 + header:1 + header + size]
+
+
+def _ber_items(data: bytes) -> List[Tuple[int, bytes]]:
+    """``(tag, content)`` for every data element in a sequence's content."""
+    out: List[Tuple[int, bytes]] = []
+    offset = 0
+    while offset + 2 <= len(data):
+        tag = data[offset]
+        size, header = _ber_size(data, offset + 1)
+        start = offset + 1 + header
+        content = data[start:start + size]
+        if len(content) < size:
+            break
+        out.append((tag, content))
+        offset = start + size
+    return out
+
+
+def _ber_value(tag: int, content: bytes) -> Dict[str, Any]:
+    """What one SDP attribute *value* says, in the keys a report quotes."""
+    entry: Dict[str, Any] = {"value_hex": content.hex()}
+    if tag == 0x19 and len(content) >= 2:                     # UUID16
+        uuid = int.from_bytes(content[:2], "big")
+        entry.update({"uuids": [uuid], "services": [SDP_SERVICES.get(uuid,
+                                                                     f"uuid 0x{uuid:04x}")]})
+    elif tag == 0x1A and len(content) >= 4:                   # UUID32
+        uuid = int.from_bytes(content[:4], "big")
+        entry.update({"uuids": [uuid], "services": [SDP_SERVICES.get(uuid,
+                                                                     f"uuid 0x{uuid:04x}")]})
+    elif tag in (0x25, 0x26):                                 # text
+        entry["name"] = content.decode("utf-8", "replace").strip("\x00")
+    elif tag in (0x08, 0x09, 0x0A, 0x0B):                     # unsigned integers
+        entry["value"] = int.from_bytes(content, "big")
+    elif tag in (0x35, 0x36, 0x37):                           # a sequence: walk it
+        uuids: List[int] = []
+        names: List[str] = []
+        channel = None
+        items = _ber_items(content)
+        for index, (inner_tag, inner) in enumerate(items):
+            if inner_tag in (0x19, 0x1A):
+                uuid = int.from_bytes(inner, "big")
+                uuids.append(uuid)
+                if uuid == 0x0003 and index + 1 < len(items) \
+                        and items[index + 1][0] in (0x08, 0x09, 0x0A, 0x0B):
+                    # the RFCOMM protocol descriptor: the UUID, then the channel
+                    channel = int.from_bytes(items[index + 1][1], "big")
+            elif inner_tag in (0x25, 0x26):
+                names.append(inner.decode("utf-8", "replace").strip("\x00"))
+            elif inner_tag in (0x35, 0x36, 0x37):
+                # a nested descriptor: the L2CAP and RFCOMM halves of a protocol list
+                # are separate sequences inside it, and the channel is in the second one
+                nested = _ber_value(inner_tag, inner)
+                uuids.extend(uuid for uuid in nested.get("uuids", []) if uuid not in uuids)
+                names.extend(nested.get("names", []))
+                channel = nested.get("channel", channel)
+                if nested.get("name") and nested["name"] not in names:
+                    names.append(nested["name"])
+        if uuids:
+            entry["uuids"] = uuids
+            entry["services"] = [SDP_SERVICES.get(uuid, f"uuid 0x{uuid:04x}")
+                                 for uuid in uuids]
+            entry["rfcomm"] = 0x0003 in uuids
+        if names:
+            entry["name"] = names[-1]
+            entry["names"] = names
+        if channel is not None:
+            entry["channel"] = channel
+    return entry
+
+
+def _sdp_ber_records(body: bytes) -> List[Dict[str, Any]]:
+    """Read a ServiceAttributeList: a sequence of attribute lists, in BER.
+
+    A response is a ``0x35`` sequence whose content is one ``0x30`` attribute list per
+    record, and each list is a stream of ``0x09`` attribute identifiers followed by their
+    values.  Anything that is not that shape returns no records, which is how the caller
+    knows to fall back to the flat form a raw L2CAP payload sometimes carries.
+    """
+    if body[:1] != b"\x35":
+        return []
+    out: List[Dict[str, Any]] = []
+    for tag, content in _ber_items(_ber_content(body)):
+        if tag != 0x30:
+            continue
+        items = _ber_items(content)
+        index = 0
+        attributes: Dict[int, Dict[str, Any]] = {}
+        while index < len(items):
+            item_tag, item = items[index]
+            if item_tag == 0x09 and len(item) == 2:
+                attribute = int.from_bytes(item, "big")
+                value_tag, value = items[index + 1] if index + 1 < len(items) else (0, b"")
+                entry = {"attribute": f"0x{attribute:04x}"}
+                entry.update(_ber_value(value_tag, value))
+                attributes[attribute] = entry
+                index += 2
+                continue
+            index += 1
+        ordered = [attributes[key] for key in sorted(attributes)]
+        out.append({"attributes": ordered,
+                    "name": next((entry.get("name") for entry in ordered
+                                  if entry.get("name")), ""),
+                    "services": [name for entry in ordered
+                                 for name in entry.get("services", [])],
+                    "channel": next((entry.get("channel") for entry in ordered
+                                     if entry.get("channel")), None),
+                    "value_hex": content.hex()[:240]})
+    return [entry for entry in out if entry["attributes"]]
 
 
 def describe_l2cap_psm(psm: int) -> str:
@@ -1642,6 +1840,10 @@ def merge_observations(devices: Dict[str, BluetoothDevice],
         devices[address] = device
     device.last_seen = stamp
     device.observations += 1
+    # the observation keeps its arrival time: the raw list is what the interval analysis
+    # walks, and a packet without a stamp is a packet every one of whose gaps reads 0 ms
+    if not packet.get("timestamp"):
+        packet["timestamp"] = stamp
     if packet.get("rssi"):
         device.rssi = packet["rssi"]
     if packet.get("address_kind"):
