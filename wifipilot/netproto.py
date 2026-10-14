@@ -19,7 +19,7 @@ Layout:
   :func:`parse_tcp`, with real checksums.
 * **DHCP** (RFC 2131) — :func:`dhcp_discover`, :func:`parse_dhcp`.
 * **DNS** (RFC 1035) — :func:`dns_query`, :func:`parse_dns`, :func:`dns_response`.
-* **SSDP/UPnP** — :func:`ssdp_msearch`, :func:`parse_ssdp`.
+* **SSDP/UPnP** — :func:`ssdp_msearch`, :func:`ssdp_notify`, :func:`parse_ssdp`.
 * **SNMP v2c** (RFC 3416, BER) — :func:`snmp_get`, :func:`parse_snmp`.
 * **RADIUS** (RFC 2865) — :func:`radius_access_request`, :func:`radius_response`,
   :func:`radius_verify_response`, :func:`radius_decrypt_password`, plus
@@ -34,7 +34,7 @@ import hashlib
 import os
 import socket
 import struct
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 # --------------------------------------------------------------------------- #
 # small helpers
@@ -165,6 +165,8 @@ DHCP_OPTIONS = {1: "subnet_mask", 3: "router", 6: "dns", 12: "hostname",
                 53: "message_type", 54: "server_id", 55: "parameter_list",
                 57: "max_message_size", 60: "vendor_class", 61: "client_id",
                 81: "client_fqdn", 119: "domain_search", 121: "classless_routes",
+                249: "ms_classless_routes", 43: "vendor_specific", 56: "message",
+                66: "tftp_server", 67: "bootfile", 82: "relay_agent",
                 252: "wpad"}
 
 DHCP_MESSAGE_TYPES = {1: "discover", 2: "offer", 3: "request", 4: "decline",
@@ -271,7 +273,7 @@ def parse_dhcp(data: bytes) -> Dict[str, Any]:
 
 
 def dhcp_offer(mac: str, yiaddr: str, server_id: str, router: str,
-               dns: Sequence[str] = (), lease: int = 3600,
+               dns: Union[str, Sequence[str]] = (), lease: int = 3600,
                hostname: str = "", xid: int = 0, message_type: int = 2) -> bytes:
     """A DHCP OFFER/ACK a rogue server can send: the answer side of the protocol."""
     options: List[Tuple[int, bytes]] = [(53, bytes([message_type])),
@@ -280,10 +282,107 @@ def dhcp_offer(mac: str, yiaddr: str, server_id: str, router: str,
     if router:
         options.append((3, ipv4_bytes(router)))
     if dns:
-        options.append((6, b"".join(ipv4_bytes(address) for address in dns)))
+        # one resolver is a string and several are a sequence: a caller should not have to
+        # remember which.  A bare string iterated character by character is a bug that
+        # only surfaces on a capture with "192.168.1.66" in it, so it is handled here
+        # rather than at every call site.
+        servers = [dns] if isinstance(dns, str) else list(dns)
+        options.append((6, b"".join(ipv4_bytes(address) for address in servers)))
     if hostname:
         options.append((12, hostname.encode()[:32]))
     return _dhcp_packet(2, mac, options, xid, 0x0000, requested_ip=yiaddr)
+
+
+def dhcp_message(message_type: int, mac: str, xid: int = 0, server_id: str = "",
+                 requested_ip: str = "", client_ip: str = "", options: Sequence[
+                     Tuple[int, bytes]] = ()) -> bytes:
+    """A DHCP message of any type, with the options the caller wants.
+
+    RELEASE and DECLINE are the two a *client* sends that an attacker has no business
+    sending: a RELEASE gives an address back, and a DECLINE marks one as in use.  Both
+    carry the client's own MAC in ``chaddr`` and nothing that proves the sender is that
+    client — which is the whole problem with them.
+    """
+    entries: List[Tuple[int, bytes]] = [(53, bytes([message_type & 0xFF]))]
+    if server_id:
+        entries.append((54, ipv4_bytes(server_id)))
+    if requested_ip:
+        entries.append((50, ipv4_bytes(requested_ip)))
+    if client_ip:
+        entries.append((12, client_ip.encode()[:32]))
+    entries.extend((int(code), bytes(value)) for code, value in options)
+    return _dhcp_packet(1, mac, entries, xid or int.from_bytes(os.urandom(4), "big"),
+                        0x8000, requested_ip=requested_ip)
+
+
+def dhcp_release(mac: str, address: str, server_id: str, xid: int = 0) -> bytes:
+    """A DHCP RELEASE: "give my address back", unauthenticated as the standard defines."""
+    return dhcp_message(7, mac, xid=xid, server_id=server_id, requested_ip=address)
+
+
+def dhcp_decline(mac: str, address: str, server_id: str, xid: int = 0) -> bytes:
+    """A DHCP DECLINE: "that address is already in use" — which burns it in the pool."""
+    return dhcp_message(4, mac, xid=xid, server_id=server_id, requested_ip=address)
+
+
+def dhcp_inform(mac: str, client_ip: str, xid: int = 0) -> bytes:
+    """A DHCP INFORM: a station that already has an address asking for its options."""
+    return dhcp_message(8, mac, xid=xid, requested_ip=client_ip)
+
+
+def dhcp_nak(mac: str, server_id: str, requested_ip: str = "", xid: int = 0,
+             message: str = "address not available") -> bytes:
+    """A DHCP NAK: the message that makes a client throw its configuration away."""
+    options: List[Tuple[int, bytes]] = [(56, message.encode()[:64])]
+    entries = [(53, b"\x06"), (54, ipv4_bytes(server_id) if server_id else bytes(4))]
+    if requested_ip:
+        entries.append((50, ipv4_bytes(requested_ip)))
+    entries.extend(options)
+    return _dhcp_packet(2, mac, entries, xid or int.from_bytes(os.urandom(4), "big"),
+                        0x0000, requested_ip=requested_ip)
+
+
+def dhcp_rogue_offer(mac: str, yiaddr: str, router: str, dns: Union[str, Sequence[str]] = (),
+                     lease: int = 86400, xid: int = 0,
+                     wpad: str = "", routes: str = "") -> bytes:
+    """An OFFER built to win: a long lease, itself as router, and the option bombs.
+
+    Option 252 (WPAD) is what turns a rogue DHCP server into a proxy configuration
+    attack — the client configures itself to fetch a proxy script from the attacker.
+    Option 121 pushes a classless static route, which is how a rogue server makes itself
+    the path to a subnet it is not on.
+    """
+    options: List[Tuple[int, bytes]] = [(53, b"\x02"), (54, ipv4_bytes(router)),
+                                        (51, struct.pack(">I", lease)),
+                                        (3, ipv4_bytes(router))]
+    if dns:
+        # one resolver is a string and several are a sequence: a caller should not have to
+        # remember which.  A bare string iterated character by character is a bug that
+        # only surfaces on a capture with "192.168.1.66" in it, so it is handled here
+        # rather than at every call site.
+        servers = [dns] if isinstance(dns, str) else list(dns)
+        options.append((6, b"".join(ipv4_bytes(address) for address in servers)))
+    if wpad:
+        options.append((252, wpad.encode()[:64]))
+    if routes:
+        options.append((121, _encode_classless_routes(routes)))
+    return _dhcp_packet(2, mac, options, xid or int.from_bytes(os.urandom(4), "big"),
+                        0x0000, requested_ip=yiaddr)
+
+
+def _encode_classless_routes(routes: str) -> bytes:
+    """Option 121: a (prefix length, significant bytes, router) list per RFC 3442."""
+    out = bytearray()
+    for entry in routes.split(";") if isinstance(routes, str) else routes:
+        if not entry:
+            continue
+        network, _, router = entry.partition(":")
+        address, _, length = network.partition("/")
+        prefix = int(length or 24)
+        raw = ipv4_bytes(address)
+        significant = (prefix + 7) // 8
+        out += bytes([prefix]) + raw[:significant] + ipv4_bytes(router or "0.0.0.0")
+    return bytes(out) if out else b"\x00" + ipv4_bytes("192.168.1.1")
 
 
 # --------------------------------------------------------------------------- #
@@ -446,6 +545,27 @@ def ssdp_msearch(search_target: str = "ssdp:all", mx: int = 2,
             f"MX: {mx}\r\n"
             f"ST: {search_target}\r\n"
             f"USER-AGENT: {user_agent}\r\n\r\n").encode()
+
+
+def ssdp_notify(name: str = "router", address: str = "", location: str = "",
+                model: str = "", nt: str = "upnp:rootdevice", nts: str = "ssdp:alive",
+                usn: str = "", cache: int = 1800, server: str = "") -> bytes:
+    """An SSDP ``NOTIFY``: a device announcing itself to the whole segment.
+
+    Three of these go out when a device joins, and then again as each cached
+    announcement expires — which is why a five-minute capture of a quiet network knows
+    the make and model of every television, router and printer on it.  ``LOCATION`` is
+    the description document; ``USN`` is the identity, and it is what makes a device
+    recognisable across captures even when its address changes.
+    """
+    usn = usn or f"uuid:{name}"
+    server = server or f"Linux/3.14 UPnP/1.1 {model or name}/1.0"
+    headers = [f"NOTIFY * HTTP/1.1", f"HOST: {SSDP_ADDRESS}:{SSDP_PORT}",
+               f"CACHE-CONTROL: max-age={cache}", f"NT: {nt}", f"NTS: {nts}",
+               f"USN: {usn}::{nt}", f"SERVER: {server}"]
+    if location:
+        headers.append(f"LOCATION: {location}")
+    return ("\r\n".join(headers) + "\r\n\r\n").encode()
 
 
 def parse_ssdp(text: str) -> Dict[str, str]:
@@ -640,6 +760,16 @@ def decode_oid(data: bytes) -> str:
     if value:
         parts.append(value)
     return ".".join(str(part) for part in parts)
+
+
+def tcp_flag_names(flags: int) -> List[str]:
+    """The names of the TCP flags set in a header's flag byte, in wire order."""
+    names = []
+    for bit, name in ((0x01, "FIN"), (0x02, "SYN"), (0x04, "RST"), (0x08, "PSH"),
+                      (0x10, "ACK"), (0x20, "URG"), (0x40, "ECE"), (0x80, "CWR")):
+        if flags & bit:
+            names.append(name)
+    return names
 
 
 def snmp_get(community: str, oids: Sequence[str] = ("1.3.6.1.2.1.1.1.0",),
@@ -1261,7 +1391,7 @@ __all__ = ["CREDENTIAL_PATTERNS", "DHCP_CLIENT_PORT", "DHCP_MESSAGE_TYPES",
            "RADIUS_ACCOUNTING_PORT", "RADIUS_ATTRIBUTES", "RADIUS_CODES",
            "RADIUS_DEFAULT_SECRETS", "RADIUS_LEGACY_PORT", "RADIUS_PORT", "RADIUS_PORTS",
            "SNMP_DEFAULT_COMMUNITIES", "SNMP_IDENTITY_OIDS", "SNMP_PORT", "SSDP_ADDRESS",
-           "SSDP_PORT", "bytes_to_mac", "checksum", "cleartext_credentials",
+           "SSDP_PORT", "ssdp_notify", "bytes_to_mac", "checksum", "cleartext_credentials",
            "decode_name", "decode_oid", "dhcp_discover", "dhcp_offer", "dhcp_request",
            "dns_query", "dns_response", "encode_name", "encode_oid", "ftp_credentials",
            "html_inputs", "html_title", "http_credentials", "http_get",

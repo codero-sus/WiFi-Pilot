@@ -267,6 +267,67 @@ def mac(b: bytes) -> str:
     return b.hex(":", 1)
 
 
+def iter_records(path: str, max_packets: int = 400_000):
+    """``(timestamp, link_type, payload)`` for every record in a capture.
+
+    :func:`iter_frames` answers "what 802.11 frames are in here"; this answers the
+    blunter question, and it exists because not every useful capture is 802.11.  A
+    Bluetooth low-energy capture (link types 251/255/256) has no radiotap header to
+    strip and no 802.11 header to parse, so a reader that insists on both reports
+    nothing at all — which is how "no Bluetooth devices found" happens on a capture
+    full of them.
+    """
+    file_path = Path(path)
+    try:
+        size = file_path.stat().st_size
+    except OSError:
+        return
+    if not size:
+        return
+    with open(file_path, "rb") as handle:
+        data = handle.read()
+    if data[:4] == PCAPNG_MAGIC:
+        # pcapng keeps the link type in the Interface Description Block, not in the
+        # file header: read it from the first one so a BLE capture read through this
+        # path reports the same link type as a pcap one does
+        link_type = 0
+        offset = 0
+        while offset + 12 <= len(data) and len(data) >= 12:
+            block_type = data[offset:offset + 4]
+            try:
+                block_len = struct.unpack_from("<I", data, offset + 4)[0]
+            except struct.error:                          # pragma: no cover - truncated
+                break
+            if block_len < 12 or offset + block_len > len(data):
+                break
+            if block_type == b"\x01\x00\x00\x00" and block_len >= 16:
+                link_type = struct.unpack_from("<H", data, offset + 8)[0]
+                break
+            offset += block_len
+        rows = _PcapngReader().rows(data, 0)
+        count = 0
+        for timestamp, start, length, _next in rows:
+            if count >= max_packets:
+                return
+            count += 1
+            yield timestamp, link_type, data[start:start + length]
+        return
+    if data[:4] not in PCAP_MAGIC:
+        return
+    endian, _divisor = PCAP_MAGIC[data[:4]]
+    link_type = struct.unpack_from(endian + "I", data, 20)[0] if size >= 24 else 0
+    if link_type == 105:                      # DLT_IEEE802_11: 802.11 already, no radio
+        link_type = 105
+    if link_type == 127:                      # DLT_IEEE802_11_RADIO: radiotap first
+        link_type = 105
+    count = 0
+    for timestamp, start, length, _next in _iter_pcap(data, 0, endian, 1_000_000):
+        if count >= max_packets:
+            return
+        count += 1
+        yield timestamp, link_type, bytes(data[start:start + length])
+
+
 def _iter_pcap(data, start_offset: int = 0, endian: str = "",
                divisor: float = 0.0) -> Iterator[Tuple[float, int, int, int]]:
     """Yield ``(timestamp, offset, length, next_offset)`` for every packet record.

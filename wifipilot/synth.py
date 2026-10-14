@@ -871,31 +871,416 @@ def build_probe_response(ssid: str, bssid: str, station: str = "ff:ff:ff:ff:ff:f
     return (b"\x50\x00\x00\x00" + _mac(station) + ap + ap + b"\x00\x00" + body)
 
 
-def clock_beacons(frames: List[bytes], base: int = 0, spacing_us: int = 1_000,
-                  frozen_bssid: str = "") -> List[bytes]:
-    """Give every beacon and probe response a timestamp that tracks the capture clock.
+def build_llc_data_frame(bssid: str, station: str, ethernet: bytes,
+                         to_ds: bool = True, seq: int = 0) -> bytes:
+    """An 802.11 data frame carrying an Ethernet payload, LLC/SNAP included.
 
-    A beacon's timestamp is the AP's own microsecond clock, so on air it advances at
-    the same rate the frames arrive at.  A replayed beacon cannot do that: the
-    recording's timestamps stand still while capture time runs on, which is the whole
-    basis of the TSF skew audit.  ``frozen_bssid`` is the one transmitter that keeps its
-    recording's clock, so a scene has something for that audit to find.
+    This is what a *network* payload looks like on a wireless capture: the 802.11 data
+    header, then the eight-byte LLC/SNAP header (``aa aa 03 00 00 00`` and the
+    ethertype), then the frame the wired side would have seen.  A parser that takes the
+    body as-is reads the SNAP header as if it were ARP, which is why an analysis has to
+    know the difference.
     """
-    if not frames:
-        return frames
-    base = base or int(time.time() * 1_000_000)
-    frozen = _mac(frozen_bssid) if frozen_bssid else b""
-    out: List[bytes] = []
-    for index, frame in enumerate(frames):
-        # subtype 8 (beacon) and 5 (probe response) both carry the timestamp first
-        if len(frame) >= 32 and frame[0] in (0x80, 0x50):
-            if frozen and frame[10:16] == frozen:
-                stamp = base - 9_000_000              # nine seconds behind, and still
-            else:
-                stamp = base + index * spacing_us
-            frame = frame[:24] + struct.pack("<Q", stamp & 0xFFFFFFFFFFFFFFFF) + frame[32:]
-        out.append(frame)
-    return out
+    kind = int.from_bytes(ethernet[12:14], "big") if len(ethernet) >= 14 else 0x0800
+    body = b"\xaa\xaa\x03\x00\x00\x00" + struct.pack(">H", kind) + ethernet[14:]
+    return build_data_frame(bssid, station, body, to_ds=to_ds)
+
+
+
+
+def build_network_scene(path: str, bssid: str = "aa:bb:cc:00:00:01",
+                        gateway: str = "192.168.1.1", clients: int = 6,
+                        rounds: int = 1, seed: int = 11) -> str:
+    """A capture of everything that happens *above* the 802.11 layer.
+
+    The wireless side of an assessment is mostly gossip; the findings live one layer up:
+    a DHCP server handing out a second default gateway, a client that released an
+    address it never held, a router that is not the one the network was configured
+    with, an IPv6 prefix nobody assigned, a printer that answers PJL on port 9100.  This
+    scene carries all of those as real frames — ARP, IPv4, ICMP, TCP, UDP, ICMPv6,
+    spanning tree, LLDP — wrapped in 802.11 data frames, so the network-layer attacks
+    have something real to read offline and something real to compare against on air.
+
+    The scene is deterministic for a given ``seed``: the same capture every time, which
+    is what makes a demo run reproducible.
+    """
+    from . import netproto
+    from . import netstack as ns
+
+
+    rng = random.Random(seed)
+    frames: List[bytes] = []
+    stations = ["02:00:00:00:%02x:%02x" % (index // 256, index % 256)
+                for index in range(clients)]
+    hosts = {station: f"192.168.{1 + index // 254}.{20 + index}"
+             for index, station in enumerate(stations)}
+    leases = {station: f"192.168.1.{100 + index}"
+              for index, station in enumerate(stations)}
+
+    def data(station: str, payload: bytes, to_ds: bool = True) -> None:
+        frames.append(build_llc_data_frame(bssid, station, payload, to_ds=to_ds))
+
+    def udp_frame(station: str, source: str, destination: str, sport: int, dport: int,
+                  payload: bytes, to_ds: bool = True) -> None:
+        data(station, ns.ethernet_frame(ns.BROADCAST,
+                                        station, ns.ipv4_packet(
+                                            source, destination, 17,
+                                            ns.udp_packet(source, destination, sport,
+                                                          dport, payload)), 0x0800),
+             to_ds=to_ds)
+
+    # -- DHCP: a discovery, an offer, a request, an acknowledgement, per client ----
+    for station in stations:
+        xid = rng.getrandbits(32)
+        discover = netproto.dhcp_discover(station, xid=xid, hostname=f"ws-{station[-2:]}")
+        udp_frame(station, "0.0.0.0", "255.255.255.255", netproto.DHCP_CLIENT_PORT,
+                  netproto.DHCP_SERVER_PORT, discover)
+        offer = netproto.dhcp_offer(station, leases[station], gateway, gateway,
+                                    dns=[gateway], xid=xid)
+        udp_frame(station, gateway, leases[station], netproto.DHCP_SERVER_PORT,
+                  netproto.DHCP_CLIENT_PORT, offer, to_ds=False)
+        request = netproto.dhcp_request(station, leases[station], gateway, xid=xid)
+        udp_frame(station, "0.0.0.0", "255.255.255.255", netproto.DHCP_CLIENT_PORT,
+                  netproto.DHCP_SERVER_PORT, request)
+        ack = netproto.dhcp_offer(station, leases[station], gateway, gateway,
+                                  dns=[gateway], xid=xid, message_type=5)
+        udp_frame(station, gateway, leases[station], netproto.DHCP_SERVER_PORT,
+                  netproto.DHCP_CLIENT_PORT, ack, to_ds=False)
+
+    # -- a rogue server answering the same discoveries, with itself as the gateway --
+    rogue = "192.168.1.66"
+    for station in stations[:3]:
+        offer = netproto.dhcp_offer(station, "192.168.1.200", rogue, rogue,
+                                    dns=[rogue], lease=600, xid=rng.getrandbits(32))
+        udp_frame(station, rogue, "255.255.255.255", netproto.DHCP_SERVER_PORT,
+                  netproto.DHCP_CLIENT_PORT, offer, to_ds=False)
+
+    # -- a starvation burst: many MACs, one address each, no follow-through --------
+    for index in range(24):
+        mac = f"02:0d:0d:{index:02x}:{rng.randrange(256):02x}:00"
+        udp_frame(mac, "0.0.0.0", "255.255.255.255", netproto.DHCP_CLIENT_PORT,
+                  netproto.DHCP_SERVER_PORT,
+                  netproto.dhcp_discover(mac, xid=rng.getrandbits(32)))
+
+    # -- forged RELEASE and DECLINE for the first client's lease ------------------
+    victim = stations[0]
+    release = netproto.dhcp_release(victim, leases[victim], gateway)
+    udp_frame(victim, "0.0.0.0", gateway, netproto.DHCP_CLIENT_PORT,
+              netproto.DHCP_SERVER_PORT, release)
+    decline = netproto.dhcp_decline(victim, f"192.168.1.{200}", gateway)
+    udp_frame(victim, "0.0.0.0", "255.255.255.255", netproto.DHCP_CLIENT_PORT,
+              netproto.DHCP_SERVER_PORT, decline)
+
+    # -- ARP: a scan, a poisoning burst, and gratuitous announcements -------------
+    for host in range(1, 26):
+        data(stations[1], ns.ethernet_frame(ns.BROADCAST, stations[1],
+                                            ns.arp_packet(1, stations[1],
+                                                          hosts[stations[1]],
+                                                          "00:00:00:00:00:00",
+                                                          gateway), 0x0806))
+    for _ in range(12):
+        data(stations[2], ns.ethernet_frame(ns.BROADCAST, "02:0d:0d:99:99:99",
+                                            ns.arp_reply("02:0d:0d:99:99:99", gateway,
+                                                         ns.BROADCAST, gateway), 0x0806))
+    for station in stations[:4]:
+        data(station, ns.ethernet_frame(ns.BROADCAST, station,
+                                        ns.gratuitous_arp(station, leases[station]),
+                                        0x0806))
+
+    # -- ICMP: echo, a redirect at the gateway, an unreachable --------------------
+    for index in range(4):
+        station = stations[index % len(stations)]
+        data(station, ns.ethernet_frame("aa:bb:cc:00:00:01", station,
+                                        ns.ipv4_packet(hosts[station], gateway, 1,
+                                                       ns.icmp_echo(0x1234, index + 1,
+                                                                    b"wifipilot-probe")),
+                                        0x0800))
+    data(stations[3], ns.ethernet_frame(stations[3], bssid,
+                                        ns.ipv4_packet(gateway, hosts[stations[3]], 1,
+                                                       ns.icmp_redirect("192.168.1.66")),
+                                        0x0800), to_ds=False)
+
+    # -- TCP: a SYN flood, and one honest HTTP conversation ----------------------
+    for index in range(40):
+        source = f"10.66.{index % 4}.{index + 2}"
+        data(stations[4], ns.ethernet_frame("aa:bb:cc:00:00:01", stations[4],
+                                            ns.ipv4_packet(source, gateway, 6,
+                                                           ns.tcp_packet(source, gateway,
+                                                                         rng.randrange(1024,
+                                                                                       65535),
+                                                                         80,
+                                                                         flags=ns.tcp_flags(
+                                                                             syn=True))),
+                                            0x0800))
+    http = (b"GET /admin HTTP/1.1\r\nHost: 192.168.1.1\r\n"
+            b"Authorization: Basic YWRtaW46YWRtaW4=\r\n\r\n")
+    data(stations[5], ns.ethernet_frame("aa:bb:cc:00:00:01", stations[5],
+                                        ns.ipv4_packet(hosts[stations[5]], gateway, 6,
+                                                       ns.tcp_packet(hosts[stations[5]],
+                                                                     gateway, 40001, 80,
+                                                                     flags=ns.tcp_flags(
+                                                                         psh=True, ack=True),
+                                                                     payload=http)),
+                                        0x0800))
+
+    # -- UDP: a DNS query with a forged answer, LLMNR, NBNS, mDNS -----------------
+    dns_payload = netproto.dns_query("intranet.corp.example")
+    udp_frame(stations[0], hosts[stations[0]], gateway, 51000, 53, dns_payload)
+    spoof = netproto.dns_response(dns_payload, [("intranet.corp.example", "192.168.1.66")])
+    udp_frame(stations[0], gateway, hosts[stations[0]], 53, 51000, spoof, to_ds=False)
+    udp_frame(stations[1], hosts[stations[1]], "224.0.0.252", 53500, 5355,
+              ns.llmnr_query("fileserver"))
+    udp_frame(stations[1], "192.168.1.66", hosts[stations[1]], 5355, 53500,
+              ns.llmnr_response(ns.llmnr_query("fileserver"), rogue), to_ds=False)
+    udp_frame(stations[2], hosts[stations[2]], "192.168.1.255", 137, 137,
+              ns.nbns_query("FILESERVER"))
+    udp_frame(stations[3], hosts[stations[3]], "224.0.0.251", 5353, 5353,
+              ns.mdns_query("printer.local"))
+    udp_frame(stations[3], rogue, "224.0.0.251", 5353, 5353,
+              ns.mdns_response("printer.local", rogue), to_ds=False)
+    for index in range(20):
+        udp_frame(stations[4], f"10.66.0.{index + 2}", gateway, 4444, 1900,
+                  netproto.ssdp_msearch("ssdp:all"))
+    # the answers to those searches: two devices that describe themselves completely,
+    # which is the whole reason SSDP is a census rather than a guess
+    subnet = gateway.rsplit(".", 1)[0]
+    for host, name, model, location in (
+            (gateway, "router", "NETGEAR R7000", f"http://{gateway}:80/desc.xml"),
+            (f"{subnet}.44", "nas", "Synology DS220+", f"http://{subnet}.44:5000/desc.xml"),
+            (f"{subnet}.21", "printer", "HP LaserJet 1022", f"http://{subnet}.21:80/desc.xml")):
+        for index in range(2):
+            body = netproto.ssdp_notify(name=name, address=host, model=model,
+                                       location=location, nt="upnp:rootdevice",
+                                       usn=f"uuid:wifipilot-{name}-{index}")
+            udp_frame(stations[1], host, netproto.SSDP_ADDRESS, 1900, 1900, body)
+
+    # -- IPv6: a rogue router advertisement and a neighbour advertisement --------
+    station = stations[0]
+    data(station, ns.ethernet_frame("33:33:00:00:00:01", station,
+                                    ns.ipv6_packet("fe80::66", ns.IPV6_MULTICAST_ALL_NODES,
+                                                   58,
+                                                   ns.icmpv6_router_advertisement(
+                                                       router="fe80::66",
+                                                       prefix="2001:db8:bad::",
+                                                       dns=["2001:db8:bad::53"])),
+                                    0x86DD), to_ds=False)
+    data(station, ns.ethernet_frame("33:33:00:00:00:01", station,
+                                    ns.ipv6_packet("fe80::66", ns.IPV6_MULTICAST_ALL_NODES,
+                                                   58,
+                                                   ns.icmpv6_neighbor_advertisement(
+                                                       "2001:db8:bad::1", "2001:db8:bad::5",
+                                                       "02:0d:0d:99:99:99",
+                                                       router=True, solicited=False)),
+                                    0x86DD))
+
+    # -- spanning tree and neighbour discovery: forged topology ------------------
+    for source in ("02:0d:0d:99:99:99", "02:0d:0d:99:99:98"):
+        llc = ns.stp_configuration_bpdu("00:0d:0d:99:99:99", source, root_priority=0)
+        frames.append(build_llc_data_frame(bssid, stations[0],
+                                           ns.ethernet_frame(ns.STP_MULTICAST, source,
+                                                             llc, len(llc)),
+                                           to_ds=True))
+    lldp = ns.lldp_packet("02:0d:0d:99:99:99", "Gi1/0/1", "core-switch-9",
+                          management_ip="192.168.1.66")
+    data(stations[0], lldp)
+
+    # -- VLAN: a doubly tagged frame, the classic hopping primitive -------------
+    inner = ns.ethernet_frame("ff:ff:ff:ff:ff:ff", "02:0d:0d:99:99:99",
+                              ns.arp_packet(1, "02:0d:0d:99:99:99", "192.168.1.66",
+                                            "00:00:00:00:00:00", "192.168.1.1"), 0x0806)
+    tagged = (_mac(ns.BROADCAST) + _mac("02:0d:0d:99:99:99")
+              + struct.pack(">H", 0x8100)                 # the outer tag a switch strips
+              + ns.vlan_tag(1, inner=0x8100) + ns.vlan_tag(99, inner=0x0806) + inner[14:])
+    data(stations[0], tagged)
+
+    # -- cleartext credentials and device services --------------------------------
+    telnet_login = (b"\xff\xfd\x18\xff\xfd\x20" + b"admin\r\n" + b"admin\r\n")
+    data(stations[1], ns.ethernet_frame("aa:bb:cc:00:00:01", stations[1],
+                                        ns.ipv4_packet(hosts[stations[1]], gateway, 6,
+                                                       ns.tcp_packet(hosts[stations[1]],
+                                                                     gateway, 40100, 23,
+                                                                     flags=ns.tcp_flags(
+                                                                         psh=True,
+                                                                         ack=True),
+                                                                     payload=telnet_login)),
+                                        0x0800))
+    mqtt = ns.mqtt_connect("meter-01", username="admin", password="admin")
+    data(stations[2], ns.ethernet_frame("aa:bb:cc:00:00:01", stations[2],
+                                        ns.ipv4_packet(hosts[stations[2]], gateway, 6,
+                                                       ns.tcp_packet(hosts[stations[2]],
+                                                                     gateway, 40200, 1883,
+                                                                     flags=ns.tcp_flags(
+                                                                         psh=True, ack=True),
+                                                                     payload=mqtt)),
+                                        0x0800))
+    rtsp = ns.rtsp_request("DESCRIBE", f"rtsp://{gateway}/stream1")
+    data(stations[3], ns.ethernet_frame("aa:bb:cc:00:00:01", stations[3],
+                                        ns.ipv4_packet(hosts[stations[3]], gateway, 6,
+                                                       ns.tcp_packet(hosts[stations[3]],
+                                                                     gateway, 40300, 554,
+                                                                     flags=ns.tcp_flags(
+                                                                         psh=True, ack=True),
+                                                                     payload=rtsp)),
+                                        0x0800))
+    pjl = ns.pjl_job(("@PJL INFO ID", "@PJL INFO CONFIG"))
+    data(stations[4], ns.ethernet_frame("aa:bb:cc:00:00:01", stations[4],
+                                        ns.ipv4_packet(hosts[stations[4]], gateway, 6,
+                                                       ns.tcp_packet(hosts[stations[4]],
+                                                                     gateway, 40400, 9100,
+                                                                     flags=ns.tcp_flags(
+                                                                         psh=True, ack=True),
+                                                                     payload=pjl)),
+                                        0x0800))
+    snmp_req = netproto.snmp_get("public", ["1.3.6.1.2.1.1.5.0"])
+    udp_frame(stations[5], hosts[stations[5]], gateway, 41600, 161, snmp_req)
+
+    write_pcap(path, frames, spacing=0.01)
+    return str(path)
+
+
+def build_bt_scene(path: str, seconds: float = 20.0, seed: int = 7,
+                   base_time: float = 1_700_000_000.0) -> str:
+    """A Bluetooth Low Energy capture of a floor of devices.
+
+    Ten devices, each with its own advertising interval and its own idea of privacy: a
+    beacon in a doorway that never changes its address, a tracker that rotates its own on
+    every report, a sensor that transmits twenty times a second, a keyboard that only
+    names itself when asked, and a phone that connects and pairs with its Just Works
+    default.  The capture is written as ``LINKTYPE_BLUETOOTH_LE_LL_WITH_PHDR`` — the
+    format BLE analysis starts from — so the Bluetooth attacks read a real capture rather
+    than a description of one.
+
+    The device list is the point: one device is trackable and one is not, one names its
+    manufacturer and one says nothing about itself, two carry a beacon payload and three
+    carry a service.  Every audit in the Bluetooth wave has something real to find.
+    """
+    from . import bt
+
+    records: List[bytes] = []
+    times: List[float] = []
+
+    def emit(moment: float, pdu: bytes, channel: int, rssi: int,
+             access_address: bytes = b"") -> None:
+        records.append(bt.le_wrapper(pdu, channel=channel, rssi=rssi,
+                                     access_address=access_address))
+        times.append(base_time + moment)
+
+    devices = [
+        # an iBeacon in a doorway: mains-powered, so a fixed address and a fixed identity.
+        # Its advertising payload is 27 bytes, which leaves room for flags and nothing
+        # else — a name would be a scan response at best, and usually there is none.
+        {"address": "c4:3b:2a:11:00:01", "interval": 500.0, "pdu": 0x00, "channel": 37,
+         "rssi": -60,
+         "structures": [bt.ad_flags(le_general=True),
+                        bt.ibeacon("8ec76ea3-1d1c-4f1a-9b7a-3c2f5d0a7711", 1, 17, -59)]},
+        # an Eddystone-URL on a shopfront: the URL, and only the URL
+        {"address": "e1:22:33:44:55:66", "interval": 1000.0, "pdu": 0x02, "channel": 38,
+         "rssi": -72,
+         "structures": [bt.ad_flags(), bt.ad_service_uuids([0xFEAA]),
+                        bt.eddystone_url("shop.example", 0x00, scheme=0x03)]},
+        # a tracker: a resolvable private address that changes on every single report
+        {"address": "", "rotate": True, "interval": 2000.0, "pdu": 0x00, "channel": 39,
+         "rssi": -78,
+         "structures": [bt.ad_flags(), bt.ad_manufacturer(0x004C, b"\x12\x19\x00")]},
+        # a heart-rate strap: a service UUID and the measured power that goes with it
+        {"address": "d4:11:22:33:44:55", "interval": 1000.0, "pdu": 0x00, "channel": 37,
+         "rssi": -66,
+         "structures": [bt.ad_flags(), bt.ad_name("HRM-Dual"), bt.ad_tx_power(-60),
+                        bt.ad_service_uuids([0x180D])]},
+        # a sensor that transmits twenty times a second: an interval no phone uses, and
+        # the reason its battery lasts a week instead of a year
+        {"address": "f0:de:11:22:33:44", "interval": 20.0, "pdu": 0x02, "channel": 38,
+         "rssi": -55,
+         "structures": [bt.ad_flags(), bt.ad_manufacturer(0x0059, b"\x61\x01\x02")]},
+        # a keyboard that advertises a flag, and names itself only when scanned
+        {"address": "2c:54:33:22:11:00", "interval": 1000.0, "pdu": 0x00, "channel": 39,
+         "rssi": -70, "scan_response": True,
+         "structures": [bt.ad_flags()],
+         "scan_structures": [bt.ad_flags(), bt.ad_name("KBD-1C2B")]},
+        # a fitness band: an incomplete name, a battery service, and connectable
+        {"address": "aa:bb:cc:dd:ee:ff", "interval": 800.0, "pdu": 0x00, "channel": 37,
+         "rssi": -74,
+         "structures": [bt.ad_flags(), bt.ad_name("Fit-Band", complete=False),
+                        bt.ad_service_uuids([0x180F])]},
+        # a device with nothing to say: a manufacturer field and no name at all
+        {"address": "11:22:33:44:55:66", "interval": 1500.0, "pdu": 0x01, "channel": 38,
+         "rssi": -80,
+         "structures": [bt.ad_manufacturer(0x0075, b"\x42\x00\x01")]},
+        # a printer: a name and the Device Information service
+        {"address": "9c:32:1a:44:55:66", "interval": 700.0, "pdu": 0x00, "channel": 39,
+         "rssi": -63,
+         "structures": [bt.ad_flags(), bt.ad_name("PRN-4B2C"),
+                        bt.ad_service_uuids([0x180A])]},
+        # a weight scale: a vendor service and a slow interval
+        {"address": "6b:22:99:44:11:77", "interval": 1200.0, "pdu": 0x02, "channel": 37,
+         "rssi": -69,
+         "structures": [bt.ad_flags(), bt.ad_manufacturer(0x0006, b"\x0a\x0b\x0c")]},
+    ]
+
+    rng = random.Random(seed)
+    for index, device in enumerate(devices):
+        interval = float(device["interval"]) / 1000.0
+        moment = rng.random() * 0.05
+        step = 0
+        while moment < seconds:
+            address = device["address"]
+            if device.get("rotate"):
+                # a resolvable private address: it changes on every report, and only the
+                # holder of the identity key can link the next one to the last
+                address = bt.resolvable_private_address(
+                    bytes([index & 0xFF, step & 0xFF, seed & 0xFF, 0x5A]), seed=step)
+            payload = bt.adv_payload(*device["structures"])
+            pdu = bt.adv_pdu(int(device["pdu"]), address, payload)
+            rssi = int(device["rssi"]) + ((step * 7 + index) % 5) - 2
+            emit(moment, pdu, int(device["channel"]), rssi)
+            if device.get("scan_response") and step % 4 == 1:
+                response = bt.adv_pdu(0x04, address,
+                                      bt.adv_payload(*device["scan_structures"]))
+                emit(moment + 0.002, response, int(device["channel"]), rssi)
+            moment += interval
+            step += 1
+
+    # -- the phone that trusts the keyboard, and everything the two then say ------- #
+    # a connection has its own access address; the link layer, L2CAP, ATT and the
+    # security manager sit on top of it, and each of them is readable from the capture
+    link = bytes([0x4B, 0x1C, 0x2B, 0x00])
+    phone = "2c:54:33:22:11:00"
+    moment = (max(times) - base_time if times else seconds) + 0.25
+
+    def data(llid: int, payload: bytes, when: float, channel: int = 37) -> None:
+        header = bytes([llid & 0x03, len(payload) & 0x1F])
+        emit(when, link + header + payload, channel, -64, access_address=link)
+
+    def l2cap(cid: int, body: bytes) -> bytes:
+        return struct.pack("<HH", len(body), cid) + body
+
+    # the CONNECT_IND that starts it: an advertising-channel PDU naming both ends
+    emit(moment - 0.05,
+         bt.adv_pdu(0x05, phone,
+                    link + bytes([0x18, 0x00]) + (0x0006).to_bytes(2, "little")
+                    + (0x0000).to_bytes(2, "little") + (0x0018).to_bytes(2, "little")
+                    + (0x01A0).to_bytes(2, "little")
+                    + (0xFFFFFFFF1F).to_bytes(5, "little") + bytes([0x25]),
+                    ch_sel=False, peer_address="2c:54:33:22:11:00"),
+         37, -64)
+    # the feature exchange: what the two ends claim they can do
+    features = (1 << 0) | (1 << 4) | (1 << 5) | (1 << 8) | (1 << 14)
+    data(3, bytes([0x0A]) + features.to_bytes(8, "little"), moment)
+    # the pairing request: Just Works, no MITM, no Secure Connections — the finding
+    data(2, l2cap(0x0006, bytes([0x01, 0x03, 0x00, 0x00, 0x10, 0x0F, 0x0F])), moment + 0.02)
+    # an ATT read of the primary services, and the answer that names them
+    data(2, l2cap(0x0004, bytes([0x10, 0x01, 0x00, 0xFF, 0xFF, 0x00, 0x28])), moment + 0.04)
+    # Read By Group Type Response: the length byte is the size of *one* entry, and each
+    # entry is a start handle, an end handle and the 16-bit service UUID
+    data(2, l2cap(0x0004,
+                  bytes([0x11, 0x06, 0x01, 0x00, 0x0A, 0x00, 0x00, 0x18,
+                         0x0B, 0x00, 0x0E, 0x00, 0x0F, 0x18])), moment + 0.06)
+    # the encryption request that starts the link's encryption
+    data(3, bytes([0x04]) + bytes(range(8)) + bytes(range(8, 16)), moment + 0.08)
+
+    bt.write_le_pcap(path, records, times=times)
+    return str(path)
+
 
 
 def build_scene(path: str, aps: int = 6, clients: int = 10, rounds: int = 400,
@@ -928,12 +1313,21 @@ def build_scene(path: str, aps: int = 6, clients: int = 10, rounds: int = 400,
             networks.append((bssid, "", 1, "psk", False, b""))
         elif index == 1:
             networks.append((bssid, f"Scene-{index}", 1, "psk", False,
-                             country_element("IN", 1, 13, max_power=20)))
+                             country_element("IN", 1, 13, max_power=20)
+                             + ht_capabilities(width40=True, streams=2)))
         elif index == 2:
             networks.append((bssid, f"Scene-{index}", 11, "sae+psk", False,
-                             country_element("DE", 36, 4, max_power=23)))
+                             country_element("DE", 36, 4, max_power=23)
+                             + ht_capabilities() + vht_capabilities()
+                             + he_capabilities()))
         elif index == 3:
-            networks.append((bssid, f"Scene-{index}", 6, "sae", True, b""))
+            networks.append((bssid, f"Scene-{index}", 6, "sae", True,
+                             extended_capabilities(bss_transition=True, wnm_sleep=True,
+                                                   coexistence=True)
+                             + rm_enabled_capabilities()
+                             + neighbour_report_element([("aa:bb:cc:00:00:00", 81, 1),
+                                                         ("aa:bb:cc:05:0f:23", 81, 6)])
+                             + bss_load_element(21, 148, 2400)))
         elif index == 4:
             # a WPA-era AP: the legacy WPA vendor element, not an RSN one — and a
             # hotspot, because that is what a "Guest" SSID with a portal always is
@@ -945,7 +1339,8 @@ def build_scene(path: str, aps: int = 6, clients: int = 10, rounds: int = 400,
             # a network still running TKIP in its RSN element, 2020s or not — and
             # offering both pairwise ciphers, so a client can be walked down to TKIP
             networks.append((bssid, f"Scene-{index}", 1 + index % 11, "psk", False,
-                             b""))
+                             mobility_domain(b"\x12\x34", over_ds=True)
+                             + wmm_parameter_element(acm_voice=True)))
         elif index == 6:
             # an AP that does 802.11k/v/r: it will hand over a client, and it will
             # answer a neighbour report request with the BSSIDs around it
@@ -1101,9 +1496,35 @@ def build_scene(path: str, aps: int = 6, clients: int = 10, rounds: int = 400,
     # interval actually produces instead of at a rate no AP could reach
     spacing = 0.01
     frames = clock_beacons(frames, tsf_base, spacing_us=int(spacing * 1_000_000),
-                           frozen_bssid=clone_bssid)
+                           frozen_bssid=clone_bssid, frozen_tsf=tsf_clone)
     write_pcap(path, frames, spacing=spacing)
     return path
+
+
+def clock_beacons(frames: List[bytes], tsf_base: int = 0, spacing_us: int = 10_000,
+                  frozen_bssid: str = "", frozen_tsf: int = 0) -> List[bytes]:
+    """Give every beacon a TSF that matches the moment it was transmitted.
+
+    A beacon carries the access point's own clock, and that clock is what a client uses
+    to decide whether the access point is still there: a beacon whose timestamp does not
+    advance is either a replay or a clone.  The scene therefore has to write a *moving*
+    TSF into every frame it emits — and leave the clone's frozen, which is exactly the
+    evidence the timestamp-clone detection looks for.
+    """
+    frozen = _mac(frozen_bssid) if frozen_bssid else b""
+    out: List[bytes] = []
+    for index, frame in enumerate(frames):
+        if not frame or (frame[0] >> 4) != 8 or len(frame) < 32:      # not a beacon
+            out.append(frame)
+            continue
+        if frozen and frame[16:22] == frozen:
+            # the clone's clock is frozen nine seconds behind: its beacons look exactly
+            # like a replay of the real access point, which is what the detection finds
+            out.append(frame[:24] + struct.pack("<Q", frozen_tsf) + frame[32:])
+            continue
+        tsf = (tsf_base + index * spacing_us) & 0xFFFFFFFFFFFFFFFF
+        out.append(frame[:24] + struct.pack("<Q", tsf) + frame[32:])
+    return out
 
 
 def build_qos_data_frame(bssid: str, station: str, tid: int = 0,

@@ -1,10 +1,10 @@
 # Attacks
 
-wifipilot ships **162 attacks**: every technique a WiFi assessment genuinely needs, and
+wifipilot ships **236 attacks**: every technique a WiFi assessment genuinely needs, and
 nothing that exists only to lengthen the list — the offline half of the catalogue was
 built the same way the headers of a report are, by asking what a *capture* can still be
 made to say. The families are **offline analysis**
-(eighty-two attacks that read files and transmit nothing at all), **surveys** (passive
+(one hundred and two attacks that read files and transmit nothing at all), **surveys** (passive
 decoding: elements, RSN, PNL, SAE parameters), **capture** (handshake, PMKID, the
 active hunt, the hcxdumptool pipeline), **WPS/WEP/802.1X**, **WPA3** (which is an
 audit, not a crack), **rogue infrastructure and lures** (impersonation, channel-switch
@@ -1238,7 +1238,7 @@ $ wifipilot attacks --json          # the same data for a script
 
 ```python
 from wifipilot.attacks import attack_catalog, validate, OFFLINE_ATTACKS
-catalogue = attack_catalog()        # 162 dicts: name, label, tool, requires, category,
+catalogue = attack_catalog()        # 236 dicts: name, label, tool, requires, category,
                                     # noise, impact, detection, offline, default_enabled
 assert validate() == []             # every attack described, no orphan metadata
 ```
@@ -1258,15 +1258,73 @@ name in `models.ATTACK_NAMES`, gates in `planner.allow()` if it needs tools or i
 disruptive, and a row in the tables above. The tests in `tests/test_attacks_v3.py` will
 tell you which of those you forgot.
 
+## 17. Bluetooth: the radio next door
+
+Every phone, laptop and door sensor has a second radio, and it is on by default. `bt.py`
+is a Bluetooth Low Energy decoder written for this tool — advertising PDUs, beacons,
+trackers, L2CAP, ATT, SMP and the HCI layer — and the Bluetooth wave is what it makes
+possible: **26 attacks**, thirteen of them offline analysis of a capture and thirteen that
+use the host's own controller.
+
+| attack | what it answers |
+|---|---|
+| `bt_device_census` | every device on air, with what its advertisement said |
+| `bt_tracker_detect` / `bt_tracker_follow` | which devices follow people, and for how long |
+| `bt_ibeacon_audit` / `bt_eddystone_audit` | the beacons: proximity UUID, major/minor, URLs |
+| `bt_address_privacy` | which devices rotate their address and which are a fingerprint |
+| `bt_manufacturer_census` / `bt_service_census` | who made everything, and what it says it does |
+| `bt_interval_audit` / `bt_channel_audit` | intervals and channels: battery life, discoverability |
+| `bt_connectable_audit` / `bt_pairing_audit` | what accepts a connection, and how weakly it pairs |
+| `bt_gatt_audit` / `bt_feature_audit` | the attribute table and the link-layer features |
+| `bt_le_scan` / `bt_hci_inquiry` | live censuses: LE advertising reports, classic inquiry |
+| `bt_adv_name_flood` / `bt_adv_dos` | the advertising channel, filled |
+| `bt_beacon_clone` / `bt_tracker_clone` | an identity replayed from a different transmitter |
+| `bt_connectable_lure` | a device that invites connections and counts who asks |
+| `bt_pairing_flood` / `bt_l2cap_echo_flood` | the two protocols that must answer every request |
+| `bt_sdp_browse` / `bt_rfcomm_scan` / `bt_gatt_enumeration` | what a connected device exposes |
+
+The offline half reads `LINKTYPE_BLUETOOTH_LE_LL_WITH_PHDR` captures — including the one
+`scripts/demo.sh` generates — and needs no adapter at all. The live half needs a Bluetooth
+controller; without one it reports what it would have done rather than pretending
+otherwise, and `--bt-target` names the device a live attack should talk to.
+
+## 18. The network behind the access point
+
+An access point is a bridge, and everything a client sends goes onto the wired network.
+**29 attacks** work at that layer: five read a capture (a network capture, a wireless one,
+or a span port — the dissector unwraps whichever it is given), and twenty-four transmit
+real protocol messages.
+
+| attack | what it answers |
+|---|---|
+| `dhcp_lease_audit` | the lease table rebuilt from a capture: conflicts, forgeries, a second server |
+| `ipv6_prefix_audit` | which router, which prefix, which resolver — and who is not on the list |
+| `iot_credential_audit` | Telnet, SNMP, MQTT, RTSP and PJL credentials that travelled in the clear |
+| `iot_service_census` / `ssdp_device_census` | the embedded services on the segment, and UPnP's self-descriptions |
+| `dhcp_starvation` / `dhcp_flood` | the pool, emptied; the handler, saturated |
+| `forged_dhcp_release` / `dhcp_nak_injection` / `dhcp_option_injection` | a lease taken away, a client refused, a rogue gateway handed out |
+| `syn_flood` / `udp_flood` / `tcp_reset_injection` / `udp_reflection` | the connection table, the slow path, the sessions, the amplifiers |
+| `icmp_redirect_injection` / `icmp_unreachable_injection` | routing and reachability, decided by whoever answers |
+| `rogue_ra` / `ra_flood` / `ns_na_spoof` | IPv6's default route and neighbour cache, claimed |
+| `llmnr_poisoning` / `nbns_poisoning` / `mdns_poisoning` | the three name-resolution protocols that believe the first answer |
+| `stp_root_takeover` / `lldp_spoof` / `cdp_spoof` | the topology, and the management map that describes it |
+| `vlan_double_tag_hop` | the 802.1Q tag a switch was never asked to look at |
+| `mqtt_recon` / `rtsp_camera_audit` / `pjl_printer_audit` | the device services that answer on the first connection |
+
+The four attacks the brief named — DHCP starvation, a rogue DHCP server, a DHCP flood and
+a forged DHCP release — are in the table by name; the rogue server itself is
+`rogue_dhcp`, in the rogue-infrastructure wave, because it is a *service* rather than a
+frame, and `dhcp_lease_audit` is what proves afterwards that it was there.
+
 <!-- catalogue:start -->
 
 ## 11. The complete catalogue
 
-**181 attacks**, of which **102** transmit nothing at all — no radio, no monitor interface, no frame.  The table is generated from the registry (`python3 tools/gen_attack_docs.py`), so it cannot drift from the code: `wifipilot attacks` prints the same list, `--json` returns it, and the web UI, the planner and the report are all built from it.
+**236 attacks**, of which **121** transmit nothing at all — no radio, no monitor interface, no frame.  The table is generated from the registry (`python3 tools/gen_attack_docs.py`), so it cannot drift from the code: `wifipilot attacks` prints the same list, `--json` returns it, and the web UI, the planner and the report are all built from it.
 
-How to read the columns: **noise** is what a defender sees (extreme 7, loud 18, moderate 16, quiet 21, silent 119), **impact** is what the *network* loses when the attack works (degraded 27, info 114, loot 27, none 9, outage 4), and **detection** is the artefact left behind — the thing to look for in a capture when asking whether this was run against you.
+How to read the columns: **noise** is what a defender sees (extreme 15, loud 21, moderate 34, quiet 28, silent 138), **impact** is what the *network* loses when the attack works (degraded 46, info 139, loot 36, none 9, outage 6), and **detection** is the artefact left behind — the thing to look for in a capture when asking whether this was run against you.
 
-### Offline analysis (no radio at all) — 102
+### Offline analysis (no radio at all) — 121
 
 | attack | answers | noise | impact | tool | defender sees |
 | --- | --- | --- | --- | --- | --- |
@@ -1372,8 +1430,27 @@ How to read the columns: **noise** is what a defender sees (extreme 7, loud 18, 
 | `eapol_key_flags_audit` | EAPOL key flag audit | dim | green | wifipilot (own 802.11 parser) | silent: reads the key information field of stored EAPOL frames |
 | `group_rekey_audit` | Group key rekey audit | dim | green | wifipilot (own 802.11 parser) | silent: reads key data out of stored EAPOL frames |
 | `eapol_timing_audit` | EAPOL timing audit | dim | green | wifipilot (own 802.11 parser) | silent: times the EAPOL messages in a capture |
+| `bt_device_census` | Bluetooth device census | dim | green | wifipilot bt.py (own BLE decoder) | the capture itself: the census is what the air already carries |
+| `bt_tracker_detect` | Tracker detection | dim | green | wifipilot bt.py (own BLE decoder) | a tracker in a building is a tracker in somebody's database |
+| `bt_tracker_follow` | Tracker follow-through | dim | green | wifipilot bt.py (own BLE decoder) | the device that never rotates its address is the one that can be followed |
+| `bt_ibeacon_audit` | iBeacon inventory | dim | green | wifipilot bt.py (own BLE decoder) | an iBeacon is a plaintext identity, and a cloned one needs no hardware |
+| `bt_eddystone_audit` | Eddystone audit | dim | green | wifipilot bt.py (own BLE decoder) | a URL in an advertisement is a URL somebody will follow |
+| `bt_address_privacy` | Address privacy check | dim | bold green | wifipilot bt.py (own BLE decoder) | a fixed address is a device that can be followed for months |
+| `bt_manufacturer_census` | Manufacturer census | dim | green | wifipilot bt.py (own BLE decoder) | the manufacturer field is not encrypted and is not optional |
+| `bt_service_census` | Service census | dim | green | wifipilot bt.py (own BLE decoder) | the advertised service list is the device's function, in plaintext |
+| `bt_interval_audit` | Advertising interval audit | dim | green | wifipilot bt.py (own BLE decoder) | an interval is a battery-life and a detectability decision at once |
+| `bt_channel_audit` | Advertising channel audit | dim | green | wifipilot bt.py (own BLE decoder) | a device on one channel is a device half the scanners never see |
+| `bt_connectable_audit` | Connectable device audit | dim | bold green | wifipilot bt.py (own BLE decoder) | connectable advertising is an open door with a name on it |
+| `bt_pairing_audit` | Pairing configuration audit | dim | green | wifipilot bt.py (own BLE decoder) | the pairing request is plaintext, and it says how weak the link will be |
+| `bt_gatt_audit` | GATT structure audit | dim | bold green | wifipilot bt.py (own BLE decoder) | the attribute table is the device's API, and the capture has it |
+| `bt_feature_audit` | Link-layer feature audit | dim | green | wifipilot bt.py (own BLE decoder) | a device without LE Encryption cannot encrypt the link, whatever the app says |
+| `dhcp_lease_audit` | DHCP lease audit | dim | green | wifipilot netstack.py | silent: reads DHCP messages already in a capture |
+| `ipv6_prefix_audit` | IPv6 prefix and router audit | dim | green | wifipilot netstack.py | silent: reads ICMPv6 neighbour discovery from a capture |
+| `iot_credential_audit` | Device credential audit (Telnet, SNMP, MQTT, RTSP, PJL) | dim | bold green | wifipilot netstack.py | silent: reads device protocol payloads from a capture |
+| `iot_service_census` | Embedded service census | dim | green | wifipilot netstack.py | silent: counts ports and protocols in a capture |
+| `ssdp_device_census` | UPnP / SSDP device census | dim | green | wifipilot netstack.py | silent: reads SSDP announcements from a capture |
 
-### Surveys the air, transmits nothing — 19
+### Surveys the air, transmits nothing — 27
 
 | attack | answers | noise | impact | tool | defender sees |
 | --- | --- | --- | --- | --- | --- |
@@ -1396,6 +1473,14 @@ How to read the columns: **noise** is what a defender sees (extreme 7, loud 18, 
 | `ipv6_ra_audit` | IPv6 router advertisement audit | dim | green | wifipilot (ICMPv6 parsing) | nothing but listening for router advertisements |
 | `mac_filter_probe` <br>_injects_ | MAC filtering probe (random station) | green | dim | wifipilot rawtx.py + a live listen window | association attempts from random MACs; a MAC filter rejects them visibly |
 | `channel_sweep` | Channel sweep (live channel map) | dim | dim | wifipilot rawtx.py + airodump-ng fallback | nothing but channel changes on our own radio |
+| `bt_le_scan` <br>_injects_ | LE scan (live census) | green | green | wifipilot bt.py (LE Set Scan Enable + advertising reports) | the capture itself |
+| `bt_hci_inquiry` <br>_injects_ | Classic inquiry (BR/EDR census) | green | green | wifipilot bt.py (HCI Inquiry) | the capture itself |
+| `bt_sdp_browse` <br>_injects_ | SDP service browse | cyan | green | wifipilot bt.py (SDP Service Search Attribute) | the capture itself |
+| `bt_rfcomm_scan` <br>_injects_ | RFCOMM channel scan | cyan | green | wifipilot bt.py (SDP search per RFCOMM profile) | the capture itself |
+| `bt_gatt_enumeration` <br>_injects_ | GATT enumeration | cyan | bold green | wifipilot bt.py (ATT Read By Group Type over a connection) | the capture itself |
+| `mqtt_recon` | MQTT broker reconnaissance | green | green | wifipilot netstack.py (MQTT CONNECT/SUBSCRIBE) | a CONNECT and a SUBSCRIBE on port 1883 from an unknown client: the broker's log has it, and a broker with authentication refuses it |
+| `rtsp_camera_audit` | RTSP camera audit (streams and authentication) | green | green | wifipilot netstack.py (RTSP OPTIONS/DESCRIBE) | OPTIONS and DESCRIBE requests from an unexpected client: the camera's log shows an anonymous session |
+| `pjl_printer_audit` | PJL printer audit (identity and filesystem) | green | green | wifipilot netstack.py (PJL over port 9100) | PJL commands on port 9100 from a host that is not a print server: the printer's job log shows a command job |
 
 ### Capture requests (frames on air) — 7
 
@@ -1443,7 +1528,7 @@ How to read the columns: **noise** is what a defender sees (extreme 7, loud 18, 
 | `radius_secret_test` <br>_injects_ | RADIUS shared-secret test | green | green | wifipilot netproto (own RADIUS client) | one Access-Request per candidate secret; a real RADIUS server logs the failures |
 | `rogue_radius` <br>_injects_ | Rogue RADIUS (credential check) | cyan | bold green | eaphammer / hostapd-mana / hostapd-wpe | a rogue RADIUS/eaphammer AP; clients that trust any certificate will offer credentials |
 
-### Rogue infrastructure and lures — 16
+### Rogue infrastructure and lures — 34
 
 | attack | answers | noise | impact | tool | defender sees |
 | --- | --- | --- | --- | --- | --- |
@@ -1463,8 +1548,26 @@ How to read the columns: **noise** is what a defender sees (extreme 7, loud 18, 
 | `arp_mitm` <br>_injects_ | ARP man-in-the-middle (gateway masquerade) | yellow | yellow | wifipilot rawtx.py (gratuitous ARP) | gratuitous ARP replies claiming the gateway: traffic passes through our radio |
 | `beacon_clone` <br>_injects_ | Beacon clone (the SSID from a second radio) | cyan | yellow | wifipilot rawtx.py (beacons) | beacons with the network's own BSSID and elements, sent from a second radio |
 | `wpa3_downgrade_twin` <br>_injects_ | WPA3 downgrade twin (offer the network as WPA2-only) | cyan | yellow | hostapd with a WPA2-only profile | a twin with SAE and PMF stripped: clients that do not require WPA3 may join it |
+| `bt_beacon_clone` <br>_injects_ | iBeacon clone | cyan | bold green | wifipilot bt.py (advertising a copied beacon payload) | the capture itself |
+| `bt_tracker_clone` <br>_injects_ | Tracker advertisement clone | cyan | bold green | wifipilot bt.py (advertising a copied tracker payload) | the capture itself |
+| `bt_connectable_lure` <br>_injects_ | Connectable advertising lure | cyan | green | wifipilot bt.py (connectable advertising + LE connection events) | the capture itself |
+| `forged_dhcp_release` <br>_injects_ | Forged DHCP RELEASE / DECLINE | cyan | yellow | wifipilot netproto.py (RELEASE and DECLINE) | RELEASE and DECLINE messages for addresses whose owner did not send them: a DHCP server log shows a client losing a lease it was using |
+| `dhcp_nak_injection` <br>_injects_ | Forged DHCP NAK injection | cyan | yellow | wifipilot netproto.py (NAK with options) | NAK messages from a source that is not the server: a snooping switch drops them when it is configured |
+| `dhcp_option_injection` <br>_injects_ | Rogue DHCP option injection (route, DNS, WPAD) | cyan | yellow | wifipilot netproto.py (options 3, 6, 121, 249, 252) | a second DHCP server answering with its own router and resolver options: two OFFERs for one DISCOVER |
+| `tcp_reset_injection` <br>_injects_ | TCP reset injection | cyan | yellow | wifipilot netstack.py (RST with a guessed sequence) | RST segments on connections whose endpoints did not send them, which ends sessions and is obvious in a packet capture on either endpoint |
+| `icmp_redirect_injection` <br>_injects_ | ICMP redirect injection | cyan | yellow | wifipilot netstack.py (ICMP type 5) | ICMP redirects from the gateway naming a different next hop: a host that logs them shows the redirection |
+| `icmp_unreachable_injection` <br>_injects_ | ICMP unreachable injection | cyan | yellow | wifipilot netstack.py (ICMP type 3) | ICMP unreachable messages quoting traffic the victim sent — indistinguishable from a router withdrawing a route unless the source is checked |
+| `rogue_ra` <br>_injects_ | Rogue IPv6 router advertisement | cyan | yellow | wifipilot netstack.py (ICMPv6 RA with RDNSS) | router advertisements from an address that is not the site's router: RA Guard on the switches drops them, and without it hosts accept them |
+| `ns_na_spoof` <br>_injects_ | IPv6 neighbour solicitation / advertisement spoofing | cyan | yellow | wifipilot netstack.py (NS and NA with override) | neighbour advertisements for the gateway claiming a new MAC: ND inspection drops them, and the gateway's own traffic counters stop matching |
+| `llmnr_poisoning` <br>_injects_ | LLMNR poisoning | cyan | bold green | wifipilot netstack.py (LLMNR responses) | LLMNR answers from a host that is not the owner of the name; the victims' next connection goes to the attacker |
+| `nbns_poisoning` <br>_injects_ | NetBIOS name service poisoning | cyan | bold green | wifipilot netstack.py (NBNS responses) | NetBIOS name answers from an unexpected host, followed by SMB sessions to it |
+| `mdns_poisoning` <br>_injects_ | mDNS response poisoning | cyan | yellow | wifipilot netstack.py (mDNS responses) | mDNS answers for names that belong to other devices on the segment |
+| `stp_root_takeover` <br>_injects_ | Spanning tree root bridge takeover | yellow | red | wifipilot netstack.py (802.1D configuration BPDUs) | configuration BPDUs with a superior bridge ID arriving on an access port: BPDU Guard is the control, and its absence is a log entry on the switch |
+| `lldp_spoof` <br>_injects_ | LLDP neighbour spoofing | green | green | wifipilot netstack.py (LLDP TLVs) | LLDP frames describing a device that is not in the inventory: the switch's neighbour table shows a new switch or router |
+| `cdp_spoof` <br>_injects_ | CDP neighbour spoofing | green | green | wifipilot netstack.py (CDP TLVs) | CDP frames describing a Cisco device that was never installed: the switch's neighbour inventory changes |
+| `vlan_double_tag_hop` <br>_injects_ | VLAN double tagging (hop) | cyan | yellow | wifipilot netstack.py (802.1Q tags) | frames leaving an access port with the outer tag stripped and an inner tag intact: the only place it shows is the receiving VLAN |
 
-### Denial-of-service tests (opt-in) — 18
+### Denial-of-service tests (opt-in) — 28
 
 | attack | answers | noise | impact | tool | defender sees |
 | --- | --- | --- | --- | --- | --- |
@@ -1486,6 +1589,16 @@ How to read the columns: **noise** is what a defender sees (extreme 7, loud 18, 
 | `tdls_teardown_flood` <br>_injects_ | TDLS teardown flood (direct links dropped) | yellow | yellow | wifipilot rawtx.py (TDLS action frames) | TDLS Teardown action frames break direct links and push traffic through the AP |
 | `probe_response_flood` <br>_injects_ | Probe response flood (phantom scan lists) | yellow | yellow | wifipilot rawtx.py (probe responses) | probe responses from BSSIDs that do not exist: client scan lists fill with phantoms |
 | `dhcp_discover_flood` <br>_injects_ | DHCP DISCOVER flood (lease pool exhaustion) | yellow | yellow | wifipilot netproto.py + rawtx.py (UDP broadcast) | DHCP DISCOVER broadcasts from fake stations walk the server through its pool |
+| `bt_adv_name_flood` <br>_injects_ | Advertising name flood | red | yellow | wifipilot bt.py (LE Set Advertising Data in a loop) | the capture itself |
+| `bt_adv_dos` <br>_injects_ | Advertising channel DoS | red | yellow | wifipilot bt.py (continuous advertising on all three channels) | the capture itself |
+| `bt_pairing_flood` <br>_injects_ | Pairing request flood | red | yellow | wifipilot bt.py (repeated pairing requests over a connection) | the capture itself |
+| `bt_l2cap_echo_flood` <br>_injects_ | L2CAP echo request flood | red | yellow | wifipilot bt.py (L2CAP signalling echo requests) | the capture itself |
+| `dhcp_starvation` <br>_injects_ | DHCP starvation (lease pool exhaustion) | yellow | yellow | wifipilot netproto.py (DHCP + client identifiers) | thousands of DHCP transactions from fabricated client identifiers: a DHCP log shows the pool emptying, and a DHCP snooping switch shows the rate |
+| `dhcp_flood` <br>_injects_ | DHCP flood (request-rate exhaustion) | red | yellow | wifipilot netproto.py (mixed DHCP message types) | an extreme rate of DHCP messages on one access point: visible in any DHCP log, and in the AP's own client table |
+| `syn_flood` <br>_injects_ | TCP SYN flood (connection-table exhaustion) | red | yellow | wifipilot netstack.py (TCP headers, spoofed sources) | a burst of SYNs with source addresses that never complete a handshake: the target's connection table fills and its logs show hundreds of half-open sessions |
+| `udp_flood` <br>_injects_ | UDP flood / router resource exhaustion | red | yellow | wifipilot netstack.py (UDP to the router's own stack) | datagrams to closed ports at line rate, and an ICMP port-unreachable for each: the router's own CPU is visibly busy |
+| `udp_reflection` <br>_injects_ | UDP reflection (SSDP, mDNS, NetBIOS) | red | yellow | wifipilot netstack.py (broadcast queries with a spoofed source) | broadcast queries whose source address is not the sender's, answered by every device that speaks the protocol |
+| `ra_flood` <br>_injects_ | IPv6 router advertisement flood | yellow | red | wifipilot netstack.py (RA flood with prefix churn) | router advertisements at a rate no router uses, with rotating sources and prefixes |
 
-<!-- 181 attacks -->
+<!-- 236 attacks -->
 <!-- catalogue:end -->

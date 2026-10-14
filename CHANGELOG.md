@@ -4,10 +4,50 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
-## 162 attacks — the offline half gets its teeth
+## 236 attacks — the second radio, and the network behind the bridge
 
-* **108 further attacks, 162 in total.** The new wave is dominated by *offline analysis*:
-  82 attacks that read a capture and transmit nothing at all, so an engagement gets its
+* **55 further attacks, 236 in total.** Two waves, and both of them leave the 802.11
+  header behind: one goes down to the radio next door, the other goes up to the wired
+  network the access point is bridging.
+* **`btattacks.py` (26 attacks).** Fourteen offline audits of a Bluetooth Low Energy
+  capture — the device census, tracker detection and follow-through, the iBeacon and
+  Eddystone inventories, address privacy, the manufacturer and service censuses, the
+  advertising interval and channel analyses, and the audits of what the devices are
+  *offering* (connectable advertising, a captured pairing exchange, the GATT table and
+  the link-layer features) — plus twelve that use the host's own controller: a live LE
+  scan, classic inquiry, an advertising name flood and channel DoS, an iBeacon and a
+  tracker clone, a connectable lure, a pairing flood, an L2CAP echo flood, and SDP,
+  RFCOMM and GATT enumeration against `--bt-target`.
+* **`netdos.py` (29 attacks).** Five capture audits — the DHCP lease table rebuilt from
+  the wire (conflicts, forged RELEASEs, a second server), the IPv6 prefix and router
+  inventory, cleartext device credentials, the embedded service census and the UPnP
+  census — and twenty-four that build real protocol traffic: DHCP starvation, a DHCP
+  flood, forged RELEASE/DECLINE, NAK injection and option injection; SYN, UDP and
+  reflection floods; TCP RST injection; ICMP redirect and unreachable injection; a rogue
+  router, an RA flood and neighbour spoofing; LLMNR, NBNS and mDNS poisoning; an STP
+  root takeover, LLDP and CDP spoofing, a VLAN double-tag hop; and MQTT, RTSP and PJL
+  service audits.
+* **`bt.py` and `netstack.py`, written from scratch.** A Bluetooth LE decoder (advertising
+  PDUs, beacons, trackers, L2CAP, ATT, SMP and the HCI command/event layer) and an
+  Ethernet/IP/TCP/UDP/ICMPv6/STP/LLDP/CDP dissector with matched builders, so both waves
+  read a capture and *produce* the frames they describe with the same code.
+* **`synth.build_bt_scene()` and `synth.build_network_scene()`** generate the demo
+  material for both waves: a deterministic BLE capture of ten devices (beacons, a rotating
+  tracker, a sensor at 20 ms, a connection that pairs with Just Works) and a deterministic
+  network capture in which every audit has something real to find.
+* **The five attacks the brief named** are in the catalogue by name — `dhcp_starvation`,
+  `dhcp_flood`, `forged_dhcp_release`, `udp_flood` and the rogue DHCP server
+  (`rogue_dhcp`, in the rogue-infrastructure wave) — together with the classics they sit
+  next to, `syn_flood` and `tcp_reset_injection`.
+* **`wifipilot web` now works without `rich`.** The CLI advertised "works without rich,
+  just plainer" while several commands raised `NameError: Panel`; the no-rich path now has
+  plain stand-ins for the panels, tables and bars, so a minimal box runs the tool and the
+  web UI with nothing but fastapi and uvicorn installed.
+
+## 181 attacks — the offline half gets its teeth
+
+* **127 further attacks, 181 in total.** The new wave is dominated by *offline analysis*:
+  102 attacks that read a capture and transmit nothing at all, so an engagement gets its
   findings from files the session already has (`wifipilot attacks --no-radio`).
 * **`offline3.py` (55 attacks)** decodes the frames themselves: the RSN element (ciphers,
   AKMs, PMF bits, transition mode, TKIP countermeasures), IE anomalies and malformed
@@ -44,7 +84,7 @@ milestones rather than published releases.
   attack gets a timeout budget from its own category when it is not named explicitly.
 * **`docs/ATTACKS.md` now ends with the complete generated catalogue**
   (`tools/gen_attack_docs.py`, checked into the test suite), because a hand-maintained
-  list of 162 entries is a list that is wrong.
+  list of that many entries is a list that is wrong.
 
 ## 54 attacks — offline analysis, lures, and metadata that the whole tool reads
 

@@ -195,6 +195,10 @@ class Config:
     portal_port: int = 80
     #: the network's DNS domain, for the WPAD audit
     domain: str = ""
+    #: the Bluetooth address a live Bluetooth attack targets (pairing, SDP, RFCOMM)
+    bt_target: str = ""
+    #: how long a Bluetooth command may wait for its controller event
+    bt_timeout: float = 2.0
     #: the interface the evil twin binds to; empty means "the monitor interface"
     twin_interface: str = ""
     #: ask the AP for the name of a hidden network with a directed probe (the
@@ -401,6 +405,46 @@ class Config:
             "tdls_teardown_flood": max(self.scan_time, 20.0),
             "probe_response_flood": max(self.scan_time, 30.0),
             "dhcp_discover_flood": max(self.scan_time, 20.0),
+            # -- the Bluetooth wave ------------------------------------------------
+            # Bluetooth work is bounded by its own radio window, not by the Wi-Fi scan
+            "bt_le_scan": max(self.bt_timeout * 2, 15.0),
+            "bt_hci_inquiry": max(self.bt_timeout * 4, 20.0),
+            "bt_sdp_browse": max(self.bt_timeout * 4, 20.0),
+            "bt_gatt_enumeration": max(self.bt_timeout * 4, 20.0),
+            "bt_rfcomm_scan": max(self.bt_timeout * 4, 20.0),
+            # advertising work is a bounded burst by design
+            "bt_adv_name_flood": max(self.bt_timeout * 2, 15.0),
+            "bt_adv_dos": max(self.bt_timeout * 2, 15.0),
+            "bt_beacon_clone": max(self.bt_timeout * 2, 15.0),
+            "bt_tracker_clone": max(self.bt_timeout * 2, 15.0),
+            "bt_connectable_lure": max(self.bt_timeout * 4, 30.0),
+            "bt_pairing_flood": max(self.bt_timeout * 2, 15.0),
+            "bt_l2cap_echo_flood": max(self.bt_timeout * 2, 15.0),
+            # -- the network wave: every flood is capped by its own class as well ---
+            "dhcp_starvation": max(self.scan_time, 45.0),
+            "dhcp_flood": max(self.scan_time, 30.0),
+            "forged_dhcp_release": max(self.scan_time, 30.0),
+            "dhcp_nak_injection": max(self.scan_time, 30.0),
+            "dhcp_option_injection": max(self.scan_time * 3, 90.0),
+            "syn_flood": max(self.scan_time, 30.0),
+            "udp_flood": max(self.scan_time, 30.0),
+            "tcp_reset_injection": max(self.scan_time, 30.0),
+            "udp_reflection": max(self.scan_time, 30.0),
+            "icmp_redirect_injection": max(self.scan_time, 30.0),
+            "icmp_unreachable_injection": max(self.scan_time, 30.0),
+            "rogue_ra": max(self.scan_time * 4, 120.0),
+            "ra_flood": max(self.scan_time, 30.0),
+            "ns_na_spoof": max(self.scan_time * 2, 60.0),
+            "llmnr_poisoning": max(self.scan_time * 2, 60.0),
+            "nbns_poisoning": max(self.scan_time * 2, 60.0),
+            "mdns_poisoning": max(self.scan_time * 2, 60.0),
+            "stp_root_takeover": max(self.scan_time * 2, 45.0),
+            "lldp_spoof": max(self.scan_time * 2, 45.0),
+            "cdp_spoof": max(self.scan_time * 2, 45.0),
+            "vlan_double_tag_hop": max(self.scan_time, 30.0),
+            "mqtt_recon": max(self.scan_time, 45.0),
+            "rtsp_camera_audit": max(self.scan_time, 45.0),
+            "pjl_printer_audit": max(self.scan_time, 45.0),
         }.get(attack)
         if budget:
             return budget
