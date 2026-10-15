@@ -263,9 +263,11 @@ class Config:
     #: one out in the Connection Complete event; naming it here lets an operator aim the
     #: probes at a link that a tool has already opened (``bt_handle``).
     bt_handle: int = 0
-    #: the line the HID-injection attack types once a host accepts the keyboard.  The
-    #: default proves the injection and changes nothing; an engagement sets its own.
-    hid_payload: str = "id"
+    #: the line the HID-injection attacks type once a host accepts the keyboard.  The
+    #: default proves the injection and changes nothing, and it ends in a newline because
+    #: the newline *is* the Enter key: a payload that is never submitted has typed
+    #: nothing.  An engagement sets its own.
+    hid_payload: str = "id\n"
     #: the gateway's MAC on the assessed network, for the FragAttacks injection: the
     #: packet claims to come from it.  Empty means "use the access point's own address".
     gateway_mac: str = ""

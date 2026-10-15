@@ -29,6 +29,7 @@ import pytest
 from wifipilot import bt
 from wifipilot.attacks import (ATTACK_CLASSES, DEFAULT_ORDER, attack_catalog)
 from wifipilot.attacks import meta
+from wifipilot.attacks import btred
 from wifipilot.attacks.btred import ATTACKS as BTRED_ATTACKS
 from wifipilot.attacks.btred import META as BTRED_META
 from wifipilot.attacks.btred import _scan_events
@@ -85,6 +86,7 @@ class _FakeContext:
         gateway_ip = "192.168.1.1"
         bt_target = ""
         bt_handle = 0x0040
+        hid_payload = "id"                       # two characters: four reports
 
     class session:                                            # noqa: N801
         state_dir = "/tmp/wifipilot-famous-test"
@@ -107,8 +109,9 @@ def test_the_famous_wave_is_registered():
         assert name in DEFAULT_ORDER, name
         assert name in ATTACK_NAMES, name
     # 248 from the famous/Bluetooth waves + 213 services-and-devices + the 73
-    # cross-cutting version/cleartext audits every service now carries
-    assert len(DEFAULT_ORDER) == 534
+    # cross-cutting version/cleartext audits every service now carries + the 8 of the
+    # BLE wave (HID injection, the downgrades around it, and identity)
+    assert len(DEFAULT_ORDER) == 542
 
 
 def test_registry_and_documentation_agree():
@@ -316,6 +319,11 @@ def test_hid_attack_advertises_a_keyboard_and_types_its_payload(config):
     labels = [label for label, _ in battery]
     assert any("Advertise the HID service" in label for label in labels)
     assert sum("HID boot report" in label for label in labels) == 4      # two keys, press+release
+    # the payload this *ships* with is a command line: it ends in the Enter key, because a
+    # line that is never submitted has typed nothing
+    assert btred.DEFAULT_HID_PAYLOAD.endswith("\n")
+    assert len(bt.hid_key_reports(btred.DEFAULT_HID_PAYLOAD)) == \
+        2 * len(btred.DEFAULT_HID_PAYLOAD)
     advertising = [packet for label, packet in battery if "HID service" in label][0]
     assert bytes([0x12, 0x18]) in advertising                       # the 0x1812 service UUID
 

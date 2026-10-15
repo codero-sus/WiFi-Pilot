@@ -1,6 +1,6 @@
 # Attacks
 
-wifipilot ships **534 attacks** across three editions (213 WiFi, 35 Bluetooth, 286 IT
+wifipilot ships **542 attacks** across three editions (213 WiFi, 43 Bluetooth, 286 IT
 services and devices): every technique a WiFi assessment genuinely needs, and
 nothing that exists only to lengthen the list — the offline half of the catalogue was
 built the same way the headers of a report are, by asking what a *capture* can still be
@@ -1239,7 +1239,7 @@ $ wifipilot attacks --json          # the same data for a script
 
 ```python
 from wifipilot.attacks import attack_catalog, validate, OFFLINE_ATTACKS
-catalogue = attack_catalog()        # 534 dicts: name, label, tool, requires, category,
+catalogue = attack_catalog()        # 542 dicts: name, label, tool, requires, category,
                                     # noise, impact, detection, offline, default_enabled
 assert validate() == []             # every attack described, no orphan metadata
 ```
@@ -1263,9 +1263,9 @@ tell you which of those you forgot.
 
 Every phone, laptop and door sensor has a second radio, and it is on by default. `bt.py`
 is a Bluetooth Low Energy decoder written for this tool — advertising PDUs, beacons,
-trackers, L2CAP, ATT, SMP and the HCI layer — and the Bluetooth wave is what it makes
-possible: **26 attacks**, thirteen of them offline analysis of a capture and thirteen that
-use the host's own controller.
+trackers, L2CAP, ATT, SMP, the link layer and the HCI layer — and the Bluetooth wave is
+what it makes possible: **43 attacks**, from offline analysis of a capture to keystroke
+injection over a link the host opened itself.
 
 | attack | what it answers |
 |---|---|
@@ -1283,6 +1283,36 @@ use the host's own controller.
 | `bt_connectable_lure` | a device that invites connections and counts who asks |
 | `bt_pairing_flood` / `bt_l2cap_echo_flood` | the two protocols that must answer every request |
 | `bt_sdp_browse` / `bt_rfcomm_scan` / `bt_gatt_enumeration` | what a connected device exposes |
+| `bt_blueborne` / `bt_bias` / `bt_knob` | the classic named vulnerabilities, run rather than described |
+| `bt_sweyntooth` / `bt_bluesmack` / `bt_bluesnarf` / `bt_bluebugging` / `bt_blesa` | malformed link-layer PDUs, oversized echoes, the object store, the AT channel, pre-authentication ATT work |
+| `bt_hid_injection` | classic keystroke injection: advertise the keyboard, type the payload |
+
+### The BLE wave: keyboards, downgrades and identity
+
+Eight attacks that live in `attacks/blehid.py` and are the reason a BLE assessment is
+worth running at all — a BLE keyboard is a GATT server that *notifies* its host, and a
+host that subscribes believes every notification it receives on the report
+characteristic.
+
+| attack | what it answers |
+|---|---|
+| `ble_hid` | advertise the HID service, enumerate the host's report characteristic and deliver the payload as boot reports; the finding names what the host typed |
+| `ble_hid_audit` | which HID hosts accept input without a bond, and which demand one — the survey that sizes the wave |
+| `ble_hid_boot` | write the HID protocol mode back to boot protocol and *read it back* to prove the downgrade landed |
+| `ble_hid_reconnect` | advertise as the keyboard a host already bonded and count the hosts that reconnect to the name and the address instead of checking the link key |
+| `ble_smp_downgrade` | what each device settles for when offered Just Works with a seven-byte key — the answer that decides whether the pairing is worth anything |
+| `ble_gatt_hijack` | an unauthenticated write to a control characteristic, verified by reading the value back: a lock, a speed limit, a setpoint |
+| `ble_irk_resolve` | follow a device through its rotating addresses with the identity keys that leak, using the specification's own AES derivation |
+| `ble_conn_param_hijack` | a link-layer connection update nobody asked for, and whether the peer accepted being starved of radio time |
+
+Two of them are worth reading before running them. `ble_irk_resolve` is arithmetic, not a
+heuristic: an address resolves or it does not, and the toolkit checks the same ``ah``
+function the specification's own sample data describes (Vol 3, Part H, Appendix D.7) —
+one AES block, hash in the low 24 bits, prand in the most significant 24. And
+`ble_hid_reconnect` is a *comparison*: the demo floor has five hosts bonded to one
+keyboard, three of which reconnect to whoever advertises as `WF-KEYBOARD`, and two of
+which check the link key and stay away. A run that reports "3 reconnected, 2 verified" is
+the attack and its negative control in one report.
 
 The offline half reads `LINKTYPE_BLUETOOTH_LE_LL_WITH_PHDR` captures — including the one
 `scripts/demo.sh` generates — and needs no adapter at all. The live half needs a Bluetooth
@@ -1321,11 +1351,11 @@ frame, and `dhcp_lease_audit` is what proves afterwards that it was there.
 
 ## 11. The complete catalogue
 
-**534 attacks**, of which **121** transmit nothing at all — no radio, no monitor interface, no frame.  The table is generated from the registry (`python3 tools/gen_attack_docs.py`), so it cannot drift from the code: `wifipilot attacks` prints the same list, `--json` returns it, and the web UI, the planner and the report are all built from it.
+**542 attacks**, of which **121** transmit nothing at all — no radio, no monitor interface, no frame.  The table is generated from the registry (`python3 tools/gen_attack_docs.py`), so it cannot drift from the code: `wifipilot attacks` prints the same list, `--json` returns it, and the web UI, the planner and the report are all built from it.
 
-They are split into three editions — **Bluetooth 35**, **IT devices 286**, **WiFi 213** — and **65 device types** carry the attacks that apply to them. The **edition** column below is that split: `wifipilot --edition it` (or the web UI's first control) plans only those attacks, and `wifipilot attacks --domain it` prints them.
+They are split into three editions — **Bluetooth 43**, **IT devices 286**, **WiFi 213** — and **65 device types** carry the attacks that apply to them. The **edition** column below is that split: `wifipilot --edition it` (or the web UI's first control) plans only those attacks, and `wifipilot attacks --domain it` prints them.
 
-How to read the columns: **edition** is which toolbox the attack belongs to, **noise** is what a defender sees (extreme 17, loud 52, moderate 86, quiet 241, silent 138), **impact** is what the *network* loses when the attack works (degraded 90, info 295, loot 131, none 9, outage 9), and **detection** is the artefact left behind — the thing to look for in a capture when asking whether this was run against you.
+How to read the columns: **edition** is which toolbox the attack belongs to, **noise** is what a defender sees (extreme 17, loud 53, moderate 90, quiet 244, silent 138), **impact** is what the *network* loses when the attack works (degraded 91, info 297, loot 136, none 9, outage 9), and **detection** is the artefact left behind — the thing to look for in a capture when asking whether this was run against you.
 
 ### Offline analysis (no radio at all) — 121
 
@@ -1453,7 +1483,7 @@ How to read the columns: **edition** is which toolbox the attack belongs to, **n
 | `iot_service_census` | Embedded service census | WiFi | dim | green | wifipilot netstack.py | silent: counts ports and protocols in a capture |
 | `ssdp_device_census` | UPnP / SSDP device census | WiFi | dim | green | wifipilot netstack.py | silent: reads SSDP announcements from a capture |
 
-### Surveys the air, transmits nothing — 27
+### Surveys the air, transmits nothing — 29
 
 | attack | answers | edition | noise | impact | tool | defender sees |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1481,6 +1511,8 @@ How to read the columns: **edition** is which toolbox the attack belongs to, **n
 | `bt_sdp_browse` <br>_injects_ | SDP service browse | Bluetooth | cyan | green | wifipilot bt.py (SDP Service Search Attribute) | the capture itself |
 | `bt_rfcomm_scan` <br>_injects_ | RFCOMM channel scan | Bluetooth | cyan | green | wifipilot bt.py (SDP search per RFCOMM profile) | the capture itself |
 | `bt_gatt_enumeration` <br>_injects_ | GATT enumeration | Bluetooth | cyan | bold green | wifipilot bt.py (ATT Read By Group Type over a connection) | the capture itself |
+| `ble_hid_audit` <br>_injects_ | BLE HID exposure audit (who accepts input) | Bluetooth | green | green | wifipilot bt.py (LE scan + ATT reads) | One LE connection per HID-serving device and an ATT read of the HID service: no keystroke is sent, so a host that watches its own connections sees the enumeration rather than the injection. |
+| `ble_irk_resolve` <br>_injects_ | BLE identity resolution (rotating addresses, leaked IRKs) | Bluetooth | green | green | wifipilot blesim + bt.py (AES-128 identity resolution) | Nothing on the device: the resolution is offline arithmetic over addresses anybody can receive. That is the finding — the privacy control fails silently, and only a listener holding the key can tell one address from another. |
 | `mqtt_recon` | MQTT broker reconnaissance | WiFi | green | green | wifipilot netstack.py (MQTT CONNECT/SUBSCRIBE) | a CONNECT and a SUBSCRIBE on port 1883 from an unknown client: the broker's log has it, and a broker with authentication refuses it |
 | `rtsp_camera_audit` | RTSP camera audit (streams and authentication) | WiFi | green | green | wifipilot netstack.py (RTSP OPTIONS/DESCRIBE) | OPTIONS and DESCRIBE requests from an unexpected client: the camera's log shows an anonymous session |
 | `pjl_printer_audit` | PJL printer audit (identity and filesystem) | WiFi | green | green | wifipilot netstack.py (PJL over port 9100) | PJL commands on port 9100 from a host that is not a print server: the printer's job log shows a command job |
@@ -1531,7 +1563,7 @@ How to read the columns: **edition** is which toolbox the attack belongs to, **n
 | `radius_secret_test` <br>_injects_ | RADIUS shared-secret test | WiFi | green | green | wifipilot netproto (own RADIUS client) | one Access-Request per candidate secret; a real RADIUS server logs the failures |
 | `rogue_radius` <br>_injects_ | Rogue RADIUS (credential check) | WiFi | cyan | bold green | eaphammer / hostapd-mana / hostapd-wpe | a rogue RADIUS/eaphammer AP; clients that trust any certificate will offer credentials |
 
-### Rogue infrastructure and lures — 41
+### Rogue infrastructure and lures — 45
 
 | attack | answers | edition | noise | impact | tool | defender sees |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1554,6 +1586,10 @@ How to read the columns: **edition** is which toolbox the attack belongs to, **n
 | `bt_beacon_clone` <br>_injects_ | iBeacon clone | Bluetooth | cyan | bold green | wifipilot bt.py (advertising a copied beacon payload) | the capture itself |
 | `bt_tracker_clone` <br>_injects_ | Tracker advertisement clone | Bluetooth | cyan | bold green | wifipilot bt.py (advertising a copied tracker payload) | the capture itself |
 | `bt_connectable_lure` <br>_injects_ | Connectable advertising lure | Bluetooth | cyan | green | wifipilot bt.py (connectable advertising + LE connection events) | the capture itself |
+| `ble_hid` <br>_injects_ | BLE HID injection (keyboard over GATT) | Bluetooth | cyan | bold green | wifipilot bt.py (LE advertising + ATT notifications) | A new HID peripheral in the host's Bluetooth settings, and keystrokes nobody typed: the host's own log carries the connection, the service discovery and the input reports, and a keyboard the user never paired stays in the device list for as long as the bond is kept. |
+| `ble_hid_boot` <br>_injects_ | BLE HID boot-protocol downgrade | Bluetooth | cyan | bold green | wifipilot bt.py (ATT write to the HID Protocol Mode characteristic) | An ATT write to the HID service of the host, from a peripheral it has not paired with: a host that logs its GATT writes shows the protocol change and the boot reports that follow it. |
+| `ble_hid_reconnect` <br>_injects_ | BLE reconnect hijack (impersonate the bonded keyboard) | Bluetooth | cyan | bold green | wifipilot bt.py (LE Set Random Address + advertising) | Two devices with the same Bluetooth name and address on air, and a host that connects to the second one: the host's device list shows the duplicate, and a passive receiver sees one address on two transmitters. |
+| `ble_smp_downgrade` <br>_injects_ | LE pairing downgrade probe (Just Works + 7-byte key) | Bluetooth | cyan | bold green | wifipilot bt.py (SMP Pairing Request over L2CAP) | A Pairing Request with the MITM and Secure Connections bits clear: a host that logs pairing shows the attempt, and the device's own menu shows a pairing the user never accepted. |
 | `forged_dhcp_release` <br>_injects_ | Forged DHCP RELEASE / DECLINE | WiFi | cyan | yellow | wifipilot netproto.py (RELEASE and DECLINE) | RELEASE and DECLINE messages for addresses whose owner did not send them: a DHCP server log shows a client losing a lease it was using |
 | `dhcp_nak_injection` <br>_injects_ | Forged DHCP NAK injection | WiFi | cyan | yellow | wifipilot netproto.py (NAK with options) | NAK messages from a source that is not the server: a snooping switch drops them when it is configured |
 | `dhcp_option_injection` <br>_injects_ | Rogue DHCP option injection (route, DNS, WPAD) | WiFi | cyan | yellow | wifipilot netproto.py (options 3, 6, 121, 249, 252) | a second DHCP server answering with its own router and resolver options: two OFFERs for one DISCOVER |
@@ -1681,10 +1717,11 @@ How to read the columns: **edition** is which toolbox the attack belongs to, **n
 | `it_iot_service_census` | IoT service census | IT devices | green | green | wifipilot itproto + itsim (real protocol probes) | a sweep of 7 service port(s) across the segment: connection logs and service logs show one client greeting everything |
 | `it_exposure_report` | segment exposure report | IT devices | green | green | wifipilot itproto + itsim (real protocol probes) | a sweep of 28 service port(s) across the segment: connection logs and service logs show one client greeting everything |
 
-### Device and service attacks (IP, not radio) — 158
+### Device and service attacks (IP, not radio) — 159
 
 | attack | answers | edition | noise | impact | tool | defender sees |
 | --- | --- | --- | --- | --- | --- | --- |
+| `ble_gatt_hijack` <br>_injects_ | BLE GATT hijack (unauthenticated write, verified) | Bluetooth | green | bold green | wifipilot bt.py (ATT Read/Write) | An ATT Write Request on a control characteristic from a host the device never bonded with, followed by a Read: the device's own log carries the write, and the physical device shows the effect. |
 | `it_http_version` | Web management interface: version banner | IT devices | green | green | wifipilot itproto (HTTP/1.1 request builder) | Web management interface traffic from an unexpected host to port 80: version banner — a service log or an IDS rule on the protocol sees it |
 | `it_http_default_creds` | Web management interface: default credentials | IT devices | cyan | bold green | wifipilot itproto (HTTP/1.1 request builder) | Web management interface traffic from an unexpected host to port 80: default credentials — a service log or an IDS rule on the protocol sees it |
 | `it_http_auth_bypass` | Web management interface: authentication bypass (header spoof) | IT devices | cyan | bold green | wifipilot itproto (HTTP/1.1 request builder) | Web management interface traffic from an unexpected host to port 80: authentication bypass (header spoof) — a service log or an IDS rule on the protocol sees it |
@@ -1844,7 +1881,7 @@ How to read the columns: **edition** is which toolbox the attack belongs to, **n
 | `it_mdns_cleartext_audit` | mDNS / DNS-SD: mdns / dns-sd without encryption | IT devices | green | bold green | wifipilot itproto (mDNS query) | A mdns handshake on port 5353 to an unexpected host. |
 | `it_default_credential_sweep` | default credential sweep | IT devices | cyan | bold green | wifipilot itproto + itsim (real protocol probes) | a sweep of 7 service port(s) across the segment: connection logs and service logs show one client greeting everything |
 
-### Denial-of-service tests (opt-in) — 62
+### Denial-of-service tests (opt-in) — 63
 
 | attack | answers | edition | noise | impact | tool | defender sees |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1870,6 +1907,7 @@ How to read the columns: **edition** is which toolbox the attack belongs to, **n
 | `bt_adv_dos` <br>_injects_ | Advertising channel DoS | Bluetooth | red | yellow | wifipilot bt.py (continuous advertising on all three channels) | the capture itself |
 | `bt_pairing_flood` <br>_injects_ | Pairing request flood | Bluetooth | red | yellow | wifipilot bt.py (repeated pairing requests over a connection) | the capture itself |
 | `bt_l2cap_echo_flood` <br>_injects_ | L2CAP echo request flood | Bluetooth | red | yellow | wifipilot bt.py (L2CAP signalling echo requests) | the capture itself |
+| `ble_conn_param_hijack` <br>_injects_ | LE connection parameter hijack (link starvation) | Bluetooth | yellow | yellow | wifipilot bt.py (LL_CONNECTION_UPDATE_REQ over ACL) | An LL_CONNECTION_UPDATE_REQ from a peer that was never paired, and a device whose radio stays busy: the host's own controller log carries the request, and the battery drain shows up long before anybody reads the log. |
 | `dhcp_starvation` <br>_injects_ | DHCP starvation (lease pool exhaustion) | WiFi | yellow | yellow | wifipilot netproto.py (DHCP + client identifiers) | thousands of DHCP transactions from fabricated client identifiers: a DHCP log shows the pool emptying, and a DHCP snooping switch shows the rate |
 | `dhcp_flood` <br>_injects_ | DHCP flood (request-rate exhaustion) | WiFi | red | yellow | wifipilot netproto.py (mixed DHCP message types) | an extreme rate of DHCP messages on one access point: visible in any DHCP log, and in the AP's own client table |
 | `syn_flood` <br>_injects_ | TCP SYN flood (connection-table exhaustion) | WiFi | red | yellow | wifipilot netstack.py (TCP headers, spoofed sources) | a burst of SYNs with source addresses that never complete a handshake: the target's connection table fills and its logs show hundreds of half-open sessions |
@@ -1965,6 +2003,11 @@ Every attack is stamped with an **edition** (which toolbox it belongs to) and wi
 | **Consumer camera / baby monitor** (`camera_doorbell`) | IT devices | Consumer and smart home | `80, 443, 554` | http, rtsp, mqtt | 22 — `it_mqtt_discover`, `it_mqtt_anonymous`, `it_mqtt_default_creds`, `it_mqtt_subscribe`, `it_mqtt_publish`, +17 more |
 | **Smartphone** (`smartphone`) | IT devices | Phones, tablets and wearables | `80, 443, 5555, 62078` | http, adb, mdns | 7 — `it_adb_discover`, `it_adb_anonymous`, `it_adb_version`, `it_adb_unauth_read`, `it_adb_flood`, +2 more |
 | **Tablet / mobile workstation** (`tablet`) | IT devices | Phones, tablets and wearables | `80, 443, 5900` | http, vnc, mdns | 19 — `it_adb_discover`, `it_adb_anonymous`, `it_adb_version`, `it_adb_unauth_read`, `it_adb_flood`, +14 more |
+| **Fitness tracker / smartwatch** (`fitness_tracker`) | Bluetooth | Phones, tablets and wearables | `—` | ble, gatt | 5 — `ble_hid_audit`, `ble_smp_downgrade`, `ble_gatt_hijack`, `ble_irk_resolve`, `ble_conn_param_hijack` |
+| **Bluetooth headset / audio** (`bt_headset`) | Bluetooth | Bluetooth devices | `—` | bluetooth, rfcomm, obex, a2dp | 3 — `ble_hid_audit`, `ble_smp_downgrade`, `ble_conn_param_hijack` |
+| **Bluetooth keyboard / mouse** (`bt_keyboard`) | Bluetooth | Bluetooth devices | `—` | bluetooth, hid | 6 — `ble_hid`, `ble_hid_audit`, `ble_hid_boot`, `ble_hid_reconnect`, `ble_smp_downgrade`, +1 more |
+| **BLE sensor / tag** (`ble_sensor`) | Bluetooth | Bluetooth devices | `—` | ble, gatt, adv | 4 — `ble_smp_downgrade`, `ble_gatt_hijack`, `ble_irk_resolve`, `ble_conn_param_hijack` |
+| **Bluetooth lock / padlock** (`bt_lock`) | Bluetooth | Bluetooth devices | `—` | ble, gatt | 2 — `ble_smp_downgrade`, `ble_gatt_hijack` |
 | **UPS / power management** (`ups`) | IT devices | Industrial and building systems | `80, 161, 443, 161, 502` | snmp, http, modbus, tls | 9 — `it_http_discover`, `it_http_banner`, `it_http_version`, `it_http_default_creds`, `it_http_auth_bypass`, +4 more |
 | **HVAC unit / rooftop controller** (`hvac`) | IT devices | Industrial and building systems | `80, 443, 47808, 502` | bacnet, http, modbus | 21 — `it_mqtt_discover`, `it_mqtt_anonymous`, `it_mqtt_default_creds`, `it_mqtt_subscribe`, `it_mqtt_publish`, +16 more |
 | **Clinical workstation** (`medical_workstation`) | IT devices | IoT and embedded | `80, 104, 443, 445` | dicom, http, smb | 7 — `it_dicom_discover`, `it_dicom_echo`, `it_dicom_config_dump`, `it_dicom_version`, `it_dicom_flood`, +2 more |
@@ -1978,5 +2021,5 @@ $ wifipilot attacks --domain it          # print the IT edition
 $ wifipilot --edition bluetooth attack    # plan BLE/classic only
 ```
 
-<!-- 534 attacks -->
+<!-- 542 attacks -->
 <!-- catalogue:end -->

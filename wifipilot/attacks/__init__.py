@@ -253,6 +253,7 @@ DEFAULT_ORDER = [
 # Attacks added in waves live in their own module together with their metadata, and
 # register here by being listed once.  A wave is one import and one tuple entry, so
 # adding forty attacks does not mean editing forty places.
+from . import blehid as _batch_blehid                        # noqa: E402
 from . import btattacks as _batch_btattacks                    # noqa: E402
 from . import btred as _batch_btred                            # noqa: E402
 from . import famous as _batch_famous                          # noqa: E402
@@ -262,7 +263,8 @@ from . import offline3 as _batch_offline3                      # noqa: E402
 from . import offline4 as _batch_offline4                      # noqa: E402
 
 BATCH_MODULES = (_batch_offline3, _batch_offline4, _batch_btattacks,
-                 _batch_netdos, _batch_btred, _batch_famous, _batch_itsvc)
+                 _batch_blehid, _batch_netdos, _batch_btred, _batch_famous,
+                 _batch_itsvc)
 
 
 def _register_batches() -> List[str]:

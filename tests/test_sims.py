@@ -1,6 +1,6 @@
 """The two simulated environments: the Bluetooth floor and the IT segment.
 
-Demo mode is the fastest way to exercise 534 attacks, and the only way to exercise the
+Demo mode is the fastest way to exercise 542 attacks, and the only way to exercise the
 Bluetooth and IT ones without a lab — so the simulations are load-bearing, not decoration.
 This file checks that they are internally consistent, that they answer with bytes the
 toolkit's *own* parsers read (a simulation whose answers the toolkit cannot parse would be
@@ -377,3 +377,4 @@ def test_the_attacks_of_both_editions_are_exercisable_in_demo(ctx, ap):
     assert results["bt_le_scan"].extra.get("demo") is True
     # and the registry is the one that was exercised
     assert len([name for name in ATTACK_CLASSES if name.startswith("bt_")]) == 35
+    assert len([name for name in ATTACK_CLASSES if name.startswith("ble_")]) == 8
