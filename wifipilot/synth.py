@@ -1265,7 +1265,7 @@ def build_bt_scene(path: str, seconds: float = 20.0, seed: int = 7,
          37, -64)
     # the feature exchange: what the two ends claim they can do
     features = (1 << 0) | (1 << 4) | (1 << 5) | (1 << 8) | (1 << 14)
-    data(3, bytes([0x0A]) + features.to_bytes(8, "little"), moment)
+    data(3, bytes([0x09]) + features.to_bytes(8, "little"), moment)   # LL_FEATURE_RSP
     # the pairing request: Just Works, no MITM, no Secure Connections — the finding
     data(2, l2cap(0x0006, bytes([0x01, 0x03, 0x00, 0x00, 0x10, 0x0F, 0x0F])), moment + 0.02)
     # an ATT read of the primary services, and the answer that names them
@@ -1276,7 +1276,10 @@ def build_bt_scene(path: str, seconds: float = 20.0, seed: int = 7,
                   bytes([0x11, 0x06, 0x01, 0x00, 0x0A, 0x00, 0x00, 0x18,
                          0x0B, 0x00, 0x0E, 0x00, 0x0F, 0x18])), moment + 0.06)
     # the encryption request that starts the link's encryption
-    data(3, bytes([0x04]) + bytes(range(8)) + bytes(range(8, 16)), moment + 0.08)
+    # LL_ENC_REQ: Rand (8), EDIV (2), SKDm (8) and IVm (4) — the start of
+    # the encryption setup an analyst reads to see the link become encrypted
+    data(3, bytes([0x03]) + bytes(range(8)) + b"\x00\x00"
+         + bytes(range(8, 16)) + bytes(4), moment + 0.08)
 
     bt.write_le_pcap(path, records, times=times)
     return str(path)

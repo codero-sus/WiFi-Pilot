@@ -1122,7 +1122,7 @@ class BluesmackAttack(_BtFamous):
 
 #: the shell line an injected keyboard types by default: harmless, and unmistakably a
 #: successful injection when it appears in a terminal
-DEFAULT_HID_PAYLOAD = "id"
+DEFAULT_HID_PAYLOAD = "id\n"
 
 
 class HidInjectionAttack(_BtFamous):
@@ -1153,7 +1153,8 @@ class HidInjectionAttack(_BtFamous):
         "Advertise as a HID peripheral — the keyboard report map, the HID service, a "
         "keyboard appearance — and send the keystrokes a host will accept as its own "
         "keyboard's: eight-byte boot reports as ATT notifications, one per key, in the "
-        "order a human types.  The payload defaults to 'id' and is set with hid_payload; "
+        "order a human types.  The payload defaults to 'id' followed by Enter and is set "
+        "with hid_payload; "
         "the finding is that the host typed it.")
     detection = ("a new HID device in the host's Bluetooth settings and keystrokes nobody "
                  "typed: the host's own log shows the connection and the input reports")

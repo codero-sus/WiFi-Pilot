@@ -4,6 +4,53 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## 542 attacks — the BLE wave: keyboards, downgrades and identity
+
+* **8 further attacks, 542 in total (Bluetooth 43).** A wave that lives in
+  `attacks/blehid.py` and answers the question a Bluetooth assessment is really about: a
+  BLE keyboard is a GATT server that *notifies* its host, and a host that subscribes
+  believes every notification it receives on the report characteristic.
+  `ble_hid` advertises the HID service, enumerates the report characteristic over ATT and
+  types the payload as boot reports, decoded back with the toolkit's own decoder;
+  `ble_hid_audit` finds which hosts accept input without a bond; `ble_hid_boot` writes the
+  protocol mode back to boot protocol and reads it back; `ble_hid_reconnect` impersonates
+  the keyboard a host already bonded and counts the hosts that reconnect to the name and
+  address instead of checking the link key; `ble_smp_downgrade` offers Just Works with a
+  seven-byte key and reports what each device settled for; `ble_gatt_hijack` writes a
+  control characteristic and verifies it by reading the value back; `ble_irk_resolve`
+  follows a device through its rotating addresses with the identity keys that leak;
+  `ble_conn_param_hijack` asks the link layer for the shortest interval the specification
+  allows and reports which peers accept being starved of radio time.
+* **The simulation grew the postures the wave needs (`blesim.py`).** 50 devices across 9
+  profiles: five HID hosts bonded to one keyboard, three that reconnect to it and two that
+  verify the link key, the HID-over-GATT service with a real report map, HID Information,
+  a Protocol Mode characteristic and a report characteristic served on 0x0005. ATT writes
+  persist and are read back, the SMP responder negotiates or refuses on the *offer* (a
+  weak offer to a device that requires MITM or Secure Connections gets a Pairing Failed,
+  and the answer is a real Pairing Response), and advertising under a bonded identity makes
+  the hosts that trust that identity connect — which is the whole reconnect attack.
+* **Correctness fixes the wave forced, each with the specification behind it.**
+  * `bt.ah` is the privacy function of Core Vol 3 Part H 2.2.2: **one** AES block of
+    ``prand`` zero-padded to 128 bits, with the hash taken from the low 24 bits of the
+    output, and the address written ``prand || hash`` with prand most significant — which
+    is why the ``0b01`` marker is visible in the first octet of every resolvable private
+    address. The implementation is now checked against the specification's own sample data
+    (IRK `ec0234a3…`, prand `0x708194` → hash `0x0dfbaa`).
+  * `bt.LL_CONTROL_OPCODES` was shifted by one: every link-layer PDU in a capture was
+    named after its neighbour, and the feature pages were read out of the wrong opcodes.
+    The table is the specification's own now, and `parse_ll_header` reads features from
+    LL_FEATURE_REQ/LL_FEATURE_RSP/LL_PERIPHERAL_FEATURE_REQ (0x08/0x09/0x0E).
+  * `blesim` read the peer address of ``LE Create Connection`` one byte late, so a run
+    that named a device connected to a different one.
+  * `hid_key_reports` typed letters and dropped everything else: a payload of `id\n`
+    pressed no Enter key, and neither a space nor a `|` nor a `/` was ever typed. The
+    keyboard now types printable ASCII, punctuation and shift symbols, plus Enter, Tab,
+    Escape, Backspace and Delete, and `hid_type_plan` reports the characters a boot
+    keyboard cannot type. The shipped payload is `id\n` — a command line is submitted.
+* **Tests:** `tests/test_attacks_ble_wave.py` — 26 tests over the wave, the HID
+  encoder/decoder round trip (every printable character, one at a time), the ``ah`` sample
+  vector, the link-layer table, and the simulated floor's postures.
+
 ## 248 attacks — the famous ones, by name
 
 * **12 further attacks, 248 in total.** Every name on the brief that was still missing,

@@ -43,6 +43,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from .crypto import AES
+
 __all__ = [
     "AD_TYPES", "ad_structure", "ad_structures", "adv_payload", "ad_name",
     "payload_name", "parse_ad", "ad_flags", "ad_service_uuids", "ad_manufacturer", "ad_service_data",
@@ -72,7 +74,12 @@ __all__ = [
     "OBEX_REQUESTS", "OBEX_RESPONSES", "OBEX_HEADERS",
     "HID_SERVICE_UUID", "HID_CHARACTERISTICS", "HID_KEYBOARD_REPORT_MAP", "HID_KEYS",
     "HID_MODIFIERS", "HID_SHIFTED", "hid_key", "hid_boot_report", "hid_key_reports",
-    "hid_gatt_table", "hid_input_report",
+    "hid_gatt_table", "hid_input_report", "HID_USAGE_NAMES", "HID_KEY_TEXT",
+    "HID_UNSHIFTED", "hid_usage_name", "hid_report_text", "hid_decode_report",
+    "hid_decode_stream",
+    # the security manager, and the addresses an identity key resolves
+    "smp_pairing_request", "L2CAP_CID_SMP", "SMP_COMMANDS", "SMP_FAILURE_REASONS",
+    "rpa_from_irk", "resolves_irk", "rpa_prand", "address_irk_candidates",
     "SERVICE_GROUPS", "service_group",
 ]
 
@@ -128,6 +135,70 @@ def random_static_address(seed: int = 0) -> str:
     value = (0xC0 | (seed & 0x3F)) << 40 | (seed * 2654435761) & 0xFFFFFFFFFF
     raw = value.to_bytes(6, "little")
     return mac_text(raw)
+
+
+def random_address_hash(irk: bytes, prand: int) -> int:
+    """The privacy function ``ah``: ``e(k, r') mod 2**24``, exactly as the specification says.
+
+    ``r'`` is the 24-bit input zero-padded to 128 bits — Core Specification Vol 3, Part H,
+    2.2.2 gives the example that ``r`` of ``0x423456`` becomes
+    ``0x00000000000000000000000000423456`` — and the result is the *low* 24 bits of the one
+    AES-128 block that key ``k`` encrypts it to.  The specification's own sample data
+    (Appendix D.7) resolves the whole question of octet order, and the test suite checks
+    this function against it::
+
+        ah(ec0234a3 57c8ad05 341010a6 0a397d9b, 0x708194) == 0x0dfbaa
+
+    One block, not two, and the hash is taken from the end of the output rather than the
+    front: a resolver that got either of those wrong would produce addresses that no
+    compliant controller — a phone, a laptop, a real sniffer — could ever match.
+    """
+    key = bytes(irk)[:16].ljust(16, b"\x00")
+    padding = b"\x00" * 13 + (int(prand) & 0xFFFFFF).to_bytes(3, "big")
+    return int.from_bytes(AES(key).encrypt_block(padding)[13:16], "big")
+
+
+def rpa_from_irk(irk: bytes, prand: int = 1) -> str:
+    """The resolvable private address a device with this IRK would present.
+
+    The Core Specification's own construction: ``prand`` is a 24-bit number whose two most
+    significant bits are ``0b01``, ``hash = ah(IRK, prand)``, and the address is
+    ``prand || hash`` — the most significant octet of *prand* is the most significant octet
+    of the address, which is why the type marker is visible in the first printed octet of
+    every private address.  An address built this way can only be recognised by somebody
+    holding the IRK, which is what makes the resolution below evidence rather than a guess.
+    """
+    number = (int(prand) & 0xFFFFFF) | 0x400000
+    return mac_text(number.to_bytes(3, "big")
+                    + random_address_hash(irk, number).to_bytes(3, "big"))
+
+
+def resolves_irk(irk: bytes, address: str) -> bool:
+    """Does ``address`` come from this IRK?  The check the controller itself makes.
+
+    Both halves have to hold: the address has to *look* like a resolvable private address
+    (the two most significant bits of its most significant octet are ``0b01`` — an address
+    that is public or static is not hidden by anybody's key) and the hash behind the random
+    part has to be the ``ah`` of that random part under this key.
+    """
+    raw = mac_bytes(address)
+    if len(raw) != 6 or raw[0] >> 6 != 0x01:
+        return False
+    prand = int.from_bytes(raw[0:3], "big")
+    return random_address_hash(irk, prand).to_bytes(3, "big") == raw[3:6]
+
+
+def rpa_prand(address: str) -> int:
+    """The random half of a resolvable private address, or 0 if it is not one."""
+    raw = mac_bytes(address)
+    if len(raw) != 6 or raw[0] >> 6 != 0x01:
+        return 0
+    return int.from_bytes(raw[0:3], "big")
+
+
+def address_irk_candidates(address: str, keys: Iterable[bytes]) -> List[bytes]:
+    """Every key in ``keys`` that resolves ``address`` — normally zero or one."""
+    return [bytes(key) for key in keys if resolves_irk(key, address)]
 
 
 def resolvable_private_address(irk_hash: bytes, seed: int = 0) -> str:
@@ -833,6 +904,7 @@ HCI_ERRORS = {0x00: "success", 0x01: "unknown HCI command",
               0x16: "connection terminated by local host",
               0x17: "repeated attempts", 0x18: "pairing not allowed",
               0x19: "unknown LMP PDU", 0x1A: "unsupported remote feature",
+              0x1E: "invalid LL parameters", 0x1F: "unspecified error",
               0x1B: "unsupported LMP parameter value", 0x22: "LMP response timeout",
               0x23: "unknown connection identifier", 0x28: "instant passed",
               0x29: "pairing with unit key not supported", 0x2A: "different "
@@ -1041,20 +1113,20 @@ def write_le_pcap(path: str, records: Iterable[bytes], spacing: float = 0.01,
 #: reading them is what tells an auditor whether the link is encrypted, how often it
 #: hops, and what the two ends claim to support.
 LL_CONTROL_OPCODES = {
-    0x00: "LL_RESERVED", 0x01: "LL_CONNECTION_UPDATE_IND", 0x02: "LL_CHANNEL_MAP_IND",
-    0x03: "LL_TERMINATE_IND", 0x04: "LL_ENC_REQ", 0x05: "LL_ENC_RSP",
-    0x06: "LL_START_ENC_REQ", 0x07: "LL_START_ENC_RSP", 0x08: "LL_UNKNOWN_RSP",
-    0x09: "LL_FEATURE_REQ", 0x0A: "LL_FEATURE_RSP", 0x0B: "LL_PAUSE_ENC_REQ",
-    0x0C: "LL_PAUSE_ENC_RSP", 0x0D: "LL_VERSION_IND", 0x0E: "LL_REJECT_IND",
-    0x0F: "LL_PERIPHERAL_FEATURE_REQ", 0x10: "LL_CONNECTION_PARAM_REQ",
-    0x11: "LL_CONNECTION_PARAM_RSP", 0x12: "LL_REJECT_EXT_IND", 0x13: "LL_PING_REQ",
-    0x14: "LL_PING_RSP", 0x15: "LL_LENGTH_REQ", 0x16: "LL_LENGTH_RSP",
-    0x17: "LL_PHY_REQ", 0x18: "LL_PHY_RSP", 0x19: "LL_PHY_UPDATE_IND",
-    0x1A: "LL_MIN_USED_CHANNELS_IND", 0x1B: "LL_CTE_REQ", 0x1C: "LL_CTE_RSP",
-    0x1D: "LL_PERIODIC_SYNC_IND", 0x1E: "LL_CLOCK_ACCURACY_REQ",
-    0x1F: "LL_CLOCK_ACCURACY_RSP", 0x20: "LL_CIS_REQ", 0x21: "LL_CIS_RSP",
-    0x22: "LL_CIS_IND", 0x23: "LL_CIS_TERMINATE_IND", 0x24: "LL_POWER_CONTROL_REQ",
-    0x25: "LL_POWER_CONTROL_RSP", 0x26: "LL_POWER_CHANGE_IND",
+    0x00: "LL_CONNECTION_UPDATE_IND", 0x01: "LL_CHANNEL_MAP_IND",
+    0x02: "LL_TERMINATE_IND", 0x03: "LL_ENC_REQ", 0x04: "LL_ENC_RSP",
+    0x05: "LL_START_ENC_REQ", 0x06: "LL_START_ENC_RSP", 0x07: "LL_UNKNOWN_RSP",
+    0x08: "LL_FEATURE_REQ", 0x09: "LL_FEATURE_RSP", 0x0A: "LL_PAUSE_ENC_REQ",
+    0x0B: "LL_PAUSE_ENC_RSP", 0x0C: "LL_VERSION_IND", 0x0D: "LL_REJECT_IND",
+    0x0E: "LL_PERIPHERAL_FEATURE_REQ", 0x0F: "LL_CONNECTION_PARAM_REQ",
+    0x10: "LL_CONNECTION_PARAM_RSP", 0x11: "LL_REJECT_EXT_IND", 0x12: "LL_PING_REQ",
+    0x13: "LL_PING_RSP", 0x14: "LL_LENGTH_REQ", 0x15: "LL_LENGTH_RSP",
+    0x16: "LL_PHY_REQ", 0x17: "LL_PHY_RSP", 0x18: "LL_PHY_UPDATE_IND",
+    0x19: "LL_MIN_USED_CHANNELS_IND", 0x1A: "LL_CTE_REQ", 0x1B: "LL_CTE_RSP",
+    0x1C: "LL_PERIODIC_SYNC_IND", 0x1D: "LL_CLOCK_ACCURACY_REQ",
+    0x1E: "LL_CLOCK_ACCURACY_RSP", 0x1F: "LL_CIS_REQ", 0x20: "LL_CIS_RSP",
+    0x21: "LL_CIS_IND", 0x22: "LL_CIS_TERMINATE_IND", 0x23: "LL_POWER_CONTROL_REQ",
+    0x24: "LL_POWER_CONTROL_RSP", 0x25: "LL_POWER_CHANGE_IND",
 }
 
 #: the LL feature bits an assessment cares about (Core spec, Vol 6, Part B, 4.6).
@@ -1194,7 +1266,7 @@ def parse_ll_header(data: bytes) -> Dict[str, Any]:
         opcode = out["payload"][0]
         out["control_opcode"] = opcode
         out["control"] = LL_CONTROL_OPCODES.get(opcode, f"opcode 0x{opcode:02x}")
-        if opcode in (0x09, 0x0A, 0x0F) and len(out["payload"]) >= 9:
+        if opcode in (0x08, 0x09, 0x0E) and len(out["payload"]) >= 9:
             features = int.from_bytes(out["payload"][1:9], "little")
             out["features"] = {name: bool(features >> bit & 1)
                                for bit, name in LL_FEATURE_BITS.items()}
@@ -1222,6 +1294,22 @@ def parse_l2cap(payload: bytes) -> Dict[str, Any]:
         out["identifier"] = body[1]
         out["command_length"] = int.from_bytes(body[2:4], "little")
     return out
+
+
+def smp_pairing_request(io_capability: int = 0x03, oob: int = 0x00, auth: int = 0x00,
+                        key_size: int = 16, initiator_keys: int = 0x0F,
+                        responder_keys: int = 0x0F) -> bytes:
+    """A Pairing Request, with the security the initiator is willing to settle for.
+
+    ``auth`` is the byte a downgrade attack argues about: bit 0 is bonding, bit 2 is
+    man-in-the-middle protection and bit 3 is LE Secure Connections.  Sending the same
+    request with those bits cleared — and reading the *response* — is how a run finds out
+    whether a device that supports protected pairing will accept unprotected pairing from
+    whoever asks, and whether it will accept a one-byte key.
+    """
+    return bytes([0x01, int(io_capability) & 0xFF, int(oob) & 0xFF, int(auth) & 0xFF,
+                  max(7, min(16, int(key_size))) & 0xFF,
+                  int(initiator_keys) & 0xFF, int(responder_keys) & 0xFF])
 
 
 def parse_smp(data: bytes) -> Dict[str, Any]:
@@ -2398,22 +2486,168 @@ def hid_boot_report(modifiers: int = 0, keys: Sequence[int] = ()) -> bytes:
 def hid_key_reports(text: str) -> List[bytes]:
     """Turn a string into the press/release report pairs a keyboard would send.
 
-    Each character becomes two reports — the key down, then all keys up — which is how a
-    host sees a typing human rather than a one-off report that never releases.
+    Each keystroke becomes two reports — the key down, then all keys up — which is how a
+    host sees a typing human rather than a one-off report that never releases.  Letters,
+    digits, punctuation, spaces and the control characters (``\n`` is Enter, ``\t`` is
+    Tab) are all typed; anything this keyboard has no key for is left out, and
+    :func:`hid_type_plan` is where a caller finds out which ones those were.
     """
+    presses, _untypable = hid_type_plan(text)
     reports: List[bytes] = []
-    for character in text:
-        modifiers = 0
-        name = character
-        if character.isupper() or character in HID_SHIFTED:
-            modifiers |= HID_MODIFIERS["left shift"]
-            name = HID_SHIFTED.get(character, character.lower())
-        code = hid_key(name)
-        if not code:
-            continue
-        reports.append(hid_boot_report(modifiers, [code]))
+    for modifiers, codes in presses:
+        reports.append(hid_boot_report(modifiers, codes))
         reports.append(hid_boot_report(0, []))
     return reports
+
+
+#: usage code -> the name the key has in :data:`HID_KEYS` (first name wins, so a code
+#: with two spellings answers with the one the table was written with)
+HID_USAGE_NAMES: Dict[int, str] = {}
+for _key_name, _key_code in HID_KEYS.items():
+    HID_USAGE_NAMES.setdefault(_key_code, _key_name)
+
+#: what the named keys type without shift: the punctuation, the space bar and the keys
+#: that send a control character rather than printing one
+HID_NAMED_CHARS = {"minus": "-", "equals": "=", "left bracket": "[", "right bracket": "]",
+                   "backslash": "\\", "semicolon": ";", "quote": "'", "grave": "`",
+                   "comma": ",", "period": ".", "slash": "/", "space": " ",
+                   "enter": "\n", "return": "\n", "tab": "\t", "escape": "\x1b",
+                   "backspace": "\x08", "delete": "\x7f"}
+
+#: the shift symbols, backwards: the key a shifted symbol is produced from
+HID_UNSHIFTED = {name: symbol for symbol, name in HID_SHIFTED.items()}
+
+#: every character a keyboard can type -> ``(key name, shift)``.  Built from the tables
+#: above rather than written out, so the encoder and the decoder cannot drift apart: a
+#: character that is typed is a character that decodes.
+HID_TYPEABLE: Dict[str, Tuple[str, bool]] = {}
+for _name, _character in HID_NAMED_CHARS.items():
+    HID_TYPEABLE.setdefault(_character, (_name, False))
+for _symbol, _key in HID_SHIFTED.items():
+    HID_TYPEABLE.setdefault(_symbol, (_key, True))
+for _letter in "abcdefghijklmnopqrstuvwxyz":
+    HID_TYPEABLE[_letter] = (_letter, False)
+    HID_TYPEABLE[_letter.upper()] = (_letter, True)
+for _digit in "0123456789":
+    HID_TYPEABLE.setdefault(_digit, (_digit, False))
+# a carriage return is what a terminal sends where a person presses Enter
+HID_TYPEABLE.setdefault("\r", ("enter", False))
+
+#: what a named key types, for readers that want the old table by name
+HID_KEY_TEXT = {name: character for name, character in HID_NAMED_CHARS.items()}
+
+#: usage code -> the name the key has in :data:`HID_KEYS`#: usage code -> the name the key has in :data:`HID_KEYS` (first name wins, so a code
+#: with two spellings answers with the one the table was written with)
+HID_USAGE_NAMES: Dict[int, str] = {}
+for _key_name, _key_code in HID_KEYS.items():
+    HID_USAGE_NAMES.setdefault(_key_code, _key_name)
+
+def hid_usage_name(code: int) -> str:
+    """The name of a HID usage code, or ``""`` for one this build does not know."""
+    return HID_USAGE_NAMES.get(int(code) & 0xFF, "")
+
+
+def hid_report_text(name: str, shift: bool = False, ctrl: bool = False) -> str:
+    """What one key types, with the modifiers applied: the decoder's whole job."""
+    if not name:
+        return ""
+    if ctrl:                                   # a control chord is not text, and saying
+        return ""                              # it is text is how an audit lies
+    if len(name) == 1:
+        if name.isalpha():
+            return name.upper() if shift else name
+        if name.isdigit():
+            if shift:
+                return HID_UNSHIFTED.get(name, name)
+            return name
+        return name
+    character = HID_NAMED_CHARS.get(name)
+    if character is None:
+        return ""
+    return HID_UNSHIFTED.get(name, character) if shift else character
+
+
+def hid_type_plan(text: str) -> Tuple[List[Tuple[int, List[int]]], List[str]]:
+    """The presses a string needs — and the characters this keyboard cannot type.
+
+    A payload is a *command line*, not a word: an injected ``id`` that never presses Enter
+    has typed nothing, and a ``|`` or a ``/`` that is silently dropped is worse than one
+    that is reported as undeliverable.  So the plan is explicit: one entry per keystroke
+    (the modifier bits and the usage codes to press together) and the list of characters
+    that had no key at all.
+    """
+    presses: List[Tuple[int, List[int]]] = []
+    untypable: List[str] = []
+    for character in str(text):
+        plan = HID_TYPEABLE.get(character)
+        if plan is None:
+            code = hid_key(character)                  # a named key passed as itself
+            if not code:
+                untypable.append(character)
+                continue
+            presses.append((0, [code]))
+            continue
+        name, shift = plan
+        code = hid_key(name)
+        if not code:
+            untypable.append(character)
+            continue
+        presses.append((HID_MODIFIERS["left shift"] if shift else 0, [code]))
+    return presses, untypable
+
+
+def hid_decode_report(report: bytes) -> Dict[str, Any]:
+    """Read a boot-keyboard report back into the keys it presses and the text it types.
+
+    The report is the eight bytes the descriptor declares: modifier bits, a reserved
+    byte, then six usage codes with ``0x00`` for "no key in this slot".  A keyboard
+    releases a key by sending the same report with that code taken out, so the text is
+    built from the *press* reports — and a decoder that concatenated every report would
+    type everything twice, which is exactly what makes a decoded transcript untrustworthy
+    if it is done carelessly.
+
+    Ordering matters as much as decoding: a report that keeps a previous key in a slot
+    while a new one arrives is a *chord* (ctrl+alt+del, or a key held under another), and
+    a report that only removes keys is a release, not a keystroke.
+    """
+    data = bytes(report or b"")
+    modifiers = data[0] if data else 0
+    codes = [code for code in data[2:8] if code]
+    names = [hid_usage_name(code) or f"0x{code:02x}" for code in codes]
+    shift = bool(modifiers & (HID_MODIFIERS["left shift"] | HID_MODIFIERS["right shift"]))
+    ctrl = bool(modifiers & (HID_MODIFIERS["left ctrl"] | HID_MODIFIERS["right ctrl"]))
+    alt = bool(modifiers & (HID_MODIFIERS["left alt"] | HID_MODIFIERS["right alt"]))
+    return {"modifiers": modifiers, "keys": names, "codes": codes,
+            "count": 1 if codes else 0,
+            "chord": len(codes) > 1, "ctrl": ctrl, "alt": alt,
+            "text": "".join(hid_report_text(name, shift, ctrl) for name in names),
+            "raw": data.hex()}
+
+
+def hid_decode_stream(reports: Sequence[bytes]) -> Dict[str, Any]:
+    """Decode a run of reports the way a host receives them: presses, not repeats.
+
+    A keyboard that holds a key for 600 ms sends the same report several times; only the
+    transition from "not pressed" to "pressed" is a keystroke.  This is the function a
+    capture analysis and a simulated host both need, so both use it and neither can
+    report a string that the other would not.
+    """
+    text = ""
+    strokes: List[Dict[str, Any]] = []
+    held: set = set()
+    for report in reports:
+        parsed = hid_decode_report(report)
+        pressed = set(parsed["codes"])
+        fresh = [code for code in parsed["codes"] if code not in held]
+        held = pressed
+        if not fresh:
+            continue
+        parsed["fresh"] = [hid_usage_name(code) or f"0x{code:02x}" for code in fresh]
+        text += "".join(hid_report_text(name, parsed["keys"] and name in parsed["keys"]
+                                        and bool(parsed["modifiers"] & 0x22), parsed["ctrl"])
+                        for name in parsed["fresh"])
+        strokes.append(parsed)
+    return {"reports": len(reports), "strokes": strokes, "text": text}
 
 
 def hid_gatt_table(start_handle: int = 0x0001) -> List[Dict[str, Any]]:

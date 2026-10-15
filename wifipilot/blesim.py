@@ -47,7 +47,8 @@ import hashlib
 import random
 import struct
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import (Any, Callable, Dict, Iterable, List, Mapping, Optional,
+                    Sequence, Tuple)
 
 from . import bt
 
@@ -55,7 +56,8 @@ __all__ = ["BleDevice", "VirtualBle", "VirtualController", "DemoHciSocket",
            "DemoRfcommSocket", "PROFILES", "WEAKNESS_ORDER", "DEVICE_TABLE", "build_ble",
            "ble_catalog", "profile_rank", "devices_by_weakness", "choose_target",
            "controller_socket", "rfcomm_socket", "ble", "reset_ble", "summary",
-           "write_capture", "LINK_ROLES"]
+           "write_capture", "LINK_ROLES", "IRK_DICTIONARY", "irk_for", "HID_HOSTS",
+           "ATTACK_ROLES", "role_for", "resolve_address"]
 
 # --------------------------------------------------------------------------- #
 # what a device's posture is
@@ -74,6 +76,8 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "io": "no input no output", "just_works": True, "pairing": False,
         "gatt_write": True, "gatt_before_auth": True, "obex": False, "at": False,
         "hid": False, "fragile": "", "link_key": False,
+        "verify_bond_peer": False,
+        "ll_params_checked": False,
         "note": "no pairing at all: the attribute table, the object store and the AT "
                 "channel answer anybody, and the link key is whatever the peer says"},
     "open_gatt": {
@@ -81,20 +85,38 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "io": "no input no output", "just_works": True, "pairing": True,
         "gatt_write": True, "gatt_before_auth": True, "obex": False, "at": False,
         "hid": False, "fragile": "", "link_key": True,
+        "verify_bond_peer": False,
+        "ll_params_checked": False,
         "note": "Just Works pairing, and the vendor characteristic is writeable without "
                 "authentication: the session is not bound to the key"},
     "hid_trusting": {
         "secure_connections": False, "mitm": False, "bonding": True, "key_size": 7,
         "io": "no input no output", "just_works": True, "pairing": True,
-        "gatt_write": False, "gatt_before_auth": True, "obex": False, "at": False,
-        "hid": True, "fragile": "", "link_key": True,
+        # the same story as the input reports, one layer down: a host that takes
+        # keystrokes from whoever connects also takes GATT writes from whoever connects,
+        # which is what lets the HID protocol mode be written back to boot protocol
+        "gatt_write": True, "gatt_before_auth": True, "obex": False, "at": False,
+        "hid": True, "hid_bond_required": False, "fragile": "", "link_key": True,
+        "verify_bond_peer": False,
+        "ll_params_checked": False,
         "note": "accepts HID input reports from a keyboard it paired with using Just "
                 "Works: nothing about the host asks the human whether it should"},
+    "hid_bonded": {
+        "secure_connections": True, "mitm": True, "bonding": True, "key_size": 16,
+        "io": "display yes/no", "just_works": False, "pairing": True,
+        "gatt_write": False, "gatt_before_auth": False, "obex": False, "at": False,
+        "hid": True, "hid_bond_required": True, "fragile": "", "link_key": True,
+        "verify_bond_peer": True,
+        "ll_params_checked": True,
+        "note": "takes HID input only over a bonded, encrypted link, and its pairing "
+                "needs a human: the negative control for the whole HID wave"},
     "fragile_stack": {
         "secure_connections": False, "mitm": False, "bonding": True, "key_size": 7,
         "io": "keyboard only", "just_works": True, "pairing": True,
         "gatt_write": False, "gatt_before_auth": False, "obex": False, "at": False,
         "hid": False, "fragile": "l2cap,sdp,ll", "link_key": True,
+        "verify_bond_peer": False,
+        "ll_params_checked": False,
         "note": "a stack from before the advisories: a malformed L2CAP configuration, an "
                 "oversized L2CAP echo or a bad link-layer PDU stops it"},
     "knober": {
@@ -102,6 +124,8 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "io": "display yes/no", "just_works": False, "pairing": True,
         "gatt_write": False, "gatt_before_auth": False, "obex": False, "at": False,
         "hid": False, "fragile": "", "link_key": True,
+        "verify_bond_peer": True,
+        "ll_params_checked": True,
         "note": "CVE-2019-9506: the controllers negotiate a one-byte key, so the whole "
                 "key space fits in one captured exchange"},
     "blesa": {
@@ -109,6 +133,8 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "io": "no input no output", "just_works": True, "pairing": True,
         "gatt_write": True, "gatt_before_auth": True, "obex": False, "at": False,
         "hid": False, "fragile": "", "link_key": True,
+        "verify_bond_peer": False,
+        "ll_params_checked": False,
         "note": "accepts GATT work before the session is authenticated: the reconnect "
                 "path never binds the attribute table to the bond"},
     "legacy_push": {
@@ -116,6 +142,8 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "io": "no input no output", "just_works": True, "pairing": True,
         "gatt_write": False, "gatt_before_auth": False, "obex": True, "at": True,
         "hid": False, "fragile": "", "link_key": True,
+        "verify_bond_peer": False,
+        "ll_params_checked": False,
         "note": "an old handset: OBEX and the AT channel answer without a bond, and the "
                 "pairing it does offer is legacy"},
     "hardened": {
@@ -123,6 +151,8 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "io": "display yes/no", "just_works": False, "pairing": True,
         "gatt_write": False, "gatt_before_auth": False, "obex": False, "at": False,
         "hid": False, "fragile": "", "link_key": True,
+        "verify_bond_peer": True,
+        "ll_params_checked": True,
         "note": "patched and configured: Secure Connections with MITM protection, "
                 "sixteen-byte keys, no unauthenticated attribute work, no open store"},
 }
@@ -133,7 +163,7 @@ PROFILES: Dict[str, Dict[str, Any]] = {
 #: fragile stack, and a hardened device — which is still useful, as the negative control —
 #: comes last.
 WEAKNESS_ORDER: Tuple[str, ...] = ("wide_open", "open_gatt", "hid_trusting", "fragile_stack",
-                                   "knober", "blesa", "legacy_push", "hardened")
+                                   "knober", "blesa", "legacy_push", "hid_bonded", "hardened")
 
 
 def profile_rank(name: str) -> int:
@@ -200,7 +230,10 @@ GATT_LIBRARY: Dict[str, Tuple[int, Tuple[Tuple[int, str, str], ...]]] = {
     "hid": (0x1812, ((0x2A4A, "HID Information", "read"),
                      (0x2A4B, "Report Map", "read"),
                      (0x2A4C, "HID Control Point", "write without response"),
-                     (0x2A4D, "Report", "read,notify"))),
+                     (0x2A4D, "Report", "read,notify"),
+                     # the protocol the host parses reports in: report (0x01) or the
+                     # boot keyboard format (0x00) the downgrade writes it back to
+                     (0x2A4E, "Protocol Mode", "read,write"))),
     "vendor_lock": (0xFEE7, ((0xFEE8, "Lock State", "read,notify"),
                              (0xFEE9, "Lock Control", "write"),
                              (0xFEEA, "Admin Key", "write"))),
@@ -236,6 +269,9 @@ class BleDevice:
     bondable: bool = True
     address_type: int = 0                   # 0 public, 1 random
     rotate: bool = False                    # a resolvable private address per report
+    irk: bytes = b""                        # the identity resolving key it rotates with
+    bond_peer: str = ""                     # the peripheral name this host is bonded to
+    bond_address: str = ""                  # ...and the address it remembers for it
     firmware: str = ""
     services: Tuple[int, ...] = ()          # advertised service UUIDs
     manufacturer_data: bytes = b""
@@ -249,6 +285,8 @@ class BleDevice:
     at_name: str = ""                       # what the AT engine answers with
     notes: str = ""
     crashes: int = 0                        # times a malformed PDU took this stack down
+    written: Dict[int, bytes] = field(default_factory=dict)   # handle -> what was stored
+    attributes_written: int = 0             # how many writes the table accepted
 
     # -- the profile --------------------------------------------------------- #
     @property
@@ -279,7 +317,9 @@ class BleDevice:
         if flags.get("at"):
             out.append("an AT command channel on RFCOMM")
         if flags.get("hid"):
-            out.append("accepts HID input reports from a Just Works keyboard")
+            out.append("accepts HID input reports only over a bonded link"
+                       if flags.get("hid_bond_required")
+                       else "accepts HID input reports from a Just Works keyboard")
         if flags.get("fragile"):
             out.append(f"stack known to fall over: {flags['fragile']}")
         if not out:
@@ -378,7 +418,10 @@ class BleDevice:
                 rows.append({"handle": handle, "kind": "characteristic", "uuid": uuid,
                              "name": label, "properties": properties,
                              "writable": "write" in properties,
-                             "value": _characteristic_value(self, key, label)})
+                             # a value that was written stays written: the table is
+                             # rebuilt on every call, so the stored writes are folded in
+                             "value": self.written.get(handle,
+                                                       _characteristic_value(self, key, label))})
                 handle += 1
             rows.append({"handle": start, "kind": "service", "uuid": service_uuid,
                          "name": bt.service_name(service_uuid), "start_handle": start,
@@ -472,6 +515,14 @@ def _characteristic_value(device: BleDevice, key: str, label: str) -> bytes:
         return device.name.encode()
     if "Battery" in label:
         return bytes([72 if device.interval_ms <= 100 else 41])
+    if "Protocol Mode" in label:
+        return b"\x01"                                # report protocol, the default
+    if "HID Information" in label:
+        # bcdHID 1.11, country 0, and the two flags a host reads before it subscribes:
+        # remote wake and *normally connectable*, which is what a keyboard claims
+        return b"\x11\x01\x00\x03"
+    if "Report Map" in label:
+        return bytes(bt.HID_KEYBOARD_REPORT_MAP)
     if "Lock State" in label:
         return b"\x00" if device.profile != "hardened" else b"\x01"
     if "Calibration" in label:
@@ -483,7 +534,8 @@ def D(address: str, name: str = "", company: str = "", model: str = "", *,
       device: str = "unknown", kind: str = "le", profile: str = "hardened",
       class_of_device: int = 0, appearance: int = 0, rssi: int = -60, interval_ms: float = 500.0,
       channel: int = 37, connectable: bool = True, bondable: bool = True,
-      address_type: int = 0, rotate: bool = False, firmware: str = "1.0.0",
+      address_type: int = 0, rotate: bool = False, irk: bytes = b"",
+      bond_peer: str = "", bond_address: str = "", firmware: str = "1.0.0",
       services: Sequence[int] = (), company_id: int = 0xFFFF, manufacturer_data: bytes = b"",
       tracker: str = "", beacon: str = "", beacon_args: Sequence[Any] = (),
       scan_name: bool = False, gatt: Sequence[str] = (), sdp: Sequence[int] = (),
@@ -494,6 +546,7 @@ def D(address: str, name: str = "", company: str = "", model: str = "", *,
                      class_of_device=class_of_device, appearance=appearance, rssi=rssi,
                      interval_ms=interval_ms, channel=channel, connectable=connectable,
                      bondable=bondable, address_type=address_type, rotate=rotate,
+                     irk=bytes(irk), bond_peer=bond_peer, bond_address=bond_address,
                      firmware=firmware, services=tuple(services), company_id=company_id,
                      manufacturer_data=manufacturer_data, tracker=tracker, beacon=beacon,
                      beacon_args=tuple(beacon_args), scan_name=scan_name, gatt=tuple(gatt),
@@ -519,18 +572,41 @@ def D(address: str, name: str = "", company: str = "", model: str = "", *,
 #: soundbar, a stack from before the advisories, an old handset with its object store
 #: open, and a patched fleet that refuses everything, so every audit has both an answer
 #: and a refusal to report.
+#: The identity resolving keys a resolver can try.  A rotating address is only private
+#: if nobody holds the key, and the keys in this list are the ones that stop being secret:
+#: the vendor documentation's example key, the two a stack ships as a default, the one a
+#: firmware dump published.  A device whose addresses resolve with one of them is a device
+#: whose "anonymised" addresses are a fixed identifier — which is the finding, and the
+#: reason the resolution below is verified with the real AES derivation instead of being
+#: taken on the strength of a port number.
+IRK_DICTIONARY: List[Dict[str, Any]] = [
+    {"label": "vendor example key (documentation)", "irk": bytes(range(16))},
+    {"label": "stack default key 1", "irk": bytes([0x11] * 16)},
+    {"label": "stack default key 2", "irk": b"\x00" * 15 + b"\x01"},
+    {"label": "firmware dump (2023 disclosure)", "irk": bytes.fromhex("deadbeefdeadbeefdeadbeefdeadbeef")},
+    {"label": "airtag-adjacent test key", "irk": bytes.fromhex("0123456789abcdeffedcba9876543210")},
+]
+
+
+def irk_for(index: int) -> bytes:
+    """The dictionary key a device rotates with (there are more devices than keys)."""
+    return bytes(IRK_DICTIONARY[index % len(IRK_DICTIONARY)]["irk"])
+
+
 DEVICE_TABLE: List[BleDevice] = [
     # -- the things people leave behind ------------------------------------- #
     D("5c:8d:2f:11:00:01", "", "Apple", "AirTag", device="item tracker", profile="hardened",
-      address_type=1, rotate=True, interval_ms=2000.0, rssi=-78, company_id=0x004C,
+      address_type=1, rotate=True, irk=irk_for(0), interval_ms=2000.0, rssi=-78,
+      company_id=0x004C,
       manufacturer_data=b"\x12\x19\x00", tracker="apple",
       notes="a Find My tag: the payload is encrypted, the manufacturer is not"),
     D("c9:41:77:22:00:02", "", "Tile", "Mate", device="item tracker", profile="hardened",
-      address_type=1, rotate=True, interval_ms=1000.0, rssi=-81, company_id=0x2C7C,
+      address_type=1, rotate=True, irk=irk_for(1), interval_ms=1000.0, rssi=-81,
+      company_id=0x2C7C,
       manufacturer_data=b"\x01\x02", tracker="tile"),
     D("e0:22:aa:33:00:03", "", "Samsung", "SmartTag2", device="item tracker",
-      profile="hardened", address_type=1, rotate=True, interval_ms=1500.0, rssi=-84,
-      company_id=0x0075, manufacturer_data=b"\x02\x00\x01", tracker="samsung"),
+      profile="hardened", address_type=1, rotate=True, irk=irk_for(2), interval_ms=1500.0,
+      rssi=-84, company_id=0x0075, manufacturer_data=b"\x02\x00\x01", tracker="samsung"),
     D("a4:11:22:33:44:55", "Pixel Buds A", "Google", "GPX-100", device="earbuds",
       kind="dual", profile="open_gatt", company_id=0x00E0, interval_ms=400.0, rssi=-70,
       services=(0x180A, 0x180F), gatt=("device_info", "battery"),
@@ -555,8 +631,8 @@ DEVICE_TABLE: List[BleDevice] = [
       manufacturer_data=b"\x0a\x0b", company_id=0x0059,
       notes="a visitor badge: a public address that follows the same person every day"),
     D("b2:44:55:66:77:88", "AirQ-2", "Qingping", "AQ-200", device="air quality monitor",
-      profile="hardened", address_type=1, rotate=True, interval_ms=1100.0, rssi=-76,
-      services=(0x181A,), gatt=("device_info",), company_id=0x02E5,
+      profile="hardened", address_type=1, rotate=True, irk=irk_for(3), interval_ms=1100.0,
+      rssi=-76, services=(0x181A,), gatt=("device_info",), company_id=0x02E5,
       notes="a sensor that rotates its address the way the specification recommends"),
     # -- wearables, and the medical peripherals ----------------------------- #
     D("d4:11:22:33:44:55", "HRM-Dual", "Garmin", "HRM-200", device="heart-rate strap",
@@ -674,7 +750,11 @@ DEVICE_TABLE: List[BleDevice] = [
       sdp=(0x1105, 0x1112), channels=(6,), rssi=-59, at_name="Samsung S24"),
     D("00:1a:7d:11:22:06", "DESKTOP-7F2A", "Dell", "OptiPlex", device="desktop pc",
       kind="dual", profile="hid_trusting", class_of_device=0x100104,
-      sdp=(0x1101, 0x1112), channels=(1, 2), rssi=-61, at_name="Dell OptiPlex"),
+      services=(0x1812,), gatt=("hid",), sdp=(0x1101, 0x1112), channels=(1, 2),
+      rssi=-61, at_name="Dell OptiPlex",
+      bond_peer="WF-KEYBOARD", bond_address="5c:11:22:33:44:aa",
+      notes="a keyboard paired with it once over Just Works, and it has taken input "
+            "reports from that keyboard ever since"),
     D("00:1a:7d:11:22:07", "PLC-HMI-2", "Siemens", "KTP700", device="hmi panel", kind="dual",
       profile="fragile_stack", class_of_device=0x080204, sdp=(0x111F, 0x1101),
       channels=(1,), rssi=-69, at_name="Siemens KTP700"),
@@ -684,6 +764,27 @@ DEVICE_TABLE: List[BleDevice] = [
     D("00:1a:7d:11:22:09", "UPS-Monitor", "APC", "SMX-750", device="ups", kind="dual",
       profile="hardened", class_of_device=0x100200, sdp=(0x1101,), channels=(4,),
       rssi=-72, at_name="APC SMX-750"),
+    # -- the HID hosts: the machines a keyboard can be injected into --------- #
+    D("3c:11:22:33:00:01", "Laptop-Reception", "Lenovo", "T14", device="laptop", kind="dual",
+      profile="hid_trusting", class_of_device=0x10010C, services=(0x1812,), gatt=("hid",),
+      interval_ms=900.0, rssi=-67, company_id=0x0059,
+      bond_peer="WF-KEYBOARD", bond_address="5c:11:22:33:44:aa",
+      notes="paired a Just Works keyboard once and takes input reports from it ever "
+            "after: the host half of the HID injection"),
+    D("3c:11:22:33:00:02", "Tablet-FrontDesk", "Samsung", "Tab-A9", device="tablet",
+      kind="dual", profile="hid_trusting", class_of_device=0x10011C, services=(0x1812,),
+      gatt=("hid",), bond_peer="WF-KEYBOARD", bond_address="5c:11:22:33:44:aa",
+      interval_ms=1000.0, rssi=-71, company_id=0x0075),
+    D("3c:11:22:33:00:03", "TV-MeetingRoom", "LG", "UR78", device="smart tv", kind="dual",
+      profile="hid_bonded", class_of_device=0x200428, services=(0x1812,), gatt=("hid",),
+      interval_ms=1200.0, rssi=-69, company_id=0x0206,
+      bond_peer="WF-KEYBOARD", bond_address="5c:11:22:33:44:aa",
+      notes="takes HID input only over a bonded link: a keyboard it does not know is "
+            "ignored, which is what the negative result looks like"),
+    D("3c:11:22:33:00:04", "Phone-Desk-04", "Google", "Pixel 8", device="mobile phone",
+      kind="dual", profile="hid_bonded", class_of_device=0x10020C, services=(0x1812,),
+      gatt=("hid",), bond_peer="WF-KEYBOARD", bond_address="5c:11:22:33:44:aa",
+      interval_ms=800.0, rssi=-64, company_id=0x00E0),
 ]
 
 
@@ -702,6 +803,26 @@ def build_ble(seed: int = 7, limit: int = 0) -> List[BleDevice]:
         device.rssi = int(max(-95, min(-35, entry.rssi + rng.randint(-3, 3))))
         devices.append(device)
     return devices[:limit] if limit else devices
+
+
+def resolve_address(address: str, keys: Sequence[Mapping[str, Any]] = ()
+                    ) -> List[Dict[str, Any]]:
+    """Which of ``keys`` resolves ``address``: ``[{label, irk}, ...]``, normally empty.
+
+    A resolvable private address is only private while the identity key stays private,
+    and this is where that stops being true: the addresses a scan collected are tested
+    against the dictionary of keys that leak — a vendor's documentation example, a
+    stack's shipped default, a firmware dump — and a match is proved with the AES
+    derivation rather than inferred from a manufacturer id.  Two devices whose addresses
+    resolve to the same key are the same device, however often it changed its address.
+    """
+    candidates = list(keys) or IRK_DICTIONARY
+    out: List[Dict[str, Any]] = []
+    for entry in candidates:
+        irk = bytes(entry.get("irk") or b"")
+        if irk and bt.resolves_irk(irk, address):
+            out.append({"label": str(entry.get("label", "")), "irk": irk.hex()})
+    return out
 
 
 def ble_catalog() -> List[Dict[str, Any]]:
@@ -743,11 +864,30 @@ class BleLink:
         self.answers = 0
         self.att_answers = 0
         self.att_refusals = 0
+        #: HID-over-GATT: the keystrokes a host received, decoded by the toolkit's own
+        #: report decoder, and the reports it refused because the link was not bonded
+        self.hid_reports: List[bytes] = []
+        self.hid_refused = 0
+        self.writes = 0                      # attribute writes the peer accepted
+        self.pairing_refused = 0             # pairing attempts this profile turned down
         self.transcript: List[Dict[str, Any]] = []
 
     @property
     def profile(self) -> str:
         return self.device.profile
+
+    @property
+    def hid_text(self) -> str:
+        """What the host has typed so far, as the host would have typed it."""
+        return bt.hid_decode_stream(self.hid_reports)["text"]
+
+    @property
+    def hid_keys(self) -> List[str]:
+        """The keys in the order they arrived (a chord counts as one report)."""
+        out: List[str] = []
+        for report in self.hid_reports:
+            out.extend(bt.hid_decode_report(report)["keys"])
+        return out
 
     def dies(self, reason: str = "") -> None:
         """The stack stops answering: what a fragile profile does to a malformed PDU."""
@@ -838,7 +978,11 @@ class VirtualBle:
             return bool(flags.get("obex")) and any(uuid in (0x1105, 0x1106)
                                                    for uuid in device.sdp)
         if role == "hid":
-            return bool(flags.get("hid")) and device.device in HID_HOSTS
+            # a HID *host* is a machine that takes input, and what makes it one is that
+            # it serves the HID service over GATT (or has the profile that says so)
+            return (bool(flags.get("hid")) and device.device in HID_HOSTS
+                    and (bool(device.gatt) or device.kind != "le")) or (
+                        bool(flags.get("hid")) and device.device in HID_HOSTS)
         if role == "fragile":
             return bool(flags.get("fragile"))
         if role == "tracker":
@@ -892,8 +1036,19 @@ class VirtualBle:
                 continue                                  # classic devices do not advertise
             address = device.address
             if device.rotate:
-                address = bt.resolvable_private_address(
-                    hashlib.sha256(device.address.encode()).digest()[:4], seed=self.scans)
+                # a rotating device presents a resolvable private address built from its
+                # own identity key with the specification's AES derivation, so a run that
+                # holds the key can follow the device and a run that does not cannot
+                if device.irk:
+                    # the random part is random: a counter would give every rotating
+                    # device on the floor the same prand, which is not what a real one
+                    # looks like on air and would make a report about it nonsense
+                    prand = int(hashlib.sha256(
+                        f"{device.address}:{self.scans}".encode()).hexdigest()[:6], 16)
+                    address = bt.rpa_from_irk(device.irk, prand)
+                else:                                     # a device with no key on file
+                    address = bt.resolvable_private_address(
+                        hashlib.sha256(device.address.encode()).digest()[:4], seed=self.scans)
                 device.address_type = 1
             reports.append(device.report(address=address))
             if device.scan_name:
@@ -929,6 +1084,13 @@ class VirtualBle:
             device = self.pick("l2cap")
             if device is None:
                 return None
+        if device is not None:
+            # one device has one connection: asking for a link to a device that already
+            # has one returns that link rather than a second, which is what keeps an
+            # attack's handle and the controller's handle on the same object
+            for candidate in self.links.values():
+                if candidate.alive and candidate.device is device:
+                    return candidate
         if handle in self.links:
             existing = self.links[handle]
             if existing.alive and (device is None or existing.device is device):
@@ -964,6 +1126,46 @@ class VirtualBle:
         link.transcript.append({"event": "disconnect", "reason": reason})
 
     # -- ATT: the attribute table ------------------------------------------- #
+    def _hid_input(self, device: BleDevice, body: bytes,
+                   link: Optional[BleLink] = None) -> Optional[Dict[str, Any]]:
+        """A HID input report arrived: decode it, or refuse it the way a host would.
+
+        A host that takes HID reports from an unauthenticated link is the whole reason
+        the HID wave exists, and a host that insists on a bond is the negative control —
+        so the profile decides, and the decision is visible in the link's counters.  The
+        decode is :func:`wifipilot.bt.hid_decode_report`, the same decoder the offline
+        analysis uses, so the simulation and the capture analysis cannot disagree.
+        """
+        if not body:
+            return None
+        handle = int.from_bytes(body[1:3], "little")
+        if handle not in self.hid_handles(device):
+            if link is not None:
+                link.hid_refused += 1
+                link.transcript.append({"event": "hid", "handle": handle,
+                                        "refused": "not a HID report handle"})
+            return None
+        report = body[3:]
+        bond_required = bool(device.flags.get("hid_bond_required"))
+        if bond_required and link is not None and not (link.bonded and link.encrypted):
+            link.hid_refused += 1
+            link.transcript.append({"event": "hid", "handle": handle, "refused":
+                                    "input reports accepted only over a bonded link"})
+            return None
+        if link is not None:
+            link.hid_reports.append(bytes(report))
+            decoded = bt.hid_decode_report(report)
+            link.transcript.append({"event": "hid", "handle": handle,
+                                    "keys": decoded["keys"], "modifiers":
+                                        decoded["modifiers"], "typed": decoded["text"]})
+            return decoded
+        return None
+
+    def hid_handles(self, device: BleDevice) -> List[int]:
+        """The handles a host's HID report characteristics are served on."""
+        return [row["handle"] for row in device.gatt_rows()
+                if row.get("uuid") in (0x2A4D, 0x2A22, 0x2A32)]
+
     def att_request(self, device: BleDevice, body: bytes, link: Optional[BleLink] = None) -> bytes:
         """Answer an ATT PDU out of the device's table, or refuse it honestly."""
         if not body:
@@ -1035,9 +1237,22 @@ class VirtualBle:
                 if link is not None:
                     link.att_refusals += 1
             else:
+                # the write lands: a value that is acknowledged and then forgotten is a
+                # value no read-back can confirm, and the read-back *is* the proof
+                device.written[handle] = bytes(body[3:])
+                device.attributes_written = int(getattr(device, "attributes_written", 0)) + 1
+                if link is not None:
+                    link.writes = int(getattr(link, "writes", 0)) + 1
+                    link.transcript.append({"event": "write", "handle": handle,
+                                            "value": bytes(body[3:]).hex()[:32]})
                 answer = bytes([0x13]) if opcode == 0x12 else b""
         elif opcode in (0x1B, 0x1D):                              # Notification / Indication
+            # a HID peripheral sends keystrokes as notifications: there is nothing to
+            # answer, which is why a host that is *not* a HID host ignores them — and
+            # why the interesting behaviour is on this side of the wire
             answer = b""
+            if flags.get("hid"):
+                self._hid_input(device, body, link)
         else:
             answer = _att_error(opcode, 0, 0x06)                  # request not supported
         if link is not None:
@@ -1060,44 +1275,99 @@ class VirtualBle:
             return b""
         flags = device.flags
         command = body[0]
-        if command in (0x01, 0x02):                               # Pairing Request
-            if not flags.get("pairing"):
-                if link is not None:
-                    link.transcript.append({"smp": "pairing refused",
-                                            "reason": "no pairing"})
-                return bytes([0x05, 0x05])                        # Pairing Failed: not supported
-            auth = 0x01 if flags.get("bonding") else 0x00
-            if flags.get("mitm"):
-                auth |= 0x04
-            if flags.get("secure_connections"):
-                auth |= 0x08
-            answer = bytes([0x03, _io_capability(flags.get("io", "")), 0x00, auth,
-                            int(flags.get("key_size", 16)), 0x0F, 0x0F])
+
+        def failed(reason: int, note: str = "") -> bytes:
+            """A Pairing Failed, recorded on the link: a refusal is evidence too."""
             if link is not None:
-                link.transcript.append({"smp": "pairing response",
-                                        "auth": f"0x{auth:02x}",
-                                        "secure_connections": bool(flags.get("secure_connections")),
-                                        "key_size": int(flags.get("key_size", 16))})
-            return answer
-        if command == 0x0B:                                       # Pairing Public Key
-            return bytes([0x0C]) + body[1:65].ljust(64, b"\x00")
-        if command == 0x04:                                       # Pairing Confirm
-            return bytes([0x05]) + body[1:17].ljust(16, b"\x00")
-        if command in (0x0D, 0x0E, 0x0F, 0x10, 0x08, 0x09, 0x0A, 0x03, 0x05):
-            # the key-distribution and response PDUs: the peer answers the next step, and
-            # a device that requires Secure Connections refuses a legacy exchange here
-            if flags.get("secure_connections") and not flags.get("just_works"):
-                if link is not None:
-                    link.transcript.append({"smp": "legacy exchange refused"})
-                return bytes([0x05, 0x03])                        # Pairing Failed: auth
+                link.pairing_refused += 1
+                link.transcript.append({"event": "smp", "refused": note or
+                                        bt.SMP_FAILURE_REASONS.get(reason, "failed"),
+                                        "reason": f"0x{reason:02x}"})
+            return bytes([0x05, reason])
+
+        def complete(note: str = "") -> None:
+            """The bond is established: the link is now what the pairing negotiated."""
             if link is not None:
                 link.paired = True
-                link.authenticated = bool(flags.get("mitm")) or bool(flags.get("secure_connections"))
+                link.bonded = bool(flags.get("bonding"))
                 link.key_size = int(flags.get("key_size", 16))
+                link.authenticated = bool(flags.get("mitm"))
+                link.encrypted = True
+                link.transcript.append({"event": "smp", "bonded": link.bonded,
+                                        "encrypted": True, "key_size": link.key_size,
+                                        "note": note})
+
+        if command == 0x01:                                       # Pairing Request (LE)
+            if not flags.get("pairing"):
+                return failed(0x05, "pairing not supported")
+            # what the *initiator* asked for is what decides: a device that requires
+            # protection and is offered Just Works answers with a Pairing Failed, and one
+            # that does not require it negotiates down to whatever the stranger wants —
+            # which is the difference a downgrade probe measures
+            offered = body[3] if len(body) > 3 else 0x00
+            offered_key = body[4] if len(body) > 4 else 16
+            # Bonding is the initiator's choice — declining it means the keys are not
+            # stored, not that the connection is less protected — so what a profile
+            # *requires* is MITM protection and Secure Connections, and those are what a
+            # downgrade probe is turned down for.
+            required = 0
+            if flags.get("mitm"):
+                required |= 0x04
+            if flags.get("secure_connections"):
+                required |= 0x08
+            missing = required & ~offered
+            if missing:
+                return failed(0x03, f"initiator offered 0x{offered:02x}, "
+                                    f"0x{missing:02x} required")
+            auth = required | (0x01 if (offered & 0x01 and flags.get("bonding")) else 0x00)
+            key_size = int(flags.get("key_size", 16))
+            if not flags.get("verify_bond_peer"):                 # a device that does not
+                key_size = min(key_size, max(7, int(offered_key)))  # check takes the smaller
+            if link is not None:
+                link.transcript.append({"event": "smp", "response": f"0x{auth:02x}",
+                                        "secure_connections": bool(flags.get(
+                                            "secure_connections")),
+                                        "key_size": key_size})
+            # 0x02 is the Pairing *Response*: the answer to a request, not a confirm
+            return bytes([0x02, _io_capability(flags.get("io", "")), 0x00, auth,
+                          key_size, 0x0F, 0x0F])
+        if command in (0x02, 0x0B):                               # Response / Security Request
+            # a security request is the peripheral asking the host to start pairing, so
+            # the host answers with its own request — and an attacker holding the link
+            # has to satisfy *that*, which is the whole point of the probe above
+            auth = (0x04 if flags.get("mitm") else 0x00) | (0x08 if flags.get(
+                "secure_connections") else 0x00) | (0x01 if flags.get("bonding") else 0x00)
+            return bytes([0x01, _io_capability(flags.get("io", "")), 0x00, auth,
+                          int(flags.get("key_size", 16)), 0x0F, 0x0F])
+        if command == 0x03:                                       # Pairing Confirm
+            if flags.get("secure_connections"):
+                # LE Secure Connections does not use the confirm/random exchange: a device
+                # that requires it says so instead of completing a legacy pairing
+                return failed(0x03, "legacy exchange refused (Secure Connections only)")
+            return bytes([0x04]) + bytes((0x40 + index) & 0xFF for index in range(16))
+        if command == 0x04:                                       # Pairing Random
+            if link is not None:
+                link.encrypted = True
+                link.key_size = int(flags.get("key_size", 16))
+                link.transcript.append({"event": "smp", "legacy": True,
+                                        "key_size": link.key_size})
+            return bytes([0x06]) + bytes(16)                      # Encryption Information
+        if command == 0x0C:                                       # Pairing Public Key (SC)
+            if not flags.get("secure_connections"):
+                return failed(0x07, "public key exchange on a legacy-only stack")
+            return bytes([0x0D]) + bytes(range(16))                # Pairing DHKey Check
+        if command in (0x05, 0x07, 0x08, 0x09, 0x0A):             # key distribution
+            complete("key distribution")
             return b""
-        if command == 0x0C:
+        if command == 0x06:                                       # Encryption Information
+            if link is not None:
+                link.key_size = 16 if flags.get("secure_connections") else int(
+                    flags.get("key_size", 16))
+                link.encrypted = True
             return b""
-        return bytes([0x05, 0x07]) if command else b""
+        if command == 0x0E:                                       # Keypress Notification
+            return b""
+        return failed(0x07, f"command 0x{command:02x} is not supported")
 
     # -- L2CAP signalling --------------------------------------------------- #
     def signalling(self, device: BleDevice, body: bytes,
@@ -1382,6 +1652,11 @@ class VirtualController:
         self.rng = random.Random(seed or 7)
         self.pending: List[bytes] = []
         self.commands: List[Dict[str, Any]] = []
+        #: the identities a host came to, and the ones that checked: what a reconnect
+        #: hijack reports, from the controller rather than from the attack's opinion
+        self.reconnected: List[Dict[str, Any]] = []
+        self.reconnect_refused: List[Dict[str, Any]] = []
+        self.random_address = ""
         self.advertising = False
         self.scanning = False
         self.advertising_data = b""
@@ -1468,9 +1743,58 @@ class VirtualController:
             self.address = bt.mac_text(parameters[0:6])
         self._queue(self._complete(opcode))
 
+    def _cmd_le_set_random_address(self, opcode: int, parameters: bytes) -> None:
+        """The address the controller advertises under: what an impersonation sets."""
+        self.random_address = bt.mac_text(parameters[0:6]) if len(parameters) >= 6 else ""
+        self._queue(self._complete(opcode))
+
     def _cmd_le_set_advertising_enable(self, opcode: int, parameters: bytes) -> None:
         self.advertising = bool(parameters and parameters[0] & 0x01)
         self._queue(self._complete(opcode))
+        if self.advertising:
+            self._answer_bonded_hosts()
+
+    def _answer_bonded_hosts(self) -> None:
+        """Who comes to us when we advertise as somebody they already trust?
+
+        A host that bonded a keyboard remembers the *name and address* it paired with,
+        and a surprising number of them use those two things — not the link key — to
+        decide whether to reconnect.  Advertising under that identity is therefore the
+        whole attack: the host does the connecting, and the link it opens is the one the
+        keystrokes go down.  A profile that verifies the peer (`verify_bond_peer`) needs
+        the key and does not connect, which is the negative control.
+        """
+        if not self.advertising_data:
+            return
+        try:
+            name = bt.payload_name(bt.parse_ad(self.advertising_data))
+        except Exception:                                        # pragma: no cover
+            name = ""
+        address = self.random_address
+        for device in self.ble.devices:
+            if not device.bond_peer:
+                continue
+            if name != device.bond_peer:
+                continue
+            if address and device.bond_address and address != device.bond_address:
+                continue
+            if device.flags.get("verify_bond_peer"):
+                self.reconnect_refused.append({"host": device.address,
+                                               "name": name,
+                                               "why": "the host verified the link key"})
+                self.ble.transcript.append({"event": "reconnect refused",
+                                            "address": device.address, "peer": name})
+                continue
+            link = self.ble.open_link(device, handle=0x0040)
+            if link is None:
+                continue
+            link.bonded = True                       # the host believes this is its keyboard
+            self.link = link
+            self.reconnected.append({"host": device.address, "name": name,
+                                     "profile": device.profile})
+            self.ble.transcript.append({"event": "reconnected", "address": device.address,
+                                        "peer": name, "profile": device.profile})
+            self._queue(self._le_connection_complete(link))
 
     def _cmd_le_set_scan_parameters(self, opcode: int, parameters: bytes) -> None:
         self._queue(self._complete(opcode))
@@ -1524,7 +1848,10 @@ class VirtualController:
         return link.device if link is not None else None
 
     def _cmd_le_create_connection(self, opcode: int, parameters: bytes) -> None:
-        address = bt.mac_text(parameters[7:13]) if len(parameters) >= 13 else ""
+        # the parameters are scan interval/window (4), filter policy and peer address
+        # type (2), then the *peer address*: an off-by-one here silently connects to a
+        # different device than the one the attack named, so the offset is spelled out
+        address = bt.mac_text(parameters[6:12]) if len(parameters) >= 12 else ""
         device = self.ble.by_address(address) or self.ble.pick("le")
         link = self.ble.open_link(device, handle=0x0040)
         if link is not None:
@@ -1636,7 +1963,16 @@ class VirtualController:
             return
         size = int.from_bytes(data[0:2], "little")
         cid = int.from_bytes(data[2:4], "little")
-        payload = data[4:4 + size] if size else data[4:]
+        if size != len(data) - 4:
+            # an L2CAP frame's length field counts its own body, so a payload that does
+            # not add up is not an L2CAP frame at all: it is a *link-layer* control PDU,
+            # which a controller sends as bare ACL data.  Without this branch the only
+            # reachable LL PDUs are ones shorter than an L2CAP header, and the attacks
+            # that talk to the link layer — SweynTooth's malformed PDUs, the connection
+            # parameter hijack — could not reach it at all.
+            self._queue(self._ll_control(link, data))
+            return
+        payload = data[4:4 + size]
         if cid in (0x0001, 0x0005):                    # signalling (BR/EDR and LE)
             answer = self.ble.signalling(device, payload, link)
         elif cid == 0x0004:                            # ATT
@@ -1679,6 +2015,18 @@ class VirtualController:
         if fragile and opcode in (0x14, 0xFE):
             link.dies(f"malformed LL control PDU 0x{opcode:02x}")
             return b""
+        if opcode == 0x00:                                  # LL_CONNECTION_UPDATE_IND
+            if device.flags.get("ll_params_checked"):
+                # a stack that checks what it is asked for refuses an update that would
+                # starve the link: LL_REJECT_EXT_IND (0x11) carries the rejected opcode
+                # and the error, and "invalid LL parameters" is the error a controller
+                # uses when the interval it was offered is one it will not run at
+                return bt.acl_packet(link.handle, bytes([0x11, 0x00, 0x1E]))
+            # the peer applies the new parameters and says so with its own
+            # LL_CONNECTION_UPDATE_IND carrying what it moved to, which is what a
+            # controller does when it accepts an update from the other end
+            return bt.acl_packet(link.handle, bytes([0x00])
+                                 + bytes(data[1:12]).ljust(11, b"\x00"))
         if opcode == 0x12:                                  # LL_PING_REQ
             return bt.acl_packet(link.handle, bytes([0x13]))     # LL_PING_RSP
         if opcode == 0x13:                                  # an unsolicited PING_RSP
@@ -1693,8 +2041,11 @@ class VirtualController:
                 return b""
             return bt.acl_packet(link.handle, bytes([0x09])
                                  + device.features(min(page, 2))[:8])
-        if opcode in (0x0A, 0x0B):                          # version exchange
-            return bt.acl_packet(link.handle, bytes([0x0C, 0x09, 0x00, 0x00, 0x05]))
+        if opcode == 0x0C:                                  # LL_VERSION_IND
+            # both ends send their own version: the answer is not a response pair but
+            # this side's own LL_VERSION_IND, VersNr then company then subversion
+            return bt.acl_packet(link.handle,
+                                 bytes([0x0C, 0x09, 0x00, 0x00, 0x05, 0x00]))
         if fragile:
             link.dies(f"unhandled LL control PDU 0x{opcode:02x}")
             return b""
@@ -1847,6 +2198,9 @@ ATTACK_ROLES: Dict[str, str] = {
     "bt_blueborne": "fragile", "bt_bias": "bredr", "bt_knob": "bredr",
     "bt_bluebugging": "at", "bt_blesa": "gatt", "bt_sweyntooth": "fragile",
     "bt_bluesnarf": "obex", "bt_bluesmack": "l2cap", "bt_hid_injection": "hid",
+    "ble_hid": "hid", "ble_hid_audit": "hid", "ble_hid_boot": "hid",
+    "ble_hid_reconnect": "hid", "ble_smp_downgrade": "smp", "ble_gatt_hijack": "gatt",
+    "ble_irk_resolve": "le", "ble_conn_param_hijack": "le",
 }
 
 #: the device classes that *are* a HID host: keystroke injection ends on a machine that

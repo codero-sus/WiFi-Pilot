@@ -695,7 +695,7 @@ def suggested_attacks(device: Union[str, DeviceType]) -> List[str]:
     The roadmap above is written for the ideal toolbox; this is the intersection with
     what is registered, which is what the UI, the planner and the reports may show.
     Resolution is done once and cached: 65 device types is not worth re-scanning the
-    534-name registry per request.
+    542-name registry per request.
 
     >>> from wifipilot.itdev import suggested_attacks
     >>> names = suggested_attacks("ip_camera")
