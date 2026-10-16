@@ -1047,7 +1047,7 @@ def catalogue(category: str = "", noise: str = "", offline_only: bool = False,
 
     >>> import wifipilot as wp
     >>> len(wp.catalogue())
-    617
+    692
     >>> [entry["name"] for entry in wp.catalogue(offline_only=True)][:3]
     ['loot_audit', 'eapol_audit', 'wep_audit']
     >>> names = [entry["name"] for entry in wp.catalogue(domain="it")]
@@ -1086,7 +1086,7 @@ def editions() -> List[Dict[str, object]]:
 
     >>> import wifipilot as wp
     >>> [(row["id"], row["attacks"]) for row in wp.editions()]
-    [('wifi', 213), ('bluetooth', 118), ('it', 286), ('all', 617)]
+    [('wifi', 288), ('bluetooth', 118), ('it', 286), ('all', 692)]
     """
     from .itdev import edition_catalog
 

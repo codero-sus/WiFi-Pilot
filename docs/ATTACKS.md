@@ -1,6 +1,6 @@
 # Attacks
 
-wifipilot ships **617 attacks** across three editions (213 WiFi, 68 Bluetooth, 286 IT
+wifipilot ships **692 attacks** across three editions (288 WiFi, 118 Bluetooth, 286 IT
 services and devices): every technique a WiFi assessment genuinely needs, and
 nothing that exists only to lengthen the list — the offline half of the catalogue was
 built the same way the headers of a report are, by asking what a *capture* can still be
@@ -1239,7 +1239,7 @@ $ wifipilot attacks --json          # the same data for a script
 
 ```python
 from wifipilot.attacks import attack_catalog, validate, OFFLINE_ATTACKS
-catalogue = attack_catalog()        # 617 dicts: name, label, tool, requires, category,
+catalogue = attack_catalog()        # 692 dicts: name, label, tool, requires, category,
                                     # noise, impact, detection, offline, default_enabled
 assert validate() == []             # every attack described, no orphan metadata
 ```
@@ -1351,11 +1351,11 @@ frame, and `dhcp_lease_audit` is what proves afterwards that it was there.
 
 ## 11. The complete catalogue
 
-**617 attacks**, of which **121** transmit nothing at all — no radio, no monitor interface, no frame.  The table is generated from the registry (`python3 tools/gen_attack_docs.py`), so it cannot drift from the code: `wifipilot attacks` prints the same list, `--json` returns it, and the web UI, the planner and the report are all built from it.
+**692 attacks**, of which **121** transmit nothing at all — no radio, no monitor interface, no frame.  The table is generated from the registry (`python3 tools/gen_attack_docs.py`), so it cannot drift from the code: `wifipilot attacks` prints the same list, `--json` returns it, and the web UI, the planner and the report are all built from it.
 
-They are split into three editions — **Bluetooth 118**, **IT devices 286**, **WiFi 213** — and **65 device types** carry the attacks that apply to them. The **edition** column below is that split: `wifipilot --edition it` (or the web UI's first control) plans only those attacks, and `wifipilot attacks --domain it` prints them.
+They are split into three editions — **Bluetooth 118**, **IT devices 286**, **WiFi 288** — and **65 device types** carry the attacks that apply to them. The **edition** column below is that split: `wifipilot --edition it` (or the web UI's first control) plans only those attacks, and `wifipilot attacks --domain it` prints them.
 
-How to read the columns: **edition** is which toolbox the attack belongs to, **noise** is what a defender sees (extreme 17, loud 63, moderate 129, quiet 270, silent 138), **impact** is what the *network* loses when the attack works (degraded 105, info 318, loot 168, none 9, outage 17), and **detection** is the artefact left behind — the thing to look for in a capture when asking whether this was run against you.
+How to read the columns: **edition** is which toolbox the attack belongs to, **noise** is what a defender sees (extreme 17, loud 68, moderate 166, quiet 303, silent 138), **impact** is what the *network* loses when the attack works (degraded 152, info 323, loot 191, none 9, outage 17), and **detection** is the artefact left behind — the thing to look for in a capture when asking whether this was run against you.
 
 ### Offline analysis (no radio at all) — 121
 
@@ -1517,7 +1517,7 @@ How to read the columns: **edition** is which toolbox the attack belongs to, **n
 | `rtsp_camera_audit` | RTSP camera audit (streams and authentication) | WiFi | green | green | wifipilot netstack.py (RTSP OPTIONS/DESCRIBE) | OPTIONS and DESCRIBE requests from an unexpected client: the camera's log shows an anonymous session |
 | `pjl_printer_audit` | PJL printer audit (identity and filesystem) | WiFi | green | green | wifipilot netstack.py (PJL over port 9100) | PJL commands on port 9100 from a host that is not a print server: the printer's job log shows a command job |
 
-### Capture requests (frames on air) — 7
+### Capture requests (frames on air) — 11
 
 | attack | answers | edition | noise | impact | tool | defender sees |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1528,6 +1528,10 @@ How to read the columns: **edition** is which toolbox the attack belongs to, **n
 | `hcxdump_capture` <br>_injects_ | hcxdumptool capture (client-less PMKID pipeline) | WiFi | cyan | bold green | hcxdumptool + hcxpcapngtool | an active hcxdumptool session: association attempts and deauths under its own policy |
 | `injection_test` <br>_injects_ | Injection test (aireplay-ng --test) | WiFi | green | dim | aireplay-ng --test | aireplay-ng's own test frames: a handful of probe requests, then it stops |
 | `pcap_replay` <br>_injects_ | Capture replay (frames back on the air) | WiFi | yellow | yellow | wifipilot rawtx.py (replay of a stored capture) | frames replayed from a capture file at their recorded timing |
+| `session_cookie_replay` <br>_injects_ | Session-cookie replay (take the session out of the capture) | WiFi | cyan | bold green | wifipilot netproto.py (credential patterns) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `session_deauth_race` <br>_injects_ | Disconnect race (deauth then reassociation in the client's name) | WiFi | cyan | bold green | wifipilot rawtx.py + synthesised reconnection | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `session_roam_capture` <br>_injects_ | Roam following (capture the keys a fast transition moves) | WiFi | cyan | bold green | wifipilot rawtx.py (reassociation) + airodump-ng | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `enterprise_anonymous_identity` <br>_injects_ | Anonymous outer-identity harvest (usernames in the clear) | WiFi | green | green | wifipilot synth.py (EAP-Response/Identity) + sniff.py | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
 
 ### WPS — 5
 
@@ -1550,7 +1554,7 @@ How to read the columns: **edition** is which toolbox the attack belongs to, **n
 | `wep_fragment` <br>_injects_ | WEP fragmentation | WiFi | cyan | bold green | aireplay-ng -5 (fragmentation) | fragmented injected frames |
 | `wep_hirte` <br>_injects_ | WEP Hirte (client fragmentation) | WiFi | cyan | bold green | aireplay-ng -7 (client-oriented fragmentation) | client-driven fragmentation; a station must be active |
 
-### Enterprise (802.1X) — 8
+### Enterprise (802.1X) — 17
 
 | attack | answers | edition | noise | impact | tool | defender sees |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1562,8 +1566,17 @@ How to read the columns: **edition** is which toolbox the attack belongs to, **n
 | `eap_tls_version` <br>_injects_ | EAP-TLS version and cipher audit | WiFi | dim | green | wifipilot (TLS record parser) | nothing on air; reads the TLS version out of a captured EAP-TLS handshake |
 | `radius_secret_test` <br>_injects_ | RADIUS shared-secret test | WiFi | green | green | wifipilot netproto (own RADIUS client) | one Access-Request per candidate secret; a real RADIUS server logs the failures |
 | `rogue_radius` <br>_injects_ | Rogue RADIUS (credential check) | WiFi | cyan | bold green | eaphammer / hostapd-mana / hostapd-wpe | a rogue RADIUS/eaphammer AP; clients that trust any certificate will offer credentials |
+| `enterprise_rogue_radius` <br>_injects_ | Rogue authenticator (802.1X served from our radio) | WiFi | cyan | bold green | wifipilot netproto.py (RADIUS) + a RADIUS identity of our own | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `enterprise_peap_relay` <br>_injects_ | PEAP relay (the attacker carries the exchange to the real RADIUS) | WiFi | cyan | bold green | wifipilot netproto.py (RADIUS builder and parser) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `enterprise_certificate_swap` <br>_injects_ | EAP-TLS certificate swap (right name, wrong issuer) | WiFi | cyan | bold green | wifipilot synth.py (certificate builder) + EAP-TLS frames | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `enterprise_eap_md5` <br>_injects_ | EAP-MD5 harvest (challenge/response for the dictionary) | WiFi | cyan | bold green | wifipilot synth.py (EAP frames) + a wordlist | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `enterprise_gtc_prompt` <br>_injects_ | EAP-GTC prompt (the password, typed into our tunnel) | WiFi | cyan | bold green | wifipilot synth.py (EAP frames) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `enterprise_ttls_pap` <br>_injects_ | EAP-TTLS/PAP harvest (cleartext inner credential) | WiFi | cyan | bold green | wifipilot synth.py (TTLS/PAP exchange) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `enterprise_mschapv2_relay` <br>_injects_ | MSCHAPv2 relay (challenge/response captured from both ends) | WiFi | cyan | bold green | wifipilot netproto.py (MSCHAPv2) + EAP frames | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `enterprise_downgrade` <br>_injects_ | EAP method downgrade (PEAP to a crackable inner method) | WiFi | cyan | bold green | wifipilot synth.py (EAP request frames) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `enterprise_supplicant_clone` <br>_injects_ | Supplicant impersonation (harvested identity, our radio) | WiFi | cyan | bold green | wifipilot synth.py (EAP-Response/Identity) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
 
-### Rogue infrastructure and lures — 97
+### Rogue infrastructure and lures — 159
 
 | attack | answers | edition | noise | impact | tool | defender sees |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1642,6 +1655,68 @@ How to read the columns: **edition** is which toolbox the attack belongs to, **n
 | `ble_bond_overwrite` <br>_injects_ | BLE bond overwrite (install our key during key distribution) | Bluetooth | cyan | bold green | wifipilot bt.py (SMP encryption information) + blesim.py | A key distribution without a completed pairing: the device's security manager log carries an Encryption Information command it never asked for. |
 | `ble_confirm_replay` <br>_injects_ | BLE pairing confirm replay (the same value, twice) | Bluetooth | green | bold green | wifipilot bt.py (SMP confirm/random) + blesim.py | Two identical confirm values in one session: the device's security manager log carries the pair, and a real exchange never produces them. |
 | `ble_public_key_audit` <br>_injects_ | BLE public key audit (send a known debug key to a Secure Connections pair) | Bluetooth | cyan | bold green | wifipilot bt.py (SMP public key) + blesim.py | A public key from a device that then fails to complete: the device's log carries the exchange, and a valid pairing never follows it. |
+| `twin_address_clone` <br>_injects_ | Twin on the target's own BSSID (address cloning) | WiFi | cyan | yellow | wifipilot synth.py (beacon builder) + airodump-ng | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `twin_element_clone` <br>_injects_ | Twin that clones the whole element set (fingerprint collision) | WiFi | cyan | yellow | wifipilot synth.py (element library) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `twin_rsn_strip` <br>_injects_ | Twin without RSN (secured network cloned open) | WiFi | cyan | yellow | wifipilot synth.py (beacon builder) + airodump-ng | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `twin_tkip_downgrade` <br>_injects_ | Twin with TKIP (CCMP downgraded, Michael countermeasure) | WiFi | cyan | yellow | wifipilot synth.py (RSN builder) + airodump-ng | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `twin_pmf_strip` <br>_injects_ | Twin with PMF stripped (802.11w downgrade) | WiFi | cyan | yellow | wifipilot synth.py (RSN builder) + airodump-ng | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `twin_wpa3_transition` <br>_injects_ | Twin in WPA3 transition mode (WPA2 handshake harvest) | WiFi | cyan | yellow | wifipilot synth.py (transition-mode RSN) + airodump-ng | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `twin_owe_transition` <br>_injects_ | Twin against OWE (open clone of an unauthenticated-encryption network) | WiFi | cyan | yellow | wifipilot synth.py (OWE RSN) + airodump-ng | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `twin_hidden_name` <br>_injects_ | Twin that serves a hidden SSID by its real name | WiFi | cyan | yellow | wifipilot synth.py (probe + beacon builders) + airodump-ng | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `twin_enterprise_clone` <br>_injects_ | Twin of an 802.1X network (rogue authenticator, same realm) | WiFi | cyan | yellow | wifipilot synth.py + a RADIUS identity of our own | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `twin_mobility_domain` <br>_injects_ | Twin inside the target's 802.11r mobility domain (fast-roam lure) | WiFi | cyan | yellow | wifipilot synth.py (Mobility Domain element) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `twin_bss_load` <br>_injects_ | Twin with a forged BSS Load element (steering by admission control) | WiFi | cyan | yellow | wifipilot synth.py (BSS Load + WMM elements) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `twin_country_mismatch` <br>_injects_ | Twin with the target's country element on a channel it may not use | WiFi | cyan | yellow | wifipilot synth.py (Country element) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `twin_probe_shadow` <br>_injects_ | Probe-response shadow twin (no beacons to see in a scan) | WiFi | green | yellow | wifipilot synth.py (probe response builder) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `twin_signal_boost` <br>_injects_ | Twin with a signal advantage (steering by RSSI) | WiFi | cyan | yellow | wifipilot synth.py + a transmitter near the client | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `twin_ssid_suffix` <br>_injects_ | Twin with a look-alike SSID (trailing space and homoglyph) | WiFi | cyan | yellow | wifipilot synth.py (beacon builder) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `twin_multi_name` <br>_injects_ | Multi-name twin (KARMA-style answers, one beacon list) | WiFi | yellow | yellow | wifipilot synth.py + airodump-ng (probe feed) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `twin_wmm_acm` <br>_injects_ | Twin with forged WMM admission control (bandwidth steering) | WiFi | cyan | yellow | wifipilot synth.py (WMM parameter element) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `twin_neighbour_lure` <br>_injects_ | Twin named in a forged 802.11k neighbour report | WiFi | cyan | yellow | wifipilot synth.py (Neighbor Report element) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `twin_quiet_element` <br>_injects_ | Twin with a forged Quiet element (silence on the channel) | WiFi | cyan | yellow | wifipilot synth.py (Quiet element) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `client_assoc_forgery` <br>_injects_ | Client impersonation: association as an existing station | WiFi | green | yellow | wifipilot rawtx.py (authentication + association) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `client_table_flood` <br>_injects_ | Client-table flood with the network's own station addresses | WiFi | yellow | yellow | wifipilot rawtx.py | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `client_sleep_spoof` <br>_injects_ | Power-save spoof (null data in a client's name buffers its traffic) | WiFi | green | yellow | wifipilot rawtx.py (QoS null data) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `client_ps_poll_theft` <br>_injects_ | PS-Poll frame theft (collect a client's buffered traffic) | WiFi | green | yellow | wifipilot rawtx.py (PS-Poll) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `client_tdls_teardown` <br>_injects_ | TDLS teardown between two other stations | WiFi | green | yellow | wifipilot rawtx.py (TDLS action) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `client_sa_query_bypass` <br>_injects_ | SA Query hold (PMF teardown raced by a non-answer) | WiFi | green | yellow | wifipilot rawtx.py (SA Query) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `client_roam_hijack` <br>_injects_ | Roam hijack (forged 802.11r reassociation in a client's name) | WiFi | green | yellow | wifipilot rawtx.py (reassociation request) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `client_eapol_logoff` <br>_injects_ | EAPOL-Logoff in a client's name (session drop with one frame) | WiFi | green | yellow | wifipilot synth.py (EAPOL-Logoff) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `client_fourway_race` <br>_injects_ | 4-way handshake replay (KRACK key reinstallation) | WiFi | green | yellow | wifipilot synth.py (EAPOL builders) + hashcat 22000 for the MIC | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `client_amsdu_inject` <br>_injects_ | A-MSDU injection into a client's connection (FragAttacks) | WiFi | green | yellow | wifipilot synth.py (QoS data with A-MSDU present) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `client_blockack_hijack` <br>_injects_ | Block Ack hijack (forged ADDBA moves a client's window) | WiFi | green | yellow | wifipilot rawtx.py (block-ack action frames) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `client_rate_downgrade` <br>_injects_ | Client rate downgrade (forged 802.11n/ac capability in a client's name) | WiFi | green | yellow | wifipilot rawtx.py (association with reduced capability) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `steer_btm_request` <br>_injects_ | BSS Transition Management request (802.11v steering) | WiFi | green | yellow | wifipilot rawtx.py (BTM request) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `steer_btm_disassoc` <br>_injects_ | BTM request with disassociation imminent (forced handover) | WiFi | cyan | yellow | wifipilot rawtx.py (BTM request, imminent) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `steer_beacon_request` <br>_injects_ | Radio-measurement beacon request (clients survey for us) | WiFi | green | green | wifipilot rawtx.py (RM beacon request) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `steer_channel_load` <br>_injects_ | Radio-measurement channel load (client radio denied service) | WiFi | yellow | yellow | wifipilot rawtx.py (radio-measurement request) + a spoofed AP address | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `steer_spectrum_switch` <br>_injects_ | Channel-switch action frame (spectrum management steering) | WiFi | green | yellow | wifipilot rawtx.py (spectrum management action) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `steer_fils_discovery` <br>_injects_ | FILS discovery frame (pre-association steering) | WiFi | green | green | wifipilot synth.py (FILS discovery) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `steer_wnm_sleep` <br>_injects_ | WNM sleep-mode request (client told to stop listening) | WiFi | green | yellow | wifipilot rawtx.py (WNM action) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `steer_twt_setup` <br>_injects_ | TWT setup abuse (forged target wake time agreement) | WiFi | green | yellow | wifipilot rawtx.py (TWT action) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `steer_power_constraint` <br>_injects_ | Power-constraint steering (clients transmit further from their AP) | WiFi | green | yellow | wifipilot synth.py (Power Constraint element) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `steer_ssid_list` <br>_injects_ | SSID List element (probe behaviour changed by a beacon) | WiFi | green | green | wifipilot synth.py (SSID List element) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `steer_tpc_request` <br>_injects_ | TPC request (transmit-power reporting, location inference) | WiFi | green | green | wifipilot rawtx.py (spectrum management action) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `steer_probe_answer` <br>_injects_ | Probe-response steering (answer first, decide later) | WiFi | cyan | yellow | wifipilot synth.py (probe response) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `session_gateway_impersonation` <br>_injects_ | Gateway impersonation (ARP answers for the router's address) | WiFi | cyan | yellow | wifipilot rawtx.py (ARP reply) + netproto.py (builder) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `session_dns_spoof` <br>_injects_ | DNS answer spoofing through the bridge | WiFi | cyan | yellow | wifipilot netproto.py (DNS builder) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `session_tcp_reset` <br>_injects_ | TCP reset injection (connection teardown through the bridge) | WiFi | cyan | yellow | wifipilot netproto.py (TCP builder) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `session_seq_injection` <br>_injects_ | TCP sequence injection (data into somebody else's stream) | WiFi | cyan | yellow | wifipilot netproto.py (TCP builder) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `session_gtk_rekey` <br>_injects_ | Group-key rekey forgery (GTK handshake from the AP's address) | WiFi | cyan | yellow | wifipilot synth.py (EAPOL builders) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `session_msg1_flood` <br>_injects_ | Message-1 flood (supplicant state machine exhaustion) | WiFi | yellow | yellow | wifipilot synth.py (EAPOL builders) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `session_data_replay` <br>_injects_ | Data-frame replay (replay protection measured from the air) | WiFi | cyan | yellow | wifipilot rawtx.py (data rebuild) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `session_arp_flood` <br>_injects_ | Gratuitous ARP in a client's name (cache poisoning) | WiFi | yellow | yellow | wifipilot rawtx.py (ARP builders) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `portal_clone` <br>_injects_ | Captive-portal clone (the page the network would have served) | WiFi | green | bold green | wifipilot synth.py + netproto.py (HTTP builder) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `portal_wildcard_dns` <br>_injects_ | Wildcard DNS portal (every name resolves to the sign-in page) | WiFi | green | bold green | wifipilot netproto.py (DNS builder) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `portal_wispr_redirect` <br>_injects_ | WISPr redirection (the standard carries the client to our page) | WiFi | green | bold green | wifipilot netproto.py (HTTP builder) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `portal_anqp_spoof` <br>_injects_ | Hotspot 2.0 ANQP spoofing (the venue answers for itself) | WiFi | green | bold green | wifipilot synth.py (ANQP/HS2.0 elements) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `portal_certificate_phish` <br>_injects_ | Portal certificate phishing (self-signed, correct name, wrong issuer) | WiFi | green | bold green | wifipilot synth.py (certificate builder) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `portal_hsts_downgrade` <br>_injects_ | Portal HTTPS downgrade (HSTS-stripped redirect) | WiFi | green | bold green | wifipilot netproto.py (HTTP builder) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `portal_basic_auth` <br>_injects_ | Portal Basic-auth prompt (browser asks, we collect) | WiFi | green | bold green | wifipilot netproto.py (HTTP builder) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `portal_cookie_clone` <br>_injects_ | Portal session-cookie clone (the page loads as the user) | WiFi | green | bold green | wifipilot netproto.py (credential patterns) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `portal_oauth_phish` <br>_injects_ | Portal SSO phishing (the button the user trusts) | WiFi | green | bold green | wifipilot synth.py + netproto.py | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `portal_credential_reuse` <br>_injects_ | Portal credential reuse (harvested credentials against the real gate) | WiFi | green | bold green | wifipilot netproto.py (credential patterns) | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
+| `portal_javascript_inject` <br>_injects_ | Portal JavaScript injection (every keystroke logged in the page) | WiFi | green | bold green | wifipilot synth.py + netproto.py | a second BSSID or a frame from an address that does not own it, which is what a monitor of the channel correlates |
 | `forged_dhcp_release` <br>_injects_ | Forged DHCP RELEASE / DECLINE | WiFi | cyan | yellow | wifipilot netproto.py (RELEASE and DECLINE) | RELEASE and DECLINE messages for addresses whose owner did not send them: a DHCP server log shows a client losing a lease it was using |
 | `dhcp_nak_injection` <br>_injects_ | Forged DHCP NAK injection | WiFi | cyan | yellow | wifipilot netproto.py (NAK with options) | NAK messages from a source that is not the server: a snooping switch drops them when it is configured |
 | `dhcp_option_injection` <br>_injects_ | Rogue DHCP option injection (route, DNS, WPAD) | WiFi | cyan | yellow | wifipilot netproto.py (options 3, 6, 121, 249, 252) | a second DHCP server answering with its own router and resolver options: two OFFERs for one DISCOVER |
@@ -2033,7 +2108,7 @@ Every attack is stamped with an **edition** (which toolbox it belongs to) and wi
 | **Router / residential gateway** (`router`) | IT devices | Network infrastructure | `53, 80, 443, 1900, 5353, 7547, 8080` | mdns, ssdp, upnp, http, tr069, dns | 40 — `it_http_discover`, `it_http_banner`, `it_http_version`, `it_http_default_creds`, `it_http_auth_bypass`, +35 more |
 | **Firewall / UTM appliance** (`firewall`) | IT devices | Network infrastructure | `443, 4443, 500, 4500, 8443` | tls, http, ssh | 9 — `it_http_discover`, `it_http_banner`, `it_http_version`, `it_http_default_creds`, `it_http_auth_bypass`, +4 more |
 | **Managed switch** (`switch`) | IT devices | Network infrastructure | `22, 23, 80, 161, 443` | snmp, telnet, ssh, lldp, http | 38 — `it_http_discover`, `it_http_banner`, `it_http_version`, `it_http_default_creds`, `it_http_auth_bypass`, +33 more |
-| **Access point** (`access_point`) | WiFi | Network infrastructure | `22, 80, 443, 161, 8080` | http, ssh, snmp, mdns | 14 — `it_http_discover`, `it_http_banner`, `it_http_version`, `it_http_default_creds`, `it_http_auth_bypass`, +9 more |
+| **Access point** (`access_point`) | WiFi | Network infrastructure | `22, 80, 443, 161, 8080` | http, ssh, snmp, mdns | 89 — `twin_address_clone`, `twin_element_clone`, `twin_rsn_strip`, `twin_tkip_downgrade`, `twin_pmf_strip`, +84 more |
 | **Modem / ONT** (`modem_ont`) | IT devices | Network infrastructure | `80, 443, 7547` | tr069, http, dns | 6 — `it_cwmp_discover`, `it_cwmp_config_dump`, `it_cwmp_unauth_write`, `it_cwmp_version`, `it_cwmp_version_audit`, +1 more |
 | **IP camera** (`ip_camera`) | IT devices | IoT and embedded | `80, 443, 554, 8000, 8080, 8554` | rtsp, onvif, http, mdns | 25 — `it_http_discover`, `it_http_banner`, `it_http_version`, `it_http_default_creds`, `it_http_auth_bypass`, +20 more |
 | **NVR / DVR** (`nvr_dvr`) | IT devices | IoT and embedded | `80, 443, 554, 8000, 8080, 34567` | rtsp, onvif, http | 25 — `it_http_discover`, `it_http_banner`, `it_http_version`, `it_http_default_creds`, `it_http_auth_bypass`, +20 more |
@@ -2100,5 +2175,5 @@ $ wifipilot attacks --domain it          # print the IT edition
 $ wifipilot --edition bluetooth attack    # plan BLE/classic only
 ```
 
-<!-- 617 attacks -->
+<!-- 692 attacks -->
 <!-- catalogue:end -->

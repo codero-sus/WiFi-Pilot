@@ -4,6 +4,51 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## 692 attacks — the hijacker wave: 75 more ways to be the network
+
+* **75 further attacks, 692 in total (Wi-Fi 288).** `attacks/hijack75.py` is the Wi-Fi half
+  of the impersonation work, in six families that share one base class each:
+
+  * **`twin_*` (19) — be the access point.** Every attack builds its twin from the target's
+    own beacon and then changes exactly one axis: the address, one information element, the
+    RSN's PMF bits, TKIP instead of CCMP, WPA3 in transition mode, OWE, the hidden name, the
+    enterprise settings, the mobility domain, the BSS load, the country element, the probe
+    responses, the signal level (the twin's capture carries an RSSI and the attack is graded
+    on what the reader finds there), the SSID suffix, the second name, WMM admission control,
+    the neighbour report and the quiet element.  Each one reports the axis it matched and the
+    axis it did not, decoded from two beacons in a capture.
+  * **`client_*` (12) — be the client.** Association forgery, the association-table flood
+    (which is the memory exhaustion a WPA3 AP suffers from a hundred forged associations,
+    while the wired side is left alone), sleep-mode spoofing, PS-Poll theft, TDLS teardown,
+    SA Query bypass, the roaming hijack, EAPOL-Logoff, the four-way-handshake race (msg 3
+    replayed under the same counter), the A-MSDU injection and the Block Ack hijack of
+    FragAttacks, and the rate-set downgrade.
+  * **`steer_*` (12) — make the client move.** BSS transition management requests (with and
+    without a disassociation Imminent bit), radio-measurement beacon requests, channel-load
+    steering, spectrum management, FILS discovery, WNM sleep, TWT setup, power constraint,
+    the SSID-list offset, TPC requests and the probe answer.
+  * **`session_*` (11) — be the wire.** Gateway impersonation by ARP, DNS spoofing, TCP
+    resets, sequence injection, cookie replay, GTK rekey, the EAPOL-Key message-one flood,
+    the deauthentication race, the roam capture, data replay and the ARP flood — all built
+    on the module's own IP/TCP/ARP writers and graded on what the readers decode.
+  * **`portal_*` (11) — be the login.** The captive portal clone (plus the wildcard DNS that
+    makes every client find it), the WISPr redirect, ANQP spoofing, the certificate phish,
+    the HSTS downgrade, basic auth, cookie cloning, the OAuth phish, credential reuse and
+    JavaScript injection.
+  * **`enterprise_*` (10) — be the RADIUS.** The rogue authenticator, the PEAP relay that
+    keeps the tunnel intact and reads the MSCHAPv2 exchange inside it, the certificate swap,
+    EAP-MD5, the GTC prompt, TTLS/PAP, the MSCHAPv2 relay, anonymous-identity harvesting,
+    the EAP downgrade and the supplicant clone (with a self-signed certificate and a real
+    EAPOL-Request/Identity).
+
+* **The wave exercised the readers.** Building these attacks meant writing the capture
+  readers that grade them — ARP replies, IP/TCP segments with their flags, DNS answers, MAC
+  and cleartext text, action frames by category, EAPOL-Key frames with their replay counter
+  and install bit, beacons with their element lists, and the radiotap signal level of every
+  frame — and then proving in `tests/test_hijack_wave.py` that each one decodes what the
+  builders wrote, in both directions: a clone that matches every axis reports that it
+  matches, and the one that changes a single axis reports *that* axis.
+
 ## 617 attacks — the impersonation waves: 75 more ways to be somebody else
 
 * **75 further attacks, 617 in total (Bluetooth 118).** Two waves, both about *being
