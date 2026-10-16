@@ -98,7 +98,7 @@ the effective engagement settings.
 | **scope** | paste BSSIDs to restrict the campaign |
 | **simulation** | switches between live and simulated radio (rebuilds the engine) |
 | **I have written authorisation** | required for any live attack; without it the API returns 403 |
-| **Attack toggles** | the engine's catalog (in `/api/state`) lists all 617 attacks with their label, tool, description, **category, noise, impact and a "what a defender sees" line**, whether they need injection, whether their tools are installed and whether they are enabled in the current config. The disruptive ones (`wps_pin`, `pmkid_flood`, `handshake_broadcast`, `evil_twin`, `karma`, `eapol_logoff`, the ten floods, the WEP enablers, the lures) start unticked, and the ten offline analyses plus the read-only decoders (`ie_audit`, `pnl_harvest`, `pmf_audit`, `saewolf`) are marked as transmitting nothing — tick those freely. The chips are **grouped by category** with an enabled counter per group (`0/10`), the offline ones are suffixed `· offline`, and hovering a chip shows `category · noise · impact` plus the blue-team sentence for that attack, so enabling one is a decision rather than a guess |
+| **Attack toggles** | the engine's catalog (in `/api/state`) lists all 692 attacks with their label, tool, description, **category, noise, impact and a "what a defender sees" line**, whether they need injection, whether their tools are installed and whether they are enabled in the current config. The disruptive ones (`wps_pin`, `pmkid_flood`, `handshake_broadcast`, `evil_twin`, `karma`, `eapol_logoff`, the ten floods, the WEP enablers, the lures) start unticked, and the ten offline analyses plus the read-only decoders (`ie_audit`, `pnl_harvest`, `pmf_audit`, `saewolf`) are marked as transmitting nothing — tick those freely. The chips are **grouped by category** with an enabled counter per group (`0/10`), the offline ones are suffixed `· offline`, and hovering a chip shows `category · noise · impact` plus the blue-team sentence for that attack, so enabling one is a decision rather than a guess |
 
 ## REST API
 
@@ -124,7 +124,7 @@ GET  /api/sim
 ```
 
 The three editions and the device shelf are endpoints too: `/api/editions` returns the
-counts (`wifi 213 / bluetooth 118 / it 286`, `total 617`), `/api/catalog` takes the same
+counts (`wifi 288 / bluetooth 118 / it 286`, `total 692`), `/api/catalog` takes the same
 filters the library does (`?domain=it`, `?device=ip_camera`, `?q=rtsp`, `?category=dos`,
 `?offline=1`), `/api/devices` answers the shelf (`?edition=it`, `?group=iot`, `?q=camera`,
 `?port=9100`) with every device's label, ports, protocols and the names of the attacks that
