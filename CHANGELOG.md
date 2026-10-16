@@ -4,6 +4,85 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## 848 attacks — the peripheral wave: the devices a room already trusts
+
+* **25 further Bluetooth attacks, 848 in total (Bluetooth 143).** The imitation wave was
+  about being believed; this one is about what a believed device can *do*.  Every attack
+  copies a device that exists on the simulated floor and then performs the device's own
+  job, so the finding is never "the advertisement looked right" but a write that was read
+  back, a notification a host recorded, a profile that opened, or a payload a scanner
+  decoded:
+
+  * **The peripherals (25).** A mouse that clicks on every desk bonded to the keyboard it
+    copied, and a combo receiver that sends volume, mute and next-track instead of letters
+    (`ble_mouse_mimic`, `ble_combo_dongle_mimic`); the door lock that takes the unlock
+    command and the mesh lock that accepts a new admin key (`ble_lock_mimic`,
+    `ble_lock_mesh_mimic`); the building — a bulb, a mesh lamp invited into its own
+    network, a smart plug switching a washer on, a charger starting a session, a doorbell
+    ringing, an IR hub firing a NEC frame, a UWB anchor rewriting the range
+    (`ble_bulb_mimic`, `ble_mesh_lamp_mimic`, `ble_plug_mimic`, `ble_charger_mimic`,
+    `ble_doorbell_mimic`, `ble_ir_hub_mimic`, `ble_uwb_anchor_mimic`); the clinical set —
+    a fitness band, a thermometer, a blood-pressure cuff, an ECG patch, a chest strap and
+    a patient monitor, five of them forged *readings* rather than commands
+    (`ble_band_mimic`, `ble_thermostat_mimic`, `ble_pressure_mimic`, `ble_ecg_mimic`,
+    `ble_hr_mimic`, `ble_patient_monitor_mimic`); the meter, the printer, the tracker, the
+    vending telemetry, the scale and the air-quality monitor, which report from a read-back
+    because they have nothing to write (`ble_glucose_mimic`, `ble_label_printer_mimic`,
+    `ble_vehicle_tracker_mimic`, `ble_vending_mimic`, `ble_scale_mimic`,
+    `ble_air_quality_mimic`); a soundbar that takes the AVDTP and AVRCP link the room's
+    phone should have opened (`ble_soundbar_mimic`); and a beacon whose UUID, major and
+    minor are cloned onto the air (`ble_ibeacon_mimic`).
+
+* **The simulator now records what a *host* received, not just what a client sent.**
+  A notification is not a request, so nothing can "succeed" on the wire: the only evidence
+  is the receiving side's record.  `BleLink.notifications` is that record — handle, value,
+  whether it was an indication — and it is what the six push-style attacks report against.
+
+* **Two names were renamed rather than reused.** `ble_printer_mimic` and
+  `ble_beacon_mimic` are the first imitation wave's attacks and still are; the peripheral
+  wave ships as `ble_label_printer_mimic` and `ble_ibeacon_mimic`.  Reusing the strings
+  would have overwritten two registry entries while every count still added up, which is
+  exactly the failure mode `register_batch` cannot see.
+
+* **A gated attribute is still an enumerable one.** A Read Request for an attribute that
+  needs authentication is answered with *Insufficient Authentication*; the same attribute
+  comes back from a Read By Type, and the wave's read path falls back to it.  The report
+  keeps the two apart, because "the device refused me" and "nothing came back" are
+  different findings.
+
+## 823 attacks — the LAN half, second pass: the file and mail protocols, and the edge
+
+* **61 further attacks, 823 in total (IT 417).** The IT wave grew past the routing and
+  control protocols into everything a managed network runs, and then out to the malformed
+  packets at the end of the protocol range:
+
+  * **The second half of the wave (30).** FTP, SMTP, IMAP, rsync, VNC, RDP, DICOM,
+    Elasticsearch, Jenkins and kubelet joins the relay family (ten relays whose claim is
+    still that the client's bytes were the device's own); the same ten protocols get a
+    mimic, and the mail and medical ones get a hijack — an anonymous FTP write, an open
+    relay mailing in the CEO's name, a mailbox folder deleted in someone else's name, a
+    study filed on the archive.  DNS, SSH, RDP and CoAP get a look-alike, the directory and
+    the cache get a theft, and Elastic, kubelet, mDNS and SSDP get a forgery.
+  * **The edge of the wave (31): `it_fuzz_*` and `it_survey_*`.**  Eight fuzzers send
+    *legal packets at illegal sizes* — a DNS name of seven 68-byte labels, an SMB2
+    negotiate offering 32 dialects that do not exist, an LDAP filter a kilobyte deep, a
+    Modbus function code that is not a function, 300 SNMP varbinds in one get, a SIP
+    request-URI four hundred characters long — and grade what the service does next.
+    Eight surveys ask one question and read the whole inventory back: mDNS service types,
+    the UPnP description URL, TR-069 firmware and connection status, the RTSP codec list,
+    OPC-UA endpoints, memcached's stats, the MySQL greeting's version and salt, and the
+    spooler's own identity.
+
+* **Two new families, and the metadata to go with them.** `fuzz` is `dos · moderate ·
+  degraded` and `survey` is `discovery · quiet · degraded`; the two families bring the IT
+  edition its first denial-of-service and first discovery attacks, so the wave is no
+  longer all rogue, capture and exploit.  Every family carries its own one-sentence
+  defender note, filled in with the protocol and the port the attack runs on.
+
+* **`it_relay_imap` is honest about a segment with no IMAP server.** Where the simulated
+  network runs no responder, the relay hands back the login it carried and says so, rather
+  than reporting a byte-for-byte match against bytes that never arrived.
+
 ## 762 attacks — the IT hijacker wave: seventy devices that answer as something else
 
 * **70 further attacks, 762 in total (IT 356).** `attacks/ithijack.py` is the LAN half of the

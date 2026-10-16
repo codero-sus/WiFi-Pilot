@@ -1058,6 +1058,9 @@ class BleLink:
         self.hid_reports: List[bytes] = []
         self.hid_refused = 0
         self.writes = 0                      # attribute writes the peer accepted
+        #: what this host received from a peripheral: a notification is not a request, so
+        #: the record of what arrived is the only evidence a clone can leave behind
+        self.notifications: List[Dict[str, Any]] = []
         self.pairing_refused = 0             # pairing attempts this profile turned down
         self.transcript: List[Dict[str, Any]] = []
 
@@ -1461,6 +1464,15 @@ class VirtualBle:
             answer = b""
             if flags.get("hid"):
                 self._hid_input(device, body, link)
+            if link is not None:
+                # the peer speaks and the client listens: a notification is not a request,
+                # so recording what the host received is the only evidence that exists
+                handle = int.from_bytes(body[1:3], "little")
+                value = bytes(body[3:])
+                link.notifications.append({"handle": handle, "value": value.hex()[:64],
+                                           "text": value.decode("latin-1", "replace"),
+                                           "indication": opcode == 0x1D,
+                                           "device": device.address})
         else:
             answer = _att_error(opcode, 0, 0x06)                  # request not supported
         if link is not None:
@@ -2739,6 +2751,32 @@ def reset_ble(seed: int = 7) -> VirtualBle:
 #: question the attack is about — an AT channel for BlueBugging, an object store for
 #: BlueSnarfing, a fragile stack for BlueBorne — instead of the first address it sees.
 ATTACK_ROLES: Dict[str, str] = {
+    # the peripheral wave: the role each attack aims at in demo mode
+    "ble_mouse_mimic": "hid",
+    "ble_combo_dongle_mimic": "hid",
+    "ble_lock_mimic": "gatt",
+    "ble_lock_mesh_mimic": "gatt",
+    "ble_bulb_mimic": "gatt",
+    "ble_mesh_lamp_mimic": "gatt",
+    "ble_plug_mimic": "gatt",
+    "ble_band_mimic": "bonded",
+    "ble_thermostat_mimic": "gatt",
+    "ble_scale_mimic": "gatt",
+    "ble_glucose_mimic": "gatt",
+    "ble_pressure_mimic": "gatt",
+    "ble_ecg_mimic": "gatt",
+    "ble_hr_mimic": "gatt",
+    "ble_air_quality_mimic": "gatt",
+    "ble_charger_mimic": "gatt",
+    "ble_label_printer_mimic": "gatt",
+    "ble_ir_hub_mimic": "gatt",
+    "ble_uwb_anchor_mimic": "gatt",
+    "ble_patient_monitor_mimic": "gatt",
+    "ble_vehicle_tracker_mimic": "gatt",
+    "ble_vending_mimic": "gatt",
+    "ble_doorbell_mimic": "gatt",
+    "ble_ibeacon_mimic": "beacon",
+    "ble_soundbar_mimic": "audio",
     "bt_le_scan": "le", "bt_hci_inquiry": "bredr", "bt_device_census": "le",
     "bt_sdp_browse": "sdp", "bt_rfcomm_scan": "rfcomm", "bt_gatt_enumeration": "gatt",
     "bt_adv_name_flood": "le", "bt_adv_dos": "le", "bt_beacon_clone": "beacon",

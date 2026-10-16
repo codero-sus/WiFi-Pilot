@@ -255,6 +255,7 @@ DEFAULT_ORDER = [
 # adding forty attacks does not mean editing forty places.
 from . import blehid as _batch_blehid                        # noqa: E402
 from . import blemimic as _batch_blemimic                      # noqa: E402
+from . import blewave as _batch_blewave                        # noqa: E402
 from . import blehijack2 as _batch_blehijack2
 from . import hijack75 as _batch_hijack75
 from . import ithijack as _batch_ithijack                  # noqa: E402
@@ -267,8 +268,8 @@ from . import offline3 as _batch_offline3                      # noqa: E402
 from . import offline4 as _batch_offline4                      # noqa: E402
 
 BATCH_MODULES = (_batch_offline3, _batch_offline4, _batch_btattacks,
-                 _batch_blehid, _batch_blemimic, _batch_blehijack2, _batch_hijack75,
-                 _batch_ithijack, _batch_netdos,
+                 _batch_blehid, _batch_blemimic, _batch_blewave, _batch_blehijack2,
+                 _batch_hijack75, _batch_ithijack, _batch_netdos,
                  _batch_btred, _batch_famous, _batch_itsvc)
 
 
