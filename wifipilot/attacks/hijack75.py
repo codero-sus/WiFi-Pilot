@@ -398,7 +398,7 @@ def _client_ip(station: str) -> str:
 def _arp_bytes(sender_mac: str, sender_ip: str, target_mac: str, target_ip: str,
                op: int = 2) -> bytes:
     """An ARP payload: the reply and the gratuitous announcement differ by one field."""
-    return (struct.pack(">HHBBH", 1, ETHERTYPE_ARP, 6, 4, op)
+    return (struct.pack(">HHBBH", 1, ETHERTYPE_IP, 6, 4, op)
             + bytes(int(part, 16) for part in sender_mac.split(":"))
             + np.ipv4_bytes(sender_ip)
             + bytes(int(part, 16) for part in target_mac.split(":"))

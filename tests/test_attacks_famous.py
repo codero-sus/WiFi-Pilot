@@ -112,7 +112,7 @@ def test_the_famous_wave_is_registered():
     # cross-cutting version/cleartext audits every service now carries + the 8 of the
     # BLE wave (HID injection, the downgrades around it, and identity) + the 25 of the
     # imitation wave (keyboards, speakers, tags, locks: devices faked convincingly)
-    assert len(DEFAULT_ORDER) == 692
+    assert len(DEFAULT_ORDER) == 762
 
 
 def test_registry_and_documentation_agree():

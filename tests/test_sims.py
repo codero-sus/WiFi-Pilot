@@ -1,6 +1,6 @@
 """The two simulated environments: the Bluetooth floor and the IT segment.
 
-Demo mode is the fastest way to exercise 692 attacks, and the only way to exercise the
+Demo mode is the fastest way to exercise 762 attacks, and the only way to exercise the
 Bluetooth and IT ones without a lab — so the simulations are load-bearing, not decoration.
 This file checks that they are internally consistent, that they answer with bytes the
 toolkit's *own* parsers read (a simulation whose answers the toolkit cannot parse would be

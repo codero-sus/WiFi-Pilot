@@ -17,9 +17,9 @@ from wifipilot.attacks import attack_catalog
 from wifipilot.itdev import DEVICE_TYPES, device_type, edition_catalog
 from wifipilot.models import ATTACK_NAMES
 
-#: the shape of the registry this wave ships: 256 radio attacks + 286 service/device ones
-#: (+ the Bluetooth waves: wifipilot 3.0 = 692 attacks across wifi, bluetooth and it)
-WIFI, BLUETOOTH, IT = 288, 118, 286
+#: the shape of the registry this wave ships: 288 radio attacks + 356 service/device ones
+#: (+ the Bluetooth waves: wifipilot 3.0 = 762 attacks across wifi, bluetooth and it)
+WIFI, BLUETOOTH, IT = 288, 118, 356
 TOTAL = WIFI + BLUETOOTH + IT
 
 
