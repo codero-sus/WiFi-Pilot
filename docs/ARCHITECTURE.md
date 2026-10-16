@@ -143,7 +143,7 @@ what a demo run meets is a device that answers.
 environments contain, including the per-device catalogue, so a demo run can be inspected
 rather than taken on faith.
 
-The 692 attacks are grouped into modules by *what they need*, which is also how the
+The 762 attacks are grouped into modules by *what they need*, which is also how the
 tests and the docs are organised:
 
 | module | attacks | radio |
@@ -161,6 +161,7 @@ tests and the docs are organised:
 | `attacks/blehid.py` | 8 BLE attacks — the wave around HID: `ble_hid` (advertise the keyboard, enumerate the report characteristic, type the payload as boot reports), `ble_hid_audit`, `ble_hid_boot`, `ble_hid_reconnect` (impersonate the bonded keyboard), `ble_smp_downgrade`, `ble_gatt_hijack`, `ble_irk_resolve` and `ble_conn_param_hijack` | an HCI adapter; the demo floor answers with real protocol bytes |
 | `attacks/btred.py` | 9 named Bluetooth attacks: BlueBorne's malformed L2CAP/SDP probes, BIAS impersonation, the KNOB key-entropy measurement, BlueBugging over RFCOMM, BLESA pre-authentication ATT work, the SweynTooth link-layer battery, BlueSnarfing's OBEX file pull, BlueSmack's oversized echo and HID keystroke injection | an HCI adapter (the RFCOMM/OBEX pair also needs the serial profile reachable) |
 | `attacks/famous.py` | 3 famous Wi-Fi attacks: `krack_replay` (message 3 replayed from a captured handshake), `fragattacks_inject` (plaintext A-MSDU and fragment-cache shapes) and `airgeddon_portal` (the evil-twin captive-portal pipeline, through airgeddon when it is installed) | transmit (a monitor interface that can inject) |
+| `attacks/ithijack.py` | 70 IT hijackers: six families that answer *as* something else (`it_mimic_*` 14, `it_impersonate_*` 12, `it_hijack_*` 12, `it_poison_*` 12, `it_relay_*` 10, `it_steal_*` 10) over a shared base that asks the simulated service, writes our look-alike frames to a capture and decodes both halves back | IP, not radio — the AP is only the bridge |
 | `attacks/itsvc.py` | 286 IT-device attacks: one table row per `<protocol> × <technique>` (`it_<protocol>_discover`, `_version_audit`, `_default_creds`, `_cleartext_audit`, …) over the 40 services in `SERVICES`, plus the segment sweeps (`it_host_discovery`, `it_port_exposure`, …, `it_exposure_report`) | IP, not radio — the AP is only the bridge |
 | `wifipilot/itproto.py` | not attacks: the request builders and reply parsers every IT attack speaks (161 exports — HTTP, SMB2, Modbus, RTSP, ONVIF, IEC-104, LDAP, MySQL, MQTT, IPP, PJL, Kasa/miIO, …) |
 | `wifipilot/itsim.py` | not attacks: the simulated segment (51 hosts, 72 ports, 45 responders) an IT attack drives in `--demo`, so the whole collection is exercisable without a lab |

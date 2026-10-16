@@ -256,7 +256,8 @@ DEFAULT_ORDER = [
 from . import blehid as _batch_blehid                        # noqa: E402
 from . import blemimic as _batch_blemimic                      # noqa: E402
 from . import blehijack2 as _batch_blehijack2
-from . import hijack75 as _batch_hijack75                  # noqa: E402
+from . import hijack75 as _batch_hijack75
+from . import ithijack as _batch_ithijack                  # noqa: E402
 from . import btattacks as _batch_btattacks                    # noqa: E402
 from . import btred as _batch_btred                            # noqa: E402
 from . import famous as _batch_famous                          # noqa: E402
@@ -267,7 +268,7 @@ from . import offline4 as _batch_offline4                      # noqa: E402
 
 BATCH_MODULES = (_batch_offline3, _batch_offline4, _batch_btattacks,
                  _batch_blehid, _batch_blemimic, _batch_blehijack2, _batch_hijack75,
-                 _batch_netdos,
+                 _batch_ithijack, _batch_netdos,
                  _batch_btred, _batch_famous, _batch_itsvc)
 
 

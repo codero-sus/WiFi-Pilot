@@ -4,6 +4,50 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## 762 attacks — the IT hijacker wave: seventy devices that answer as something else
+
+* **70 further attacks, 762 in total (IT 356).** `attacks/ithijack.py` is the LAN half of the
+  impersonation work.  Every attack talks to a real service — the simulated network in demo
+  mode, the segment under test live — and every claim it makes is read back out of a
+  capture, decoded again by the protocol's own codec.  Six families:
+
+  * **`it_mimic_*` (14) — stand up the same service.** A second DNS server, a rogue DHCP
+    handing out our own gateway, a rogue NTP that moves every clock, forged syslog in a
+    device's name, a look-alike MQTT broker, CoAP endpoint, Modbus slave, BACnet device,
+    RTSP camera, SIP registrar, raw-print service, mDNS responder, SSDP announcement and
+    TFTP server.
+  * **`it_impersonate_*` (12) — wear a device's identity.** ONVIF (manufacturer, model,
+    firmware, serial), S7 (the CPU's order number), CIP (vendor, product, serial), SNMP
+    (sysDescr), Cast, AirPlay, Kasa, MiIO, OPC-UA, IPP, STUN and the Docker API.
+  * **`it_hijack_*` (12) — take over the session or the value.** RTSP PLAY with a chosen
+    session id, a SIP re-REGISTER, a retained MQTT publish, an ONVIF stream-URI rewrite,
+    a Modbus coil write, a BACnet priority-1 write, IEC 60870-5-104 command injection, a
+    DNP3 link reset and integrity poll, print-job takeover, session-cookie replay, a forged
+    TR-069 Inform and an ADB shell.
+  * **`it_poison_*` (12) — corrupt what the network believes.** ARP gateway poisoning, DNS
+    cache poisoning, NBNS name poisoning, mDNS name theft, SSDP response spoofing, a DHCP
+    offer whose option 6 is us, an SNMP trap in another device's name, a forged BACnet
+    I-Am, a LDAP referral, an SMB negotiate downgrade, RDP negotiation spoofing and a
+    Telnet banner in the switch's name.
+  * **`it_relay_*` (10) — be the wire.** Relays in front of Redis, memcached, MongoDB,
+    PostgreSQL, MySQL, SMB, LDAP, Telnet, IPP and an HTTP basic-auth service, each one
+    proving that the bytes the client received were the device's own.
+  * **`it_steal_*` (10) — take the material.** The camera's stream URI, the printer's spool,
+    a PLC's identity block, the badge database, a phone directory, retained MQTT topics,
+    Kubernetes secrets, the Docker inventory, a MySQL greeting and an IoT device's sysinfo.
+
+* **The wave is graded in two halves on purpose.** The *device* half is what the network's
+  own host answered — that is the identity being worn.  The *wire* half is what our
+  look-alike put on the link, read back out of the capture down to the field that matters
+  (a lease, a topic, a value, a device name, an ARP claim).  `tests/test_ithijack_wave.py`
+  proves the readers decode what the builders wrote, and then tests the claims in both
+  directions: the relay that carried the device's own bytes reports byte-for-byte equality,
+  and the printer we impersonate reports the printer's own name.
+
+* **Also fixed:** `hijack75._arp_bytes` wrote the Ethernet ethertype (`0x0806`) where the ARP
+  protocol type belongs (`0x0800`); a reader that validates the field rejected every frame
+  the Wi-Fi wave built.
+
 ## 692 attacks — the hijacker wave: 75 more ways to be the network
 
 * **75 further attacks, 692 in total (Wi-Fi 288).** `attacks/hijack75.py` is the Wi-Fi half
