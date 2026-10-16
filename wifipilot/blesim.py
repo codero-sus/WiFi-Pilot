@@ -146,6 +146,58 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "ll_params_checked": False,
         "note": "an old handset: OBEX and the AT channel answer without a bond, and the "
                 "pairing it does offer is legacy"},
+    "audio_hub": {
+        # a speaker, a soundbar or a conference unit: the phone that paired with it
+        # once owns it, because the *name and address* it reconnects to are the whole
+        # check it makes.  It answers the audio control protocol too, which is what
+        # makes the hijack a finding rather than a connection
+        "secure_connections": False, "mitm": False, "bonding": True, "key_size": 7,
+        "io": "no input no output", "just_works": True, "pairing": True,
+        "gatt_write": False, "gatt_before_auth": False, "obex": False, "at": False,
+        "hid": False, "fragile": "", "link_key": True,
+        "verify_bond_peer": False, "ll_params_checked": False,
+        "audio_sink": True,
+        "note": "a bonded speaker: it takes the link the phone it remembers opens, and "
+                "it answers AVDTP and AVRCP whoever asks"},
+    "audio_picky": {
+        # the same product, patched: it verifies the peer before it accepts an audio
+        # link, which is the negative control for every imitation attack
+        "secure_connections": True, "mitm": True, "bonding": True, "key_size": 16,
+        "io": "display yes/no", "just_works": False, "pairing": True,
+        "gatt_write": False, "gatt_before_auth": False, "obex": False, "at": False,
+        "hid": False, "fragile": "", "link_key": True,
+        "verify_bond_peer": True, "ll_params_checked": True,
+        "audio_sink": True,
+        "note": "a speaker with the patched stack: it checks the link key before it "
+                "accepts an audio link, so an imitation gets a refusal"},
+    "car_kit": {
+        "secure_connections": False, "mitm": False, "bonding": True, "key_size": 7,
+        "io": "no input no output", "just_works": True, "pairing": True,
+        "gatt_write": False, "gatt_before_auth": False, "obex": False, "at": True,
+        "hid": False, "fragile": "", "link_key": True,
+        "verify_bond_peer": False, "ll_params_checked": False,
+        "hands_free": True, "sap": True,
+        "note": "a hands-free unit: the AT channel answers, and so does the SIM access "
+                "profile, which is the phone's subscriber identity read over a link"},
+    "phone_store": {
+        "secure_connections": False, "mitm": False, "bonding": True, "key_size": 7,
+        "io": "keyboard only", "just_works": True, "pairing": True,
+        "gatt_write": False, "gatt_before_auth": False,
+        "obex": True, "at": False, "hid": False, "fragile": "", "link_key": True,
+        "verify_bond_peer": False, "ll_params_checked": False,
+        "phonebook": True, "messaging": True,
+        "note": "an old handset: the phonebook and the message store are two OBEX "
+                "profiles away, and neither asks for a bond"},
+    "pan_ap": {
+        # a personal-area-network access point: it bridges the network behind it, and the
+        # bridge is set up with a BNEP frame rather than a credential
+        "secure_connections": False, "mitm": False, "bonding": True, "key_size": 7,
+        "io": "no input no output", "just_works": True, "pairing": True,
+        "gatt_write": False, "gatt_before_auth": False, "obex": False, "at": True,
+        "hid": False, "fragile": "", "link_key": True,
+        "verify_bond_peer": False, "ll_params_checked": False, "pan": True,
+        "note": "a PAN access point: joining it is joining the network behind it, and the "
+                "setup frame is the whole authorisation"},
     "hardened": {
         "secure_connections": True, "mitm": True, "bonding": True, "key_size": 16,
         "io": "display yes/no", "just_works": False, "pairing": True,
@@ -162,8 +214,10 @@ PROFILES: Dict[str, Dict[str, Any]] = {
 #: answer before they ask questions come first, then the ones with a small key or a
 #: fragile stack, and a hardened device — which is still useful, as the negative control —
 #: comes last.
-WEAKNESS_ORDER: Tuple[str, ...] = ("wide_open", "open_gatt", "hid_trusting", "fragile_stack",
-                                   "knober", "blesa", "legacy_push", "hid_bonded", "hardened")
+WEAKNESS_ORDER: Tuple[str, ...] = ("wide_open", "open_gatt", "audio_hub", "hid_trusting",
+                                   "fragile_stack", "knober", "blesa", "legacy_push",
+                                   "pan_ap", "car_kit", "phone_store", "hid_bonded",
+                                   "audio_picky", "hardened")
 
 
 def profile_rank(name: str) -> int:
@@ -200,6 +254,12 @@ LINK_ROLES: Dict[str, str] = {
     "fragile": "a device whose stack is known to fall over",
     "tracker": "an item tracker",
     "beacon": "a beacon",
+    "audio": "a device with an audio link (AVDTP/AVRCP)",
+    "phone": "a device with an object store: a phonebook or a message store",
+    "pan": "a device that bridges its own network (BNEP, personal area networking)",
+    "classic_hid": "a classic HID host with an interrupt channel",
+    "bonded": "a device bonded to a peer it reconnects to by name",
+    "speaker": "a bonded speaker, the peripheral a phone owns",
 }
 
 
@@ -244,6 +304,42 @@ GATT_LIBRARY: Dict[str, Tuple[int, Tuple[Tuple[int, str, str], ...]]] = {
                             (0xFE33, "Calibration", "write"))),
     "vendor_glucose": (0xFEF0, ((0xFEF1, "Calibration Data", "read,write"),
                                 (0xFEF2, "Recorder", "notify"))),
+    # -- the services the mimic and loot waves need: each one is a real assigned UUID,
+    # -- and the characteristics are the ones the profile actually defines
+    "media_control": (0x1848, ((0x2B93, "Media State", "read,notify"),
+                               (0x2B94, "Media Control Point", "write,notify"),
+                               (0x2B98, "Content Control ID", "read"))),
+    "volume_control": (0x1844, ((0x2B7D, "Volume State", "read,notify"),
+                                (0x2B7E, "Volume Control Point", "write"),
+                                (0x2B7F, "Volume Flags", "read"))),
+    "mesh_proxy": (0x1828, ((0x2ADD, "Mesh Proxy Data In", "write,write-without-response"),
+                            (0x2ADE, "Mesh Proxy Data Out", "notify"))),
+    "mesh_provisioning": (0x1827, ((0x2ADB, "Provisioning Data In", "write"),
+                                   (0x2ADC, "Provisioning Data Out", "notify"))),
+    "fast_pair": (0xFE2C, ((0x1234, "Key-based Pairing", "read,write"),
+                           (0x1235, "Passkey", "write"),
+                           (0x1236, "Account Key", "write"))),
+    "vendor_ev": (0xFFF0, ((0xFFF1, "Charge State", "read,notify"),
+                           (0xFFF2, "Start Stop", "write"),
+                           (0xFFF3, "Current Limit", "read,write"))),
+    "vendor_ir": (0xFE40, ((0xFE41, "IR Command", "write"),
+                           (0xFE42, "IR Learning", "read,notify"))),
+    "fido": (0xFFFD, ((0xFFFD, "FIDO Service Rev", "read"),
+                      (0x2A50, "Service Revision (CTAP)", "read"))),
+    "vendor_print": (0xFFB0, ((0xFFB1, "Print Job", "write"),
+                              (0xFFB2, "Print Status", "read,notify"),
+                              (0xFFB3, "Ink Level", "read"))),
+    "vendor_badge": (0xFFC0, ((0xFFC1, "Badge Identity", "read,notify"),
+                              (0xFFC2, "Access Level", "read"),
+                              (0xFFC3, "Door Grant", "write,notify"))),
+    "vendor_anchor": (0xFFE0, ((0xFFE1, "Anchor Position", "read,notify"),
+                               (0xFFE2, "Anchor Config", "read,write"))),
+    "vendor_telemetry": (0xFFD0, ((0xFFD1, "Telemetry Channel", "read,notify"),
+                                  (0xFFD2, "Log Buffer", "read"),
+                                  (0xFFD3, "Provisioning", "read,write"))),
+    "vendor_health": (0xFFA0, ((0xFFA1, "Reading", "read,notify"),
+                               (0xFFA2, "Patient Id", "read"),
+                               (0xFFA3, "Alarm", "notify"))),
 }
 
 
@@ -785,6 +881,90 @@ DEVICE_TABLE: List[BleDevice] = [
       kind="dual", profile="hid_bonded", class_of_device=0x10020C, services=(0x1812,),
       gatt=("hid",), bond_peer="WF-KEYBOARD", bond_address="5c:11:22:33:44:aa",
       interval_ms=800.0, rssi=-64, company_id=0x00E0),
+    # -- the things a phone owns: the imitation wave needs a host that comes back --- #
+    D("d1:11:22:33:44:01", "SoundBar Loft", "Denon", "DHT-S216", device="soundbar",
+      kind="dual", profile="audio_hub", class_of_device=0x240414,
+      gatt=("device_info", "media_control", "volume_control"),
+      sdp=(0x110B, 0x110A, 0x110C), channels=(1,), interval_ms=700.0, rssi=-59,
+      company_id=0x0176, bond_peer="WF-SPEAKER",
+      notes="the meeting room's speaker: the phone that paired with it is "
+            "'WF-SPEAKER', and that name is all it remembers"),
+    D("d1:11:22:33:44:02", "ConfUnit-2F", "Poly", "Studio", device="conference unit",
+      kind="dual", profile="audio_hub", class_of_device=0x240418,
+      gatt=("device_info", "media_control", "volume_control", "fast_pair"),
+      sdp=(0x111E, 0x110B, 0x1112), channels=(2,), interval_ms=900.0, rssi=-63,
+      company_id=0x0196, bond_peer="WF-SPEAKER",
+      notes="a hands-free unit that also remembers 'WF-SPEAKER': whoever carries that "
+            "name gets the microphone as well as the speaker"),
+    D("d1:11:22:33:44:03", "AVR-Elite", "Pioneer", "VSX-534", device="av receiver",
+      kind="dual", profile="audio_picky", class_of_device=0x24041C, sdp=(0x110B, 0x110C),
+      channels=(1,), interval_ms=800.0, rssi=-66, company_id=0x0009,
+      bond_peer="WF-SPEAKER",
+      notes="the patched one, and the reason the speaker wave reports refusals next to "
+            "connections: it checks the link key before it accepts an audio link"),
+    D("d2:11:22:33:44:01", "CarKit-Parrot", "Parrot", "CK-2", device="car kit",
+      kind="bredr", profile="car_kit", class_of_device=0x240408,
+      sdp=(0x111E, 0x111F, 0x112D), channels=(1, 2, 3), interval_ms=1000.0, rssi=-62,
+      company_id=0x000F, at_name="Parrot CK-2",
+      notes="the hands-free unit the company phone is bonded to: AT answers, and so "
+            "does the SIM access profile"),
+    D("d2:11:22:33:44:02", "Phone-Company", "Samsung", "A54", device="mobile phone",
+      kind="dual", profile="phone_store", class_of_device=0x10020C,
+      sdp=(0x1105, 0x1104, 0x111F, 0x1130, 0x1132), channels=(1, 2, 3),
+      interval_ms=900.0, rssi=-61, company_id=0x0075, at_name="Samsung A54",
+      bond_peer="WF-CARKIT",
+      notes="bonded to the car kit: it reconnects to a transmitter that carries the "
+            "car's name, and its phonebook and messages are two OBEX profiles away"),
+    D("d3:11:22:33:44:01", "NAP-Office", "Cisco", "Meraki MT", device="access point",
+      kind="bredr", profile="pan_ap", class_of_device=0x100200,
+      sdp=(0x1116, 0x1117), channels=(1,), interval_ms=1200.0, rssi=-64,
+      company_id=0x0009, at_name="Meraki MT",
+      notes="a personal-area-network access point: joining it puts a device on the "
+            "network behind it"),
+    D("d4:11:22:33:44:01", "Lock-Front-2", "Salto", "XS4", device="smart lock",
+      profile="open_gatt", services=(0x180F,), gatt=("battery", "vendor_lock"),
+      interval_ms=1500.0, rssi=-70, company_id=0x02B7, bond_peer="WF-LOCK-PHONE",
+      notes="the front door's lock, and it takes its orders from whatever carries the "
+            "name of the phone it was commissioned with"),
+    D("d5:11:22:33:44:01", "Door-Reader-2F", "HID Global", "iCLASS SE", device="badge reader",
+      kind="dual", profile="open_gatt", class_of_device=0x080204,
+      services=(0x180A,), gatt=("vendor_badge", "device_info"), interval_ms=1100.0,
+      rssi=-68, company_id=0x0283, bond_peer="Badge-A14",
+      notes="the door reader remembers the badge of the last person it let in: the "
+            "badge's identity is enough to be let in again"),
+    D("d6:11:22:33:44:01", "Mesh-Lamp-3F", "Signify", "Hue BT", device="smart bulb",
+      profile="wide_open", services=(0x1827, 0x1828),
+      gatt=("mesh_proxy", "mesh_provisioning"), interval_ms=600.0, rssi=-75,
+      company_id=0x038F, notes="a mesh node with its provisioning service open"),
+    D("d6:11:22:33:44:02", "Charger-Bay1", "Wallbox", "Pulsar", device="ev charger",
+      profile="open_gatt", services=(0x180A,), gatt=("vendor_ev", "device_info"),
+      interval_ms=1000.0, rssi=-72, company_id=0x0A15,
+      notes="the charger hands its control characteristic to anybody, and a charge "
+            "session is a car on a cable"),
+    D("d6:11:22:33:44:03", "LabelPrinter-3", "Brother", "QL-820", device="label printer",
+      profile="wide_open", services=(0x180A,), gatt=("vendor_print", "device_info"),
+      interval_ms=900.0, rssi=-74, company_id=0x000D,
+      notes="a printer with a printing service and no bond in front of it"),
+    D("d6:11:22:33:44:04", "IR-Hub-Lobby", "Broadlink", "RM4", device="smart home hub",
+      profile="open_gatt", services=(0x180A,), gatt=("vendor_ir", "device_info"),
+      interval_ms=1300.0, rssi=-73, company_id=0x0289,
+      notes="an IR blaster: its command characteristic is the room's remote control"),
+    D("d6:11:22:33:44:05", "Key-Fob-7", "Yubico", "5Ci", device="security key",
+      kind="dual", profile="hardened", services=(0xFFFD,), gatt=("fido",),
+      interval_ms=1000.0, rssi=-67, company_id=0x0006,
+      notes="a security key: registration needs the button, which is the whole point"),
+    D("d6:11:22:33:44:06", "Anchor-A", "Qorvo", "DW3000", device="uwb anchor",
+      profile="open_gatt", services=(0x180A,), gatt=("vendor_anchor", "device_info"),
+      interval_ms=1400.0, rssi=-71, company_id=0x0362,
+      notes="a positioning anchor with a writeable configuration"),
+    D("d6:11:22:33:44:07", "Telemetry-12", "Masimo", "Radius-7", device="patient monitor",
+      profile="open_gatt", services=(0x180A,), gatt=("vendor_health", "device_info"),
+      interval_ms=700.0, rssi=-69, company_id=0x0331,
+      notes="a medical telemetry channel anyone can subscribe to"),
+    D("d6:11:22:33:44:08", "Van-Tracker", "Samsara", "VG34", device="vehicle tracker",
+      profile="open_gatt", services=(0x180A,), gatt=("vendor_telemetry", "device_info"),
+      interval_ms=1000.0, rssi=-77, company_id=0x0357,
+      notes="a fleet telematics unit: its log buffer is the vehicle's history"),
 ]
 
 
@@ -864,6 +1044,15 @@ class BleLink:
         self.answers = 0
         self.att_answers = 0
         self.att_refusals = 0
+        #: the classic-profile wave: the audio link's answers, the HIDP reports the peer
+        #: accepted, the frames a personal-area network bridged, and the APDUs a SIM
+        #: answered — each one a counter the attack reports instead of a claim
+        self.audio_events: List[Dict[str, Any]] = []
+        self.audio_refused = 0
+        self.hidp_reports: List[bytes] = []
+        self.network_frames: List[bytes] = []
+        self.apdus: List[Dict[str, Any]] = []
+        self.service_conversations: List[str] = []
         #: HID-over-GATT: the keystrokes a host received, decoded by the toolkit's own
         #: report decoder, and the reports it refused because the link was not bonded
         self.hid_reports: List[bytes] = []
@@ -925,6 +1114,10 @@ class VirtualBle:
         self.scans = 0
         self.connections = 0
         self.handle_base = 0x0040
+        #: the dynamic L2CAP channels that have been opened, by channel id: what a PSM an
+        #: attack connected to actually *is*, so the controller can route its frames to
+        #: the profile engine instead of guessing at the first byte
+        self.channels: Dict[int, int] = {}
 
     # -- the floor as a sequence -------------------------------------------- #
     def __iter__(self) -> Any:
@@ -940,6 +1133,10 @@ class VirtualBle:
         return bool(self.devices)
 
     # -- lookups ------------------------------------------------------------ #
+    def psm_for(self, cid: int) -> int:
+        """Which PSM a dynamic channel was opened for (0 when it is not one)."""
+        return int(self.channels.get(int(cid), 0))
+
     def by_address(self, address: str) -> Optional[BleDevice]:
         wanted = (address or "").strip().lower()
         return next((device for device in self.devices
@@ -985,6 +1182,17 @@ class VirtualBle:
                         bool(flags.get("hid")) and device.device in HID_HOSTS)
         if role == "fragile":
             return bool(flags.get("fragile"))
+        if role in ("audio", "speaker"):
+            return bool(flags.get("audio_sink")) and (
+                bool(device.sdp) or bool(device.bond_peer) or device.kind != "le")
+        if role == "phone":
+            return bool(flags.get("phonebook") or flags.get("messaging"))
+        if role == "pan":
+            return bool(flags.get("pan"))
+        if role == "classic_hid":
+            return bool(flags.get("classic_hid")) or bool(flags.get("hid"))
+        if role == "bonded":
+            return bool(device.bond_peer) and bool(device.flags.get("pairing"))
         if role == "tracker":
             return bool(device.tracker)
         if role == "beacon":
@@ -1382,34 +1590,41 @@ class VirtualBle:
         if code == 0x0A:                                          # Information Request
             kind = int.from_bytes(body[4:6], "little") if len(body) >= 6 else 0x0002
             result = 0x0000 if not fragile else 0x0001
-            return bytes([0x0B, identifier, 0x00, 0x08]) + struct.pack("<HH", kind, result) \
-                + b"\x00" * 4
+            return bytes([0x0B, identifier]) + struct.pack("<H", 8) \
+                + struct.pack("<HH", kind, result) + b"\x00" * 4
         if code == 0x02:                                          # Connection Request
             if fragile:
                 if link is not None:
                     link.dies("L2CAP connection request on a non-offered PSM")
                 return b""
-            psm = int.from_bytes(body[3:5], "little") if len(body) >= 5 else 1
-            source = int.from_bytes(body[1:3], "little")
+            # the signalling header is code, identifier, length (two bytes, little
+            # endian), and only then the request's own parameters: a PSM read from the
+            # length bytes is 0x1900 instead of 0x0019, which is how a connection to the
+            # audio PSM used to land on the SDP channel instead
+            psm = int.from_bytes(body[4:6], "little") if len(body) >= 6 else 1
+            source = int.from_bytes(body[6:8], "little") if len(body) >= 8 else 0x0040
             channels = {0x0001: 0x0040, 0x0003: 0x0041, 0x000F: 0x0042, 0x0011: 0x0043,
-                        0x0013: 0x0044, 0x001F: 0x0045}
+                        0x0013: 0x0044, 0x0017: 0x0047, 0x0019: 0x0048, 0x001F: 0x0045}
             local = channels.get(psm, 0x0046)
+            if psm in channels:
+                self.channels[local] = psm             # what this channel is for
             # the response is Destination CID, Source CID, Result, Status — a PSM the
             # stack does not offer comes back as "PSM not supported" rather than silence
             result = 0x0000 if psm in channels else 0x0002
-            return bytes([0x03, identifier, 0x00, 0x08]) + struct.pack(
+            return bytes([0x03, identifier]) + struct.pack("<H", 8) + struct.pack(
                 "<HHHH", local, source, result, 0x0000)
         if code == 0x04:                                          # Configure Request
             if fragile:
                 if link is not None:
                     link.dies("L2CAP configure request with a malformed MTU option")
                 return b""
-            return bytes([0x05, identifier, 0x00, 0x04]) + struct.pack("<HH", 0x0000, 0x0000)
+            return bytes([0x05, identifier]) + struct.pack("<H", 4) \
+                + struct.pack("<HH", 0x0000, 0x0000)
         if code == 0x06:                                          # Disconnect Request
             if link is not None and link.encrypted:
                 link.encrypted = False
-            return bytes([0x07, identifier, 0x00, 0x04]) + struct.pack("<HH", 0x0040,
-                                                                      0x0040)
+            return bytes([0x07, identifier]) + struct.pack("<H", 4) \
+                + struct.pack("<HH", 0x0040, 0x0040)
         if code == 0x08:                                          # Echo Request
             # the parameter length is the second half of the signalling header: an echo
             # request is code, identifier, length, then the payload the peer must return
@@ -1422,10 +1637,11 @@ class VirtualBle:
             # an echo response carries the same payload back (and the same identifier)
             return bytes([0x09, identifier]) + struct.pack("<H", len(payload)) + payload
         if code == 0x12:                                          # Connection Parameter Update
-            return bytes([0x13, identifier, 0x00, 0x02, 0x00, 0x00])
+            return bytes([0x13, identifier]) + struct.pack("<H", 2) + b"\x00\x00"
         if 0x80 <= code <= 0xFF:                                  # a response: nothing to say
             return b""
-        return bytes([0x01, identifier, 0x00, 0x02]) + struct.pack("<H", code)   # Command Reject
+        return bytes([0x01, identifier]) + struct.pack("<H", 2) \
+            + struct.pack("<H", code)                                   # Command Reject
 
     # -- SDP ---------------------------------------------------------------- #
     def sdp_request(self, device: BleDevice, body: bytes) -> bytes:
@@ -1468,6 +1684,277 @@ class VirtualBle:
             return b"+CMGS: 12\r\nOK\r\n"
         return b"OK\r\n"
 
+    # -- A2DP: the audio distribution link ---------------------------------- #
+    def _avdtp_seps(self, device: BleDevice) -> bytes:
+        """The streams a sink offers: one sink endpoint, and a source if it can send."""
+        entries = [bytes([(1 << 2) | 0x00, 0x01 << 2])]         # SEID 1, TSEP sink
+        if device.kind != "le":
+            entries.append(bytes([(2 << 2) | 0x00, 0x00 << 2]))  # SEID 2, TSEP source
+        return b"".join(entries)
+
+    def avdtp_request(self, device: BleDevice, body: bytes,
+                      link: Optional[BleLink] = None) -> bytes:
+        """Answer AVDTP: the streams, their capabilities, and the configuration.
+
+        This is the protocol under A2DP, and it has two answers that matter: the SEP list
+        (what the device *could* play) and the accept on ``SetConfiguration``/``Start``
+        (what it *will* play, and to whom).  A device whose profile verifies the peer
+        refuses the configuration, which is the difference between a speaker that is ours
+        and a speaker that checked.
+        """
+        parsed = bt.parse_avdtp(body)
+        signal = int(parsed.get("signal") or 0)
+        label = int(parsed.get("label") or 0)
+        flags = device.flags
+        if not flags.get("audio_sink"):
+            return bt.avdtp_signal(signal, b"", label=label, message=0x03)   # reject
+        if flags.get("verify_bond_peer") and link is not None and not link.authenticated:
+            link.audio_refused += 1
+            link.transcript.append({"event": "avdtp", "refused": bt.AVDTP_SIGNALS.get(
+                signal, f"0x{signal:02x}"),
+                "why": "the peer requires an authenticated audio link"})
+            return bt.avdtp_signal(signal, b"", label=label, message=0x03)
+        answer = b""
+        if signal == 0x01:                                        # Discover
+            answer = self._avdtp_seps(device)
+        elif signal in (0x02, 0x0C):                              # GetCapabilities
+            sbc = bytes([0x00, 0x00, 0x24, 0x35, 0x02, 0x35])     # 48 kHz stereo SBC
+            block = bytes([0x07, len(sbc)]) + sbc
+            transport = bytes([0x01, 0x00]) if signal == 0x0C else b""
+            answer = transport + block
+        elif signal == 0x03:                                      # SetConfiguration
+            answer = bytes([(2 << 2), (1 << 2)])                  # ACP SEID 2, INT SEID 1
+        elif signal == 0x04:                                      # GetConfiguration
+            answer = bytes([(2 << 2), 0x07, 0x06, 0x00, 0x00, 0x24, 0x35, 0x02, 0x35])
+        elif signal in (0x06, 0x07, 0x08, 0x09):                  # Open/Start/Close/Suspend
+            answer = b""
+        if link is not None:
+            entry = {"signal": signal, "name": bt.AVDTP_SIGNALS.get(signal,
+                                                                    f"0x{signal:02x}"),
+                     "accept": True}
+            link.audio_events.append(entry)
+            link.transcript.append(dict(entry, event="avdtp"))
+        return bt.avdtp_signal(signal, answer, label=label, message=0x02, packet=0x01)
+
+    # -- AVRCP: the remote control ------------------------------------------ #
+    def avrcp_request(self, device: BleDevice, body: bytes,
+                      link: Optional[BleLink] = None) -> bytes:
+        """Answer an AVCTP frame carrying AVRCP: the player's own answers.
+
+        A controller that registers a notification is *told* what the player is doing —
+        the track, the position, the volume — and one that sends a passthrough presses the
+        button.  Answering these is what makes an imitation a hijack rather than a
+        connection: the device's transport is ours.
+        """
+        flags = device.flags
+        avctp = bt.parse_avctp(body)
+        payload = avctp.get("payload") or b""
+        avrcp = bt.parse_avrcp(payload)
+        operation = int(avrcp.get("operation") or 0)
+        tl = int(avctp.get("tl") or 0)
+        if not flags.get("audio_sink"):
+            return bt.avctp_frame(bt.avrcp_command(operation), cr=1, tl=tl)
+        if flags.get("verify_bond_peer") and link is not None and not link.authenticated:
+            link.audio_refused += 1
+            link.transcript.append({"event": "avrcp", "refused": avrcp.get("name", ""),
+                                    "why": "the peer requires an authenticated link"})
+            return bt.avctp_frame(bt.avrcp_command(operation), cr=1, tl=tl)
+        answer = bt.avrcp_command(operation)
+        if operation == 0x10:                                     # GetCapabilities
+            answer = bt.avrcp_command(0x10, bytes([0x03, 0x00, 0x19, 0x58]))
+        elif operation == 0x31:                                   # RegisterNotification
+            event = int(avrcp.get("event") or 0)
+            if event in (0x0C, 0x0D):                             # volume
+                answer = bt.avrcp_command(0x31, bytes([event, 0x40]))
+            elif event == 0x01:                                   # playback status
+                answer = bt.avrcp_command(0x31, bytes([event, 0x01]))
+            elif event == 0x05:                                   # play position
+                answer = bt.avrcp_command(0x31, bytes([event]) + (42000).to_bytes(4, "big"))
+            else:
+                answer = bt.avrcp_command(0x31, bytes([event]) + bytes(4))
+        elif operation == 0x20:                                   # GetElementAttributes
+            title = b"Shareholder Report"
+            answer = (bt.avrcp_command(0x20, bytes([0x01, 0x01, 0x00, 0x00, 0x00, 0x6A])
+                                       + bytes([len(title)]) + title))
+        elif operation == 0x30:                                   # GetPlayStatus
+            answer = bt.avrcp_command(0x30, (245000).to_bytes(4, "big")
+                                      + (42000).to_bytes(4, "big") + bytes([0x01]))
+        elif operation in (0x44, 0x50):                           # passthrough / volume
+            answer = bt.avrcp_command(operation, bytes(avrcp.get("parameters") or b""))
+        if link is not None:
+            entry: Dict[str, Any] = {"event": "avrcp", "operation": avrcp.get("name", ""),
+                                     "accepted": True}
+            if avrcp.get("passthrough"):
+                entry["button"] = avrcp["passthrough"]
+            if avrcp.get("event_name"):
+                entry["registered"] = avrcp["event_name"]
+            link.audio_events.append(entry)
+            link.transcript.append(dict(entry))
+        return bt.avctp_frame(answer, cr=1, tl=tl)
+
+    # -- HIDP: the classic HID channel -------------------------------------- #
+    def hidp_request(self, device: BleDevice, body: bytes,
+                     link: Optional[BleLink] = None) -> bytes:
+        """Answer the classic HID channel: protocol, idle, and the input reports."""
+        parsed = bt.parse_hidp(body)
+        flags = device.flags
+        takes_input = bool(flags.get("hid") or flags.get("classic_hid"))
+        transaction = int(parsed.get("transaction") or 0)
+        if flags.get("hid_bond_required") and link is not None \
+                and not (link.bonded and link.encrypted):
+            # a host that insists on a bond does not take reports from an open link: the
+            # same gate the GATT path applies, answered in the classic profile's own
+            # vocabulary rather than with a notification nobody would send
+            link.hid_refused += 1
+            link.transcript.append({"event": "hidp", "refused":
+                                    "the host requires an encrypted link"})
+            return bt.hidp_handshake(0x03)                         # unsupported request
+        if transaction == 0x0A and takes_input:                    # a DATA report
+            # the parameter byte says which report it is (input, output, feature) and
+            # the payload is the report itself: the decoder strips a report id when the
+            # descriptor has one, so the raw payload is what the host actually received
+            report = bytes(parsed.get("payload") or b"")
+            if link is not None:
+                link.hidp_reports.append(report)
+                link.transcript.append({"event": "hidp", "report": report.hex()[:24]})
+            return b""                                             # data needs no answer
+        if not takes_input:
+            return bt.hidp_handshake(0x03)                         # unsupported request
+        if transaction == 0x00:                                    # a handshake
+            # HIDP transaction 0x00 is the handshake itself: the three SET_/GET_ forms
+            # carry a result parameter and are acknowledged with 0x00, and answering a
+            # handshake with "unsupported request" would refuse the connection a host
+            # makes before it reads a single report
+            return bt.hidp_handshake(0x00)
+        if transaction == 0x04:                                    # GET_REPORT
+            return bt.hidp_frame(0x0A, 0x01, bytes([0x01]) + bytes(8))
+        if transaction == 0x06:                                    # GET_PROTOCOL
+            return bt.hidp_frame(0x0A, 0x00, b"\x01")
+        if transaction in (0x01, 0x05, 0x07, 0x09):                # control and setters
+            return bt.hidp_handshake(0x00)
+        return bt.hidp_handshake(0x03)
+
+    # -- BNEP: the personal-area network ------------------------------------ #
+    def bnep_request(self, device: BleDevice, body: bytes,
+                     link: Optional[BleLink] = None) -> bytes:
+        """Answer a BNEP frame: set the bridge up, then let frames cross it.
+
+        A NAP device is a network bridge: the setup frame says which UUIDs are wanted
+        (PANU to NAP is the common pair), and everything after it is Ethernet.  The answer
+        to a general frame here is a real ARP reply from the device's own pseudo-address,
+        which is what proves the bridge is passing traffic.
+        """
+        flags = device.flags
+        parsed = bt.parse_bnep(body)
+        if not flags.get("pan"):
+            return bt.bnep_control(0x02, struct.pack(">H", 0x0001)
+                                   + bt.mac_bytes(device.address)
+                                   + struct.pack(">H", 0x0003)
+                                   + bt.mac_bytes("00:00:00:00:00:00")
+                                   + struct.pack(">H", 0x0001))    # not allowed
+        if parsed.get("type") == 0x01 and parsed.get("control") in (0x01, 0x03):
+            if link is not None:
+                link.service_conversations.append("BNEP setup")
+                link.transcript.append({"event": "bnep", "setup": "accepted",
+                                        "uuid": parsed.get("destination")})
+            return (bt.bnep_control(0x02, struct.pack(">H", parsed.get("source_uuid") or 1)
+                                    + bt.mac_bytes(device.address)
+                                    + struct.pack(">H", parsed.get("destination_uuid") or 3)
+                                    + bt.mac_bytes("00:00:00:00:00:00")
+                                    + struct.pack(">H", 0x0000)))
+        if parsed.get("type") == 0x00:
+            source = device.address
+            reply = bt.ethernet_frame(dst=str(parsed.get("source") or "ff:ff:ff:ff:ff:ff"),
+                                      src=source, ethertype=0x0806,
+                                      payload=(b"\x00\x01\x08\x00\x06\x04\x00\x01"
+                                               + bt.mac_bytes(source) + bytes([10, 10, 9, 1])
+                                               + bt.mac_bytes(str(parsed.get("destination")
+                                                                  or "ff:ff:ff:ff:ff:ff"))
+                                               + bytes([10, 10, 9, 254])))
+            if link is not None:
+                link.network_frames.append(reply)
+                link.transcript.append({"event": "bnep", "frame": "answered",
+                                        "ethertype": f"0x{parsed.get('ethertype', 0):04x}"})
+            return bt.bnep_frame(reply)
+        return b""
+
+    # -- SAP: the SIM, over the air ----------------------------------------- #
+    def sap_request(self, device: BleDevice, body: bytes,
+                    link: Optional[BleLink] = None) -> bytes:
+        """Answer the SIM access profile: the card's own APDUs, and its identity.
+
+        A car kit reads the phone's SIM this way — status, then the ATR, then the APDUs
+        that select and read the files.  Answering them here means an attack can report the
+        subscriber identity it *read* rather than the one it hoped for, and the APDU list
+        is the one a real card answers with (``9F xx`` for a select, ``9000`` for a read).
+        """
+        flags = device.flags
+        parsed = bt.parse_sap(body)
+        message = int(parsed.get("message") or 0)
+        atr = bytes.fromhex("3b9f96803fc78031e073fe211b66d00175039e1b")
+        if not flags.get("sap"):
+            return bt.sap_message(0x03, bt.sap_parameter(0x03, b"\x05"))   # not supported
+        if message == 0x00:                                                # Connect
+            if link is not None:
+                link.service_conversations.append("SAP connect")
+                link.transcript.append({"event": "sap", "connect": "accepted"})
+            return bt.sap_message(0x01, bt.sap_parameter(0x02, b"\x00")
+                                  + bt.sap_parameter(0x01, b"\x00\x20"))
+        if message == 0x06:                                                # TransferATR
+            return bt.sap_message(0x07, bt.sap_parameter(0x08, atr))
+        if message == 0x04:                                                # TransferAPDU
+            raw = parsed.get("apdu_command") or b""
+            answer = self._sim_apdu(device, bytes.fromhex(str(raw)), link)
+            return bt.sap_message(0x05, bt.sap_parameter(0x07, answer))
+        if message == 0x0E:                                                # card status
+            return bt.sap_message(0x0F, bt.sap_parameter(0x09, b"\x01"))
+        return bt.sap_message(0x12, bt.sap_parameter(0x04, b"\x01"))       # StatusInd: end
+
+    def _sim_apdu(self, device: BleDevice, command: bytes,
+                  link: Optional[BleLink] = None) -> bytes:
+        """Answer a SIM APDU: select a file, read it, and say what went wrong if not."""
+        if len(command) < 2:
+            return bytes.fromhex("6D00")
+        instruction = command[1]
+        if instruction == 0xA4 and len(command) >= 7:                 # SELECT FILE
+            # A0 A4 <P1> <P2> <Lc> <file id>: the file identifier is the data field, and
+            # reading it out of the P1/P2 bytes would select file 0x0000 every time
+            file_id = int.from_bytes(command[5:7], "big")
+            if file_id not in bt.SIM_FILES:
+                return bytes.fromhex("6A82")
+            length = {0x3F00: 0x1B, 0x7F20: 0x0F, 0x6F07: 0x09}.get(file_id, 0x11)
+            if link is not None:
+                link.apdus.append({"command": f"SELECT {file_id:04X}",
+                                   "file": bt.SIM_FILES.get(file_id, ""),
+                                   "status": f"9F{length:02X}"})
+            return bytes([0x9F, length])
+        if instruction == 0xB0 and len(command) >= 5:                 # READ BINARY
+            length = command[4]
+            selected = link.apdus[-1]["file"] if (link is not None and link.apdus) else ""
+            if "IMSI" in selected:
+                body = bt.ef_imsi(self._imsi(device))
+            elif "ICCID" in selected:
+                body = bytes.fromhex("98680011325678901234")
+            elif "SPN" in selected:
+                body = b"\x01Arena Mobile"
+            elif "LOCI" in selected:
+                body = bytes.fromhex("0000ed3a1d4e00000000")
+            else:
+                body = bytes([length]) + bytes(max(0, length - 1))
+            if link is not None:
+                link.apdus.append({"command": f"READ BINARY {length}", "file": selected,
+                                   "value": body[:16].hex(), "status": "9000"})
+            return bytes(body[:length]) + bytes.fromhex("9000")
+        return bytes.fromhex("6D00")
+
+    @staticmethod
+    def _imsi(device: BleDevice) -> str:
+        """A stable subscriber identity per device: a real IMSI, made of the address."""
+        # MCC 404 (India) and a two-digit network code, then the address's own digits
+        # padded out: fifteen digits, which is what an IMSI is
+        digits = "".join(character for character in device.address if character.isdigit())
+        return f"40407{(digits + '0000000000')[:10]}"
+
     def obex_request(self, device: BleDevice, body: bytes) -> bytes:
         """Answer an OBEX packet: the object store, if the profile leaves it open."""
         flags = device.flags
@@ -1480,6 +1967,15 @@ class VirtualBle:
             return _obex_response(0xA0, extra=bytes([0xC4, 0x00, 0x00, 0x00, 0x01]))
         if opcode in (bt.OBEX_GET, bt.OBEX_GET_FINAL):
             name = parsed.get("name") or _obex_name(body)
+            lowered = str(name).lower()
+            # MAP before PBAP: a message store and a phonebook are both reached through
+            # the telecom folder, and reading the folder name is what tells them apart
+            if flags.get("messaging") and ("msg" in lowered or "message" in lowered):
+                return _obex_messages(device)
+            if flags.get("phonebook") and (not lowered or "telecom" in lowered
+                                           or "pb" in lowered or lowered.endswith(".vcf")):
+                # PBAP: the phonebook listing a car kit downloads, cards included
+                return _obex_phonebook(device, lowered)
             return _obex_vcard(device, name)
         if opcode in (bt.OBEX_PUT, bt.OBEX_PUT_FINAL):
             return _obex_response(0xA2)                             # accepted
@@ -1600,6 +2096,34 @@ def _obex_name(payload: bytes) -> str:
         size = int.from_bytes(payload[index + 1:index + 3], "big") or 3
         index += size
     return ""
+
+
+def _obex_phonebook(device: BleDevice, name: str) -> bytes:
+    """A phonebook listing: the PBAP answer, complete with cards a report can quote."""
+    cards = []
+    for index, person in enumerate(("Arena Reception", "Facilities Manager",
+                                    "Night Shift Lead", "IT On-call")):
+        number = f"+91 98{index}00 12{index}45"
+        cards.append("\r\n".join((
+            "BEGIN:VCARD", "VERSION:3.0", f"FN:{person}",
+            f"N:{person.split()[-1]};{person.split()[0]};;;",
+            f"TEL;TYPE=CELL:{number}", "END:VCARD", "")))
+    body = "".join(cards).encode()
+    # an OBEX body header lengths its payload with two bytes — a phonebook is bigger than
+    # the one-byte form, which is why the listing crashed a server that assumed otherwise
+    return (_obex_response(0xA0, extra=bytes([0x49]) + struct.pack(">H", len(body)) + body
+                           + bytes([0x48, 0x00, 0x02, 0x01, 0x02])))
+
+
+def _obex_messages(device: BleDevice) -> bytes:
+    """A message store: the MAP answer, with the sender, the time and the text."""
+    listing = ("BEGIN:BMSG\r\nVERSION:1.0\r\nSTATUS:UNREAD\r\nTYPE:SMS_GSM\r\n"
+               "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ops Desk\r\nTEL:+911140001234\r\n"
+               "END:VCARD\r\nBEGIN:BENV\r\nBEGIN:BBODY\r\nBEGIN:MSG\r\n"
+               "Gate 2 alarm silent since 04:10, badge reader offline\r\n"
+               "END:MSG\r\nEND:BBODY\r\nEND:BENV\r\nEND:BMSG\r\n")
+    body = listing.encode()
+    return _obex_response(0xA0, extra=bytes([0x49]) + struct.pack(">H", len(body)) + body)
 
 
 def _obex_vcard(device: BleDevice, name: str = "") -> bytes:
@@ -1739,13 +2263,15 @@ class VirtualController:
         self._queue(self._complete(opcode))
 
     def _cmd_le_set_random_address(self, opcode: int, parameters: bytes) -> None:
-        if len(parameters) >= 6:
-            self.address = bt.mac_text(parameters[0:6])
-        self._queue(self._complete(opcode))
+        """The address the controller advertises under: what an impersonation sets.
 
-    def _cmd_le_set_random_address(self, opcode: int, parameters: bytes) -> None:
-        """The address the controller advertises under: what an impersonation sets."""
+        Both fields move: ``random_address`` is the identity an attack impersonates, and
+        ``address`` is the address the controller's own events are reported under — a host
+        that reconnects to a *name and an address* matches on the second one.
+        """
         self.random_address = bt.mac_text(parameters[0:6]) if len(parameters) >= 6 else ""
+        if self.random_address:
+            self.address = self.random_address
         self._queue(self._complete(opcode))
 
     def _cmd_le_set_advertising_enable(self, opcode: int, parameters: bytes) -> None:
@@ -1779,8 +2305,13 @@ class VirtualController:
             if address and device.bond_address and address != device.bond_address:
                 continue
             if device.flags.get("verify_bond_peer"):
+                # the negative control carries the same fields as the success: an attack
+                # that reports "two hosts refused" should be able to name them
                 self.reconnect_refused.append({"host": device.address,
+                                               "host_name": device.name,
+                                               "device": device.device,
                                                "name": name,
+                                               "profile": device.profile,
                                                "why": "the host verified the link key"})
                 self.ble.transcript.append({"event": "reconnect refused",
                                             "address": device.address, "peer": name})
@@ -1790,7 +2321,8 @@ class VirtualController:
                 continue
             link.bonded = True                       # the host believes this is its keyboard
             self.link = link
-            self.reconnected.append({"host": device.address, "name": name,
+            self.reconnected.append({"host": device.address, "host_name": device.name,
+                                     "device": device.device, "name": name,
                                      "profile": device.profile})
             self.ble.transcript.append({"event": "reconnected", "address": device.address,
                                         "peer": name, "profile": device.profile})
@@ -1979,8 +2511,21 @@ class VirtualController:
             answer = self.ble.att_request(device, payload, link)
         elif cid == 0x0006:                            # SMP
             answer = self.ble.smp_request(device, payload, link)
-        else:                                          # a dynamic channel: SDP, RFCOMM, OBEX
-            answer = self._dynamic(link, payload)
+        else:
+            # a dynamic channel: what it *is* was decided when it was opened, and the PSM
+            # the signalling channel remembered is what routes the frame — guessing from
+            # the first byte would send an AVRCP command to the SDP engine
+            psm = self.ble.psm_for(cid)
+            if psm == 0x0019:
+                answer = self.ble.avdtp_request(device, payload, link)
+            elif psm == 0x0017:
+                answer = self.ble.avrcp_request(device, payload, link)
+            elif psm in (0x0011, 0x0013):
+                answer = self.ble.hidp_request(device, payload, link)
+            elif psm == 0x000F:
+                answer = self.ble.bnep_request(device, payload, link)
+            else:
+                answer = self._dynamic(link, payload)
         if not link.alive:
             return
         if answer:
@@ -2000,6 +2545,10 @@ class VirtualController:
             return self.ble.obex_request(device, payload)
         if device.flags.get("at") and device.at_name:
             return self.ble.at_command(device, payload)
+        if device.flags.get("sap"):
+            # the SIM access profile is a message protocol of its own on an RFCOMM
+            # channel: its first byte is a message id, and 0x00 is a connect request
+            return self.ble.sap_request(device, payload)
         return self.ble.obex_request(device, payload)
 
     def _ll_control(self, link: BleLink, data: bytes) -> bytes:
@@ -2201,6 +2750,43 @@ ATTACK_ROLES: Dict[str, str] = {
     "ble_hid": "hid", "ble_hid_audit": "hid", "ble_hid_boot": "hid",
     "ble_hid_reconnect": "hid", "ble_smp_downgrade": "smp", "ble_gatt_hijack": "gatt",
     "ble_irk_resolve": "le", "ble_conn_param_hijack": "le",
+    # the imitation wave: each one aims at the class of device whose identity it copies
+    "ble_hid_mimic": "hid", "ble_hid_multi_host": "hid", "ble_consumer_mimic": "hid",
+    "ble_speaker_mimic": "audio", "ble_audio_le_mimic": "audio",
+    "ble_pairing_mimic": "smp", "ble_bond_hijack": "bonded",
+    "ble_name_collision": "bonded", "ble_smartlock_mimic": "bonded",
+    "ble_badge_mimic": "bonded", "ble_ev_charger_mimic": "bonded",
+    "ble_adv_identity_clone": "le", "ble_device_mimic": "le", "ble_fastpair_mimic": "le",
+    "ble_tracker_mimic": "tracker", "ble_beacon_mimic": "beacon",
+    "ble_eddystone_mimic": "beacon", "ble_mesh_mimic": "gatt",
+    "ble_anchor_mimic": "gatt", "ble_printer_mimic": "gatt", "ble_ir_mimic": "gatt",
+    "ble_fido_mimic": "gatt", "ble_telemetry_mimic": "gatt",
+    "ble_patient_mimic": "gatt", "ble_peripheral_shadow": "gatt",
+    # the takeover wave: classic profiles first, then the attribute table, the link layer
+    # and the security manager — each one aims at the device whose profile answers it
+    "ble_hfp_hijack": "at", "ble_hfp_audio_gateway": "at", "ble_map_hijack": "phone",
+    "ble_pbap_hijack": "phone", "ble_hfp_identity_spoof": "at",
+    "ble_sap_imsi_read": "at", "ble_sap_file_sweep": "at", "ble_obex_push": "obex",
+    "ble_spp_hijack": "rfcomm", "ble_dial_hijack": "obex",
+    "ble_hidp_classic_inject": "classic_hid", "ble_audio_session_takeover": "audio",
+    "ble_l2cap_psm_sweep": "l2cap", "ble_sdp_browse_takeover": "sdp",
+    "ble_gatt_write_sweep": "gatt", "ble_gatt_blob_dump": "gatt",
+    "ble_gatt_handle_enum": "gatt", "ble_gatt_char_fuzz": "gatt",
+    "ble_gatt_read_flood": "gatt", "ble_mtu_negotiation_abuse": "gatt",
+    "ble_notify_spoof": "hid", "ble_service_changed_abuse": "gatt",
+    "ble_signed_write_bypass": "gatt", "ble_att_handle_brute": "gatt",
+    "ble_service_table_dump": "gatt", "ble_gatt_value_dump": "gatt",
+    "ble_irk_crack": "le", "ble_rpa_follow": "le", "ble_adv_flood_le": "le",
+    "ble_scan_hog": "le", "ble_conn_flood_le": "le", "ble_conn_param_starve": "l2cap",
+    "ble_phy_request": "l2cap", "ble_data_length_abuse": "l2cap",
+    "ble_ll_unknown_probe": "l2cap", "ble_version_spoof": "l2cap",
+    "ble_feature_page_spoof": "l2cap", "ble_encryption_negotiation": "l2cap",
+    "ble_passkey_bruteforce": "smp", "ble_pairing_flood_le": "smp",
+    "ble_oob_claim": "smp", "ble_lesc_downgrade": "smp", "ble_keypress_spoof": "smp",
+    "ble_ctkd_cross_transport": "smp", "ble_key_size_probe": "smp",
+    "ble_bond_overwrite": "smp", "ble_confirm_replay": "smp",
+    "ble_public_key_audit": "smp", "ble_pair_lockout_probe": "smp",
+    "ble_smp_command_probe": "smp",
 }
 
 #: the device classes that *are* a HID host: keystroke injection ends on a machine that

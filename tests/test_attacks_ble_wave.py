@@ -359,11 +359,16 @@ def test_the_floor_has_the_postures_the_wave_needs():
     airspace = blesim.ble()
     floor = blesim.summary()
 
-    assert floor["devices"] == 50 and floor["profiles"] == 9
+    # 50 when the HID wave landed; the imitation and takeover waves took it to 66
+    # across 14 postures
+    assert floor["devices"] == 66 and floor["profiles"] == 14
     assert "hid_trusting" in blesim.PROFILES and "hid_bonded" in blesim.PROFILES
     hosts = airspace.candidates("hid")
     assert len(hosts) == 5
-    bonded = [device for device in airspace.devices if device.bond_peer]
+    # the HID hosts are the five that remember one keyboard; the later waves put other
+    # bonded pairs on the floor (a speaker, a car kit, a badge reader), so the assertion
+    # is about this keyboard's hosts rather than about every bond on the floor
+    bonded = [device for device in hosts if device.bond_peer]
     assert len(bonded) == 5
     assert {device.bond_peer for device in bonded} == {"WF-KEYBOARD"}
     assert {device.bond_address for device in bonded} == {"5c:11:22:33:44:aa"}
