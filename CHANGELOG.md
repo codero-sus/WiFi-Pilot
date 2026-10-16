@@ -4,6 +4,48 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## 617 attacks — the impersonation waves: 75 more ways to be somebody else
+
+* **75 further attacks, 617 in total (Bluetooth 118).** Two waves, both about *being
+  trusted when you are not*:
+  * **`attacks/blemimic.py` — 25 attacks that fake a device convincingly.** `ble_hid_mimic`
+    advertises the HID service from a copy of the keyboard's own advertisement, waits for
+    the hosts that reconnect to a name they already trust, and types at them.  The rest of
+    the family is the same idea in every posture the floor carries: a speaker, an earbud,
+    a tracker, a fast-pair tag, a badge reader, a lock, a doorbell, a printer, a beacon
+    (`ble_speaker_mimic`, `ble_tag_mimic`, `ble_fastpair_mimic`, `ble_badge_mimic`,
+    `ble_lock_mimic`, `ble_beacon_mimic`, …), each one built from the *observed* device's
+    own advertising data, so the clone answers the same probes with the same names.
+  * **`attacks/blehijack2.py` — 50 attacks that take a link over.** Fourteen run against
+    the classic profiles (HFP: headset, audio gateway, `ble_map_hijack`, `ble_pbap_hijack`,
+    `ble_sap_imsi_read`, `ble_obex_push`, `ble_spp_hijack`, `ble_hidp_classic_inject`,
+    `ble_audio_session_takeover`), twelve against the attribute table
+    (`ble_gatt_write_sweep`, `ble_gatt_blob_dump`, `ble_notify_spoof`,
+    `ble_signed_write_bypass`, `ble_att_handle_brute`, …), twelve at the air and link layer
+    (`ble_irk_crack`, `ble_rpa_follow`, `ble_adv_flood_le`, `ble_scan_hog`,
+    `ble_phy_request`, `ble_data_length_abuse`, `ble_ll_unknown_probe`,
+    `ble_encryption_negotiation`, …) and twelve at the security manager
+    (`ble_passkey_bruteforce`, `ble_oob_claim`, `ble_lesc_downgrade`, `ble_keypress_spoof`,
+    `ble_ctkd_cross_transport`, `ble_bond_overwrite`, `ble_confirm_replay`, …).  Every one
+    of them is decoded with a parser from `bt.py`, and the finding is what the parser said.
+* **The floor grew the devices those attacks need (`blesim.py`).** 66 devices across 14
+  postures, 19 link roles and the classic-profile engines: an AVDTP/AVCTP media path with
+  a picky AV receiver, an HFP car kit that answers AT commands, an OBEX phone with a
+  phonebook and a message store, a Bluetooth SAP reader over RFCOMM, an HIDP television
+  that requires a bond, a BNEP PAN access point, and a GATT library that serves real
+  characteristics (a Lock-Front with a state/control/admin-key table, a fast-pair tag, a
+  media player with a volume characteristic, a service-changed hold).
+* **`bt.py` gained the codecs those engines speak:** `aes_cmac` (RFC 4493, checked
+  against the specification's own test vectors), `h7` and the CMAC salt, AVDTP/AVCTP/AVRCP,
+  HIDP, BNEP, SAP and APDU framing, and `ef_imsi` — so a demo run and a capture are read
+  by the same code.
+* **Tests:** `tests/test_ble_mimic_wave.py` and `tests/test_ble_takeover_wave.py` — the
+  whole wave runs in demo mode and every attack has to end `success`, plus the engines
+  (the AT command, the OBEX store, the SAP reader, the PSM sweep, the attribute table, the
+  link layer, the security manager, the HIDP and AVDTP paths) and the negative controls: a
+  lock that checks the write refuses it, and a television that requires a bond takes no
+  keystrokes from an open link.
+
 ## 542 attacks — the BLE wave: keyboards, downgrades and identity
 
 * **8 further attacks, 542 in total (Bluetooth 43).** A wave that lives in

@@ -130,7 +130,7 @@ what a demo run meets is a device that answers.
   advertising reports for every device in range, inquiry results for the classic ones,
   connection complete, encryption change carrying the *negotiated* key size, and the peer's
   own ACL answers through the L2CAP signalling, ATT, SMP, SDP, RFCOMM, AT and OBEX engines.
-  50 devices across 9 posture profiles (a KNOB-vulnerable headset, an open GATT band, a
+  66 devices across 14 posture profiles (a KNOB-vulnerable headset, an open GATT band, a
   fragile stack, an OBEX object store, HID hosts) mean the same code path that reads a real
   controller reads the simulation.  Each device answers a set of *roles* — what a battery
   needs of it — and the catalogue publishes them beside the attacks they enable, so a run
@@ -143,7 +143,7 @@ what a demo run meets is a device that answers.
 environments contain, including the per-device catalogue, so a demo run can be inspected
 rather than taken on faith.
 
-The 542 attacks are grouped into modules by *what they need*, which is also how the
+The 617 attacks are grouped into modules by *what they need*, which is also how the
 tests and the docs are organised:
 
 | module | attacks | radio |
@@ -164,7 +164,7 @@ tests and the docs are organised:
 | `attacks/itsvc.py` | 286 IT-device attacks: one table row per `<protocol> × <technique>` (`it_<protocol>_discover`, `_version_audit`, `_default_creds`, `_cleartext_audit`, …) over the 40 services in `SERVICES`, plus the segment sweeps (`it_host_discovery`, `it_port_exposure`, …, `it_exposure_report`) | IP, not radio — the AP is only the bridge |
 | `wifipilot/itproto.py` | not attacks: the request builders and reply parsers every IT attack speaks (161 exports — HTTP, SMB2, Modbus, RTSP, ONVIF, IEC-104, LDAP, MySQL, MQTT, IPP, PJL, Kasa/miIO, …) |
 | `wifipilot/itsim.py` | not attacks: the simulated segment (51 hosts, 72 ports, 45 responders) an IT attack drives in `--demo`, so the whole collection is exercisable without a lab |
-| `wifipilot/blesim.py` | not attacks: the simulated Bluetooth floor — a virtual controller (HCI in, H4 events out), 50 devices across 9 posture profiles, the L2CAP/ATT/SMP/SDP/RFCOMM/OBEX engines behind them, and the LE capture a demo run writes for the offline audits |
+| `wifipilot/blesim.py` | not attacks: the simulated Bluetooth floor — a virtual controller (HCI in, H4 events out), 66 devices across 14 posture profiles, the L2CAP/ATT/SMP/SDP/RFCOMM/OBEX engines behind them, and the LE capture a demo run writes for the offline audits |
 | `wifipilot/itdev.py` | not attacks: the editions and the device shelf — 65 device types with their ports, protocols and the attacks that apply to them (`wp.devices()`, `wp.device("printer")`) |
 
 `attacks/meta.py` describes each attack for the *reader* rather than the runner: its

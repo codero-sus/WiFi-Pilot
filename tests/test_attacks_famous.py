@@ -110,8 +110,9 @@ def test_the_famous_wave_is_registered():
         assert name in ATTACK_NAMES, name
     # 248 from the famous/Bluetooth waves + 213 services-and-devices + the 73
     # cross-cutting version/cleartext audits every service now carries + the 8 of the
-    # BLE wave (HID injection, the downgrades around it, and identity)
-    assert len(DEFAULT_ORDER) == 542
+    # BLE wave (HID injection, the downgrades around it, and identity) + the 25 of the
+    # imitation wave (keyboards, speakers, tags, locks: devices faked convincingly)
+    assert len(DEFAULT_ORDER) == 617
 
 
 def test_registry_and_documentation_agree():

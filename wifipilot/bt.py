@@ -81,7 +81,22 @@ __all__ = [
     "smp_pairing_request", "L2CAP_CID_SMP", "SMP_COMMANDS", "SMP_FAILURE_REASONS",
     "rpa_from_irk", "resolves_irk", "rpa_prand", "address_irk_candidates",
     "SERVICE_GROUPS", "service_group",
-]
+    # the classic profiles: the codecs the hijack wave speaks (A2DP, AVRCP, BNEP, HIDP,
+    # SAP and the APDUs a SIM answers)
+    "AVDTP_SIGNALS", "AVDTP_MESSAGES", "AVDTP_CATEGORIES", "AVDTP_CODECS",
+    "avdtp_signal", "avdtp_discover", "avdtp_get_capabilities", "avdtp_set_configuration",
+    "avdtp_simple", "parse_avdtp",
+    "AVRCP_OPERATIONS", "AVRCP_EVENTS", "AVRCP_PASSTHROUGH", "avctp_frame", "parse_avctp",
+    "avrcp_command", "avrcp_passthrough", "avrcp_register", "avrcp_set_absolute_volume",
+    "parse_avrcp",
+    "BNEP_TYPES", "BNEP_CONTROLS", "BNEP_UUIDS", "bnep_control", "bnep_setup",
+    "bnep_frame", "ethernet_frame", "parse_bnep",
+    "HIDP_TRANSACTIONS", "HIDP_PARAMETERS", "HIDP_HANDSHAKES", "hidp_frame",
+    "hidp_handshake", "parse_hidp",
+    "SAP_MESSAGES", "SAP_PARAMETERS", "sap_message", "sap_parameter", "parse_sap",
+    "APDU_STATUS", "apdu_select", "apdu_read_binary", "parse_apdu", "SIM_FILES",
+    "imsi_from_ef_imsi", "ef_imsi", "iccid_from_ef_iccid",
+    "aes_cmac", "h7", "CMAC_SALT"]
 
 # --------------------------------------------------------------------------- #
 # addresses
@@ -156,6 +171,60 @@ def random_address_hash(irk: bytes, prand: int) -> int:
     key = bytes(irk)[:16].ljust(16, b"\x00")
     padding = b"\x00" * 13 + (int(prand) & 0xFFFFFF).to_bytes(3, "big")
     return int.from_bytes(AES(key).encrypt_block(padding)[13:16], "big")
+
+
+#: the salt the key derivation functions use when a cross-transport key is derived from
+#: an LE long-term key (Core Specification Vol 3, Part H, 2.2.5: ``h7(SALT, K)`` with the
+#: 128-bit constant ``tmp1``, which the specification prints as
+#: ``0x0000 0000 0000 0000 0000 0000 0074 6D70 31``)
+CMAC_SALT = bytes.fromhex("00000000000000000000000000746d7031")
+
+
+def _cmac_subkey(block: bytes) -> bytes:
+    """The CMAC subkey: left-shift by one, then XOR the polynomial if the top bit fell off."""
+    shifted = int.from_bytes(block, "big") << 1
+    if shifted >> 128:
+        shifted ^= 0x87
+    return (shifted & ((1 << 128) - 1)).to_bytes(16, "big")
+
+
+def aes_cmac(key: bytes, message: bytes) -> bytes:
+    """AES-CMAC (RFC 4493) over the toolkit's own AES.
+
+    The derivation functions of the Bluetooth specification are built on CMAC, so a
+    toolkit that wants to compute a cross-transport link key has to have it: the last
+    block of the message is finished with a subkey when it is a complete block and with
+    the padded form when it is not, and the block that is encrypted at each step is the
+    XOR of the previous output with the message.
+    """
+    from hmac import compare_digest as _compare                   # noqa: F401  (kept close)
+    cipher = AES(bytes(key)[:16].ljust(16, b"\x00"))
+    sub1 = _cmac_subkey(cipher.encrypt_block(bytes(16)))
+    sub2 = _cmac_subkey(sub1)
+    data = bytes(message)
+    if data and len(data) % 16 == 0:
+        blocks = [data[offset:offset + 16] for offset in range(0, len(data), 16)]
+        blocks[-1] = bytes(a ^ b for a, b in zip(blocks[-1], sub1))
+    else:
+        last = data[-(len(data) % 16):] if len(data) % 16 else b""
+        padded = last + b"\x80" + bytes(15 - len(last))
+        blocks = [data[offset:offset + 16] for offset in
+                  range(0, len(data) - len(last), 16)] + [padded]
+        blocks[-1] = bytes(a ^ b for a, b in zip(blocks[-1], sub2))
+    state = bytes(16)
+    for block in blocks:
+        state = cipher.encrypt_block(bytes(a ^ b for a, b in zip(state, block)))
+    return state
+
+
+def h7(ltk: bytes, salt: bytes = CMAC_SALT) -> bytes:
+    """``h7(SALT, K)``: the link key derived from a long-term key.
+
+    This is what cross-transport key derivation produces — an LE bond turned into a BR/EDR
+    link key — and computing it is what lets an assessment say the classic key on a device
+    is only as strong as the LE pairing that produced it.
+    """
+    return aes_cmac(bytes(salt)[:16].ljust(16, b"\x00"), bytes(ltk))
 
 
 def rpa_from_irk(irk: bytes, prand: int = 1) -> str:
@@ -2692,3 +2761,490 @@ def hid_input_report(report: bytes, handle: int = 0x0025) -> bytes:
     """
     body = struct.pack("<H", handle) + bytes(report)
     return l2cap_frame(0x0004, bytes([0x1B]) + body)          # ATT handle-value-notify
+
+
+# --------------------------------------------------------------------------- #
+# the classic profiles: the codecs the hijack wave speaks
+# --------------------------------------------------------------------------- #
+#
+# A Bluetooth assessment that stops at L2CAP has read the first layer of a stack that
+# has four more on top of it.  The profiles people actually use — music, the hands-free
+# kit in the car, the phonebook, the SIM, the personal-area network — are their own
+# protocols, and each one is a small, published frame layout.  They live here, next to
+# the ATT and SMP codecs, so the same builder that talks to a device is the parser an
+# analyst reads a capture with.
+
+#: AVDTP signal identifiers (Audio/Video Distribution Transport Protocol, the protocol
+#: under A2DP): a stream is discovered, configured and started with these, and the
+#: *answer* to ``SetConfiguration``/``Start`` is what owning an audio link means
+AVDTP_SIGNALS = {0x01: "Discover", 0x02: "GetCapabilities", 0x03: "SetConfiguration",
+                 0x04: "GetConfiguration", 0x05: "Reconfigure", 0x06: "Open",
+                 0x07: "Start", 0x08: "Close", 0x09: "Suspend", 0x0A: "Abort",
+                 0x0B: "SecurityControl", 0x0C: "GetAllCapabilities", 0x0D: "DelayReport"}
+
+#: the four message types the first octet of an AVDTP packet carries
+AVDTP_MESSAGES = {0x00: "command", 0x01: "general reject", 0x02: "response accept",
+                  0x03: "response reject"}
+
+#: AVDTP service categories: what a GetCapabilities answer is made of
+AVDTP_CATEGORIES = {0x01: "MediaTransport", 0x02: "Reporting", 0x03: "Recovery",
+                    0x04: "ContentProtection", 0x05: "HeaderCompression",
+                    0x06: "Multiplexing", 0x07: "MediaCodec"}
+
+#: the codecs an A2DP stream can carry, by the media codec type byte
+AVDTP_CODECS = {0x00: "SBC", 0x01: "MPEG-1/2 Audio", 0x02: "MPEG-2/4 AAC",
+                0x04: "MPEG-D USAC", 0xFF: "vendor (aptX/LDAC)"}
+
+#: AVRCP operations (Audio/Video Remote Control Profile over AVCTP)
+AVRCP_OPERATIONS = {0x10: "GetCapabilities", 0x11: "ListPlayerApplicationSettingAttributes",
+                    0x44: "Passthrough (AV/C button)",
+                    0x12: "ListPlayerApplicationSettingValues",
+                    0x13: "GetCurrentPlayerApplicationSettingValue",
+                    0x14: "SetPlayerApplicationSettingValue", 0x20: "GetElementAttributes",
+                    0x30: "GetPlayStatus", 0x31: "RegisterNotification",
+                    0x40: "RequestContinuingResponse", 0x41: "AbortContinuingResponse",
+                    0x50: "SetAbsoluteVolume"}
+
+#: AVRCP *notifications*: a controller that registers for one is told when the player
+#: changes — which is why registering is the act that takes the transport over
+AVRCP_EVENTS = {0x01: "PlaybackStatusChanged", 0x02: "TrackChanged",
+                0x03: "TrackReachedEnd", 0x04: "TrackReachedStart",
+                0x05: "PlayPositionChanged", 0x06: "BattStatusChanged",
+                0x07: "SystemStatusChanged", 0x08: "NowPlayingContentChanged",
+                0x09: "AvailablePlayersChanged", 0x0A: "AddressedPlayerChanged",
+                0x0B: "UidsChanged", 0x0C: "VolumeChanged", 0x0D: "VolumeChanged"}
+
+#: AV/C passthrough operation ids — the remote-control buttons themselves
+AVRCP_PASSTHROUGH = {0x44: "play", 0x45: "stop", 0x46: "pause", 0x4C: "forward",
+                     0x4D: "rewind", 0x41: "volume up", 0x42: "volume down",
+                     0x43: "mute", 0x48: "next track", 0x49: "previous track"}
+
+#: AVCTP header: transaction label (4 bits), packet type (2), C/R (1), IPID (1)
+def avctp_frame(payload: bytes, profile: int = 0x110E, tl: int = 0, cr: int = 0,
+                packet: int = 0, ipid: int = 0) -> bytes:
+    """An AVCTP frame: the transport AVRCP rides on.
+
+    The first octet is the transaction label (four bits), the packet type (two), the
+    C/R bit — 0 for a command and 1 for a response — and the IPID, which is 0 on the
+    control channel and 1 on the browsing channel the two PSMs separate.  ``profile`` is
+    ``0x110E`` for AVRCP itself and ``0x110C`` for the A2DP control channel, and AVCTP
+    lengths the payload so a fragmented response is unambiguous.
+    """
+    header = bytes([((tl & 0x0F) << 4) | ((packet & 0x03) << 2) | ((cr & 0x01) << 1)
+                    | (ipid & 0x01)])
+    return header + struct.pack(">HH", profile & 0xFFFF, len(payload)) + bytes(payload)
+
+
+def parse_avctp(data: bytes) -> Dict[str, Any]:
+    """Read an AVCTP frame: who it is for, whether it is an answer, and the payload."""
+    if len(data) < 5:
+        return {"error": "short AVCTP frame", "length": len(data)}
+    first = data[0]
+    profile = (data[1] << 8) | data[2]
+    size = int.from_bytes(data[3:5], "big")
+    body = bytes(data[5:5 + size]) if size else bytes(data[5:])
+    return {"tl": first >> 4, "packet_type": (first >> 2) & 0x03,
+            "cr": (first >> 1) & 0x01, "ipid": first & 0x01,
+            "profile": profile, "profile_name": "AVRCP" if profile == 0x110E else
+            ("A2DP control" if profile == 0x110C else f"profile 0x{profile:04x}"),
+            "length": size, "payload": body}
+
+
+def avrcp_command(operation: int, parameters: bytes = b"") -> bytes:
+    """An AVRCP command: the operation id, then its parameters."""
+    return bytes([operation & 0xFF]) + bytes(parameters)
+
+
+def avrcp_passthrough(operation: int, pressed: bool = True) -> bytes:
+    """An AV/C passthrough — the ``play``/``pause``/``volume`` buttons themselves."""
+    state = 0x00 if pressed else 0x80             # 0x00 pressed, 0x80 released
+    return avrcp_command(0x44, bytes([operation & 0x7F, state]))
+
+
+def avrcp_register(event: int, interval: int = 0, value: bytes = b"") -> bytes:
+    """``RegisterNotification``: the call that makes the player report to us."""
+    return avrcp_command(0x31, bytes([event & 0xFF]) + struct.pack(">I", interval & 0xFFFFFFFF)
+                         + bytes(value))
+
+
+def avrcp_set_absolute_volume(volume: int) -> bytes:
+    """``SetAbsoluteVolume``: 0 quiet, 0x7F full — the register a controller can write."""
+    return avrcp_command(0x50, bytes([volume & 0x7F]))
+
+
+def parse_avrcp(payload: bytes, response: bool = False) -> Dict[str, Any]:
+    """Read an AVRCP payload: the operation, and what its parameters mean.
+
+    ``response=True`` says the frame is the player's answer rather than the controller's
+    command, which matters because ``RegisterNotification`` carries the *interval* in a
+    command and the *value* in a notification: the same four bytes, two meanings, and
+    only the direction tells them apart.
+    """
+    if not payload:
+        return {"error": "empty AVRCP payload"}
+    operation = payload[0]
+    out: Dict[str, Any] = {"operation": operation,
+                           "name": AVRCP_OPERATIONS.get(operation,
+                                                        f"operation 0x{operation:02x}"),
+                           "parameters": bytes(payload[1:])}
+    if operation == 0x44 and len(payload) >= 3:              # passthrough
+        out["passthrough"] = AVRCP_PASSTHROUGH.get(payload[1] & 0x7F,
+                                                   f"av/c 0x{payload[1]:02x}")
+        out["pressed"] = not bool(payload[2] & 0x80)
+    elif operation == 0x31 and len(payload) >= 2:            # a notification
+        event = payload[1]
+        out["event"] = event
+        out["event_name"] = AVRCP_EVENTS.get(event, f"event 0x{event:02x}")
+        if not response and len(payload) >= 6:
+            out["interval_ms"] = int.from_bytes(payload[2:6], "big")
+        elif response and event in (0x0C, 0x0D) and len(payload) >= 3:
+            out["volume"] = payload[2] & 0x7F
+        elif response and event == 0x01 and len(payload) >= 3:
+            out["playback"] = {0x00: "stopped", 0x01: "playing", 0x02: "paused",
+                               0x03: "forward seeking", 0x04: "reverse seeking"}.get(
+                                   payload[2], f"0x{payload[2]:02x}")
+        elif response and len(payload) >= 10:
+            out["attribute"] = int.from_bytes(payload[2:10], "big")
+        elif response and len(payload) >= 6:
+            out["value"] = int.from_bytes(payload[2:6], "big")
+    elif operation == 0x50 and len(payload) >= 2:
+        out["volume"] = payload[1] & 0x7F
+    elif operation == 0x20:
+        out["attributes" if len(payload) < 8 else "elements"] = len(payload) - 1
+    elif operation == 0x10 and len(payload) >= 3:
+        out["company_id"] = payload[1:4].hex()
+        out["company_name"] = "Bluetooth SIG" if payload[1:4] == b"\x00\x19\x58" else \
+            payload[1:4].hex()
+    elif operation == 0x30 and len(payload) >= 9:
+        out["song_length_ms"] = int.from_bytes(payload[1:5], "big")
+        out["song_position_ms"] = int.from_bytes(payload[5:9], "big")
+        out["playback"] = {0x00: "stopped", 0x01: "playing", 0x02: "paused"}.get(
+            payload[9] if len(payload) > 9 else 0, "?")
+    return out
+
+
+def avdtp_signal(signal: int, payload: bytes = b"", label: int = 0, message: int = 0x00,
+                 packet: int = 0x00) -> bytes:
+    """An AVDTP signalling packet: the framing A2DP's setup is made of."""
+    return bytes([((label & 0x0F) << 4) | ((packet & 0x03) << 2) | (message & 0x03),
+                  signal & 0xFF]) + bytes(payload)
+
+
+def parse_avdtp(data: bytes) -> Dict[str, Any]:
+    """Read an AVDTP packet: the signal, whether it is an accept, and its payload."""
+    if len(data) < 2:
+        return {"error": "short AVDTP packet", "length": len(data)}
+    first = data[0]
+    signal = data[1]
+    out: Dict[str, Any] = {"label": first >> 4, "packet_type": (first >> 2) & 0x03,
+                           "message": first & 0x03,
+                           "message_name": AVDTP_MESSAGES.get(first & 0x03, "?"),
+                           "signal": signal,
+                           "signal_name": AVDTP_SIGNALS.get(signal, f"signal 0x{signal:02x}"),
+                           "status": "accept" if (first & 0x03) == 0x02 else
+                                     ("reject" if (first & 0x03) == 0x03 else "command"),
+                           "payload": bytes(data[2:])}
+    if signal == 0x01:                                   # Discover: a list of SEPs
+        seps = []
+        for index in range(0, len(data) - 2, 2):
+            seid = data[2 + index] >> 2
+            # the second byte of a SEP entry is media type (bits 7-4), TSEP (bits 3-2)
+            # and reserved: TSEP says whether the endpoint plays or sends audio
+            tsep = (data[3 + index] >> 2) & 0x03 if 3 + index < len(data) else 0
+            seps.append({"seid": seid,
+                         "media_type": "audio" if (3 + index < len(data)
+                                                   and data[3 + index] >> 4 == 0) else "?",
+                         "type": {0x00: "source", 0x01: "sink", 0x02: "source+sink"}.get(
+                             tsep, f"0x{tsep:02x}"),
+                         "in_use": bool((data[2 + index] >> 1) & 0x01)})
+        out["seps"] = seps
+    elif signal in (0x02, 0x0C) and len(data) >= 5:      # GetCapabilities answer
+        out["categories"] = []
+        offset = 2
+        while offset + 1 < len(data):
+            category = data[offset]
+            size = data[offset + 1]
+            block = bytes(data[offset + 2:offset + 2 + size])
+            entry: Dict[str, Any] = {"category": category,
+                                     "name": AVDTP_CATEGORIES.get(category, f"0x{category:02x}")}
+            if category == 0x07 and len(block) >= 2:
+                entry["media_type"] = "audio" if block[0] >> 4 == 0 else \
+                    f"0x{block[0] >> 4:x}"
+                entry["codec"] = AVDTP_CODECS.get(block[1], f"0x{block[1]:02x}")
+                if len(block) >= 4:
+                    entry["sampling_khz"] = {0x10: 44.1, 0x20: 48.0, 0x40: 32.0}.get(
+                        block[2] & 0xF0, 0)
+                    entry["channel_mode"] = {0x01: "mono", 0x02: "dual channel",
+                                             0x04: "stereo", 0x08: "joint stereo"}.get(
+                                                 block[2] & 0x0F, "")
+                if len(block) >= 5:
+                    entry["bitpool_min"] = block[4]
+                    entry["bitpool_max"] = block[5] if len(block) > 5 else 0
+            elif category == 0x01 and block:
+                entry["data"] = block.hex()
+            out["categories"].append(entry)
+            offset += 2 + size
+    elif signal in (0x03, 0x06, 0x07, 0x09) and len(data) >= 3:
+        out["seid"] = data[2] >> 2
+    return out
+
+
+def avdtp_discover(label: int = 0) -> bytes:
+    """The first AVDTP command an audio client sends: what streams does this device have."""
+    return avdtp_signal(0x01, b"", label=label)
+
+
+def avdtp_get_capabilities(seid: int, label: int = 1) -> bytes:
+    """Ask one stream endpoint what it can carry (SBC, AAC, aptX)."""
+    return avdtp_signal(0x02, bytes([(seid & 0x3F) << 2]), label=label)
+
+
+def avdtp_set_configuration(seid: int, codec: int = 0x00, label: int = 2) -> bytes:
+    """Configure a stream: the command that decides the codec a session will use."""
+    block = bytes([0x3F, 0x07, 0x00, 0x00, 0x00]) + bytes([0x00, codec, 0x21, 0x02, 0x35,
+                                                           0x2C, 0x2C])
+    return avdtp_signal(0x03, bytes([(0x02 & 0x3F) << 2, (seid & 0x3F) << 2])
+                        + bytes([0x07, len(block)]) + block, label=label)
+
+
+def avdtp_simple(signal: int, seid: int, label: int = 3) -> bytes:
+    """``Open``/``Start``/``Suspend``/``Close``: the stream controls, one call each."""
+    return avdtp_signal(signal, bytes([(0x02 & 0x3F) << 2, (seid & 0x3F) << 2]), label=label)
+
+
+#: BNEP (Bluetooth Network Encapsulation Protocol) — how a Bluetooth device bridges
+#: another network to us.  A personal-area network is the phone's LAN, and joining one is
+#: the step that turns a headset into a network foothold
+BNEP_TYPES = {0x00: "general ethernet", 0x01: "control"}
+BNEP_CONTROLS = {0x01: "SetupConnectionReq", 0x02: "SetupConnectionRsp",
+                 0x03: "FilterSetupReq", 0x04: "FilterSetupRsp",
+                 0x05: "FilterChangeReq", 0x06: "FilterChangeRsp"}
+BNEP_UUIDS = {0x0001: "PANU", 0x0002: "GN", 0x0003: "NAP", 0x0004: "PANU/GN/NAP"}
+
+
+def bnep_control(control: int, payload: bytes = b"") -> bytes:
+    """A BNEP control frame: how a personal-area network is set up."""
+    return bytes([0x01, control & 0xFF]) + bytes(payload)
+
+
+def bnep_setup(destination_uuid: int = 0x0001, source_uuid: int = 0x0003,
+               dst: bytes = b"\x00" * 6, src: bytes = b"\x00" * 6) -> bytes:
+    """``SetupConnectionReq``/``Rsp``: destination uuid, source uuid, result."""
+    return (bytes([0x01, 0x01]) + struct.pack(">H", destination_uuid) + dst
+            + struct.pack(">H", source_uuid) + src)
+
+
+def ethernet_frame(dst: str = "ff:ff:ff:ff:ff:ff", src: str = "02:00:00:00:00:01",
+                   ethertype: int = 0x0806, payload: bytes = b"") -> bytes:
+    """A plain Ethernet frame: what a BNEP general frame carries."""
+    return mac_bytes(dst) + mac_bytes(src) + struct.pack(">H", ethertype) + bytes(payload)
+
+
+def bnep_frame(frame: bytes) -> bytes:
+    """Wrap an Ethernet frame in a BNEP general frame."""
+    return bytes([0x00]) + bytes(frame)
+
+
+def parse_bnep(data: bytes) -> Dict[str, Any]:
+    """Read a BNEP frame: a setup, a filter, or an Ethernet frame with a header."""
+    if not data:
+        return {"error": "empty BNEP frame"}
+    kind = data[0]
+    out: Dict[str, Any] = {"type": kind, "type_name": BNEP_TYPES.get(kind, f"0x{kind:02x}"),
+                           "payload": bytes(data[1:])}
+    if kind == 0x01 and len(data) >= 2:
+        control = data[1]
+        out["control"] = control
+        out["control_name"] = BNEP_CONTROLS.get(control, f"0x{control:02x}")
+        if len(data) >= 12:
+            destination = (data[2] << 8) | data[3]
+            source = (data[10] << 8) | data[11]
+            out["destination_uuid"] = destination
+            out["destination"] = BNEP_UUIDS.get(destination, f"0x{destination:04x}")
+            out["source_uuid"] = source
+            out["source"] = BNEP_UUIDS.get(source, f"0x{source:04x}")
+            if len(data) >= 14:
+                out["result"] = int.from_bytes(data[12:14], "big")
+    elif kind == 0x00 and len(data) >= 15:
+        out["destination"] = mac_text(data[1:7]).upper()
+        out["source"] = mac_text(data[7:13]).upper()
+        out["ethertype"] = int.from_bytes(data[13:15], "big")
+        out["ethernet_payload"] = bytes(data[15:])
+        out["protocol"] = {0x0800: "IPv4", 0x0806: "ARP", 0x86DD: "IPv6"}.get(
+            out["ethertype"], f"0x{out['ethertype']:04x}")
+    return out
+
+
+#: HIDP (HID Profile) transactions — the classic HID channel, where the reports of a
+#: keyboard or a mouse travel once the host has opened the interrupt channel
+HIDP_TRANSACTIONS = {0x0: "handshake", 0x1: "hid control", 0x4: "get report",
+                     0x5: "set report", 0x6: "get protocol", 0x7: "set protocol",
+                     0x8: "get idle", 0x9: "set idle", 0xA: "data", 0xB: "data (control)"}
+HIDP_PARAMETERS = {0x0: "other", 0x1: "input", 0x2: "output", 0x3: "feature"}
+HIDP_HANDSHAKES = {0x00: "successful", 0x01: "not ready", 0x02: "invalid report id",
+                   0x03: "unsupported request", 0x04: "invalid parameter",
+                   0x0E: "unknown", 0x0F: "fatal"}
+
+
+def hidp_frame(transaction: int, parameter: int = 0, payload: bytes = b"") -> bytes:
+    """A HIDP packet: the transaction nibble, the parameter nibble, then the body."""
+    return bytes([((transaction & 0x0F) << 4) | (parameter & 0x0F)]) + bytes(payload)
+
+
+def hidp_handshake(result: int = 0x00) -> bytes:
+    """The answer to a HIDP request: ``0x00`` is "successful"."""
+    return hidp_frame(0x00, 0x00, bytes([result & 0xFF]))
+
+
+def parse_hidp(data: bytes) -> Dict[str, Any]:
+    """Read a HIDP packet: which transaction, and whether it was answered."""
+    if not data:
+        return {"error": "empty HIDP packet"}
+    transaction = data[0] >> 4
+    parameter = data[0] & 0x0F
+    out: Dict[str, Any] = {"transaction": transaction,
+                           "transaction_name": HIDP_TRANSACTIONS.get(
+                               transaction, f"0x{transaction:x}"),
+                           "parameter": parameter,
+                           "parameter_name": HIDP_PARAMETERS.get(parameter,
+                                                                 f"0x{parameter:x}"),
+                           "payload": bytes(data[1:])}
+    if transaction == 0x00 and len(data) >= 2:
+        out["result"] = data[1]
+        out["result_name"] = HIDP_HANDSHAKES.get(data[1], f"0x{data[1]:02x}")
+        out["accepted"] = data[1] == 0x00
+    if transaction in (0x0A, 0x0B) and len(data) >= 2:
+        # a data packet is a report: the first byte of the body is the report the
+        # keyboard's report map declared
+        out["report"] = bytes(data[2:]) if len(data) > 2 else bytes(data[1:])
+        out["report_id"] = data[1] if transaction == 0x0B else 0
+    return out
+
+
+#: SAP (SIM Access Profile) messages — the profile that hands a car kit the phone's
+#: subscriber identity, and one of the most consequential things a Bluetooth link can do
+SAP_MESSAGES = {0x00: "ConnectReq", 0x01: "ConnectRsp", 0x02: "DisconnectReq",
+                0x03: "DisconnectRsp", 0x04: "TransferAPDUReq", 0x05: "TransferAPDURsp",
+                0x06: "TransferATRReq", 0x07: "TransferATRRsp",
+                0x08: "PowerSimOffReq", 0x09: "PowerSimOffRsp", 0x0A: "PowerSimOnReq",
+                0x0B: "PowerSimOnRsp", 0x0C: "ResetSimReq", 0x0D: "ResetSimRsp",
+                0x0E: "TransferCardReaderStatusReq", 0x0F: "TransferCardReaderStatusRsp",
+                0x10: "SetTransportProtocolReq", 0x11: "SetTransportProtocolRsp",
+                0x12: "StatusInd"}
+SAP_PARAMETERS = {0x01: "MaxMsgSize", 0x02: "ConnectionStatus", 0x03: "ResultCode",
+                  0x04: "StatusChange", 0x05: "TransportProtocol", 0x06: "CommandAPDU",
+                  0x07: "ResponseAPDU", 0x08: "ATR", 0x09: "CardReaderStatus",
+                  0x0A: "SubscriberNumber"}
+
+
+def sap_message(message: int, parameters: bytes = b"") -> bytes:
+    """A SAP message: the message id, one parameter, and its length-prefixed value."""
+    return bytes([message & 0xFF]) + bytes(parameters)
+
+
+def sap_parameter(identifier: int, value: bytes) -> bytes:
+    """One SAP parameter: ``id``, ``length``, then the value."""
+    return bytes([identifier & 0xFF, len(value) & 0xFF]) + bytes(value)
+
+
+def ef_imsi(imsi: str) -> bytes:
+    """Encode an IMSI the way ``EF_IMSI`` holds it: the length byte, then the digits,
+    each pair swapped, with the digit count as the first nibble."""
+    digits = "".join(character for character in str(imsi) if character.isdigit())
+    body = f"{len(digits):x}" + digits
+    if len(body) % 2:
+        body += "f"
+    swapped = "".join(body[index + 1] + body[index] for index in range(0, len(body), 2))
+    return bytes([len(swapped) // 2]) + bytes.fromhex(swapped)
+
+
+def parse_sap(data: bytes) -> Dict[str, Any]:
+    """Read a SAP message, parameter by parameter."""
+    if not data:
+        return {"error": "empty SAP message"}
+    out: Dict[str, Any] = {"message": data[0],
+                           "message_name": SAP_MESSAGES.get(data[0], f"0x{data[0]:02x}"),
+                           "parameters": []}
+    offset = 1
+    while offset + 1 < len(data):
+        identifier = data[offset]
+        size = data[offset + 1]
+        value = bytes(data[offset + 2:offset + 2 + size])
+        out["parameters"].append({"id": identifier,
+                                  "name": SAP_PARAMETERS.get(identifier,
+                                                             f"0x{identifier:02x}"),
+                                  "value": value})
+        if identifier == 0x08:
+            out["atr"] = value.hex()
+        elif identifier == 0x0A:
+            out["subscriber_number"] = value.decode("ascii", "replace")
+        elif identifier == 0x07:
+            out["apdu_response"] = value.hex()
+        elif identifier == 0x06:
+            out["apdu_command"] = value.hex()
+        elif identifier == 0x03:
+            out["result_code"] = value.hex()
+        offset += 2 + size
+    return out
+
+
+#: the APDU status words a SIM answers with, and what they mean in a report
+APDU_STATUS = {0x9000: "success", 0x9F1B: "file selected (1B bytes)",
+               0x9F0F: "file selected (0F bytes)", 0x6A82: "file not found",
+               0x6982: "security status not satisfied", 0x6D00: "instruction not supported"}
+
+
+def apdu_select(file_id: int) -> bytes:
+    """``SELECT FILE`` — the first command anyone sends a SIM."""
+    return b"\xA0\xA4\x00\x00\x02" + struct.pack(">H", file_id & 0xFFFF)
+
+
+def apdu_read_binary(length: int = 16, offset: int = 0) -> bytes:
+    """``READ BINARY`` — how the contents of a selected file come back."""
+    return b"\xA0\xB0\x00" + bytes([offset & 0xFF]) + bytes([length & 0xFF])
+
+
+def parse_apdu(data: bytes) -> Dict[str, Any]:
+    """Read an APDU response: the body, and the two status bytes at the end."""
+    if len(data) < 2:
+        return {"error": "short APDU response", "data": data.hex()}
+    status = int.from_bytes(data[-2:], "big")
+    body = bytes(data[:-2])
+    return {"status": status, "status_text": APDU_STATUS.get(status, f"0x{status:04x}"),
+            "body": body, "body_hex": body.hex(),
+            "success": status in (0x9000, 0x9F1B, 0x9F0F) or (status >> 8) == 0x9F}
+
+
+#: the file identifiers on a SIM, in the order an identity read walks them
+SIM_FILES = {0x3F00: "MF (master file)", 0x7F20: "DF_GSM (GSM directory)",
+             0x6F07: "EF_IMSI (subscriber identity)",
+             0x6F46: "EF_SPN (service provider name)",
+             0x6FAD: "EF_AD (administrative data)",
+             0x6F7E: "EF_LOCI (location information)",
+             0x6FB7: "EF_ICCID (card serial number)",
+             0x6F20: "EF_Kc (ciphering key)"}
+
+
+def imsi_from_ef_imsi(data: bytes) -> str:
+    """Decode the subscriber identity out of ``EF_IMSI``.
+
+    The file is nibble-swapped, and its first nibble is the number of digits that
+    follow — so the identity is the second nibble onwards, ``length`` digits long.  This
+    is the value a SIM access profile hands to a car kit, and reading it off the air is
+    the finding: an IMSI identifies a subscriber for as long as the SIM exists.
+    """
+    if len(data) < 2:
+        return ""
+    digits = "".join(f"{byte & 0x0F:x}{byte >> 4:x}" for byte in bytes(data[:9])[1:])
+    if not digits:
+        return ""
+    count = int(digits[0], 16)
+    if count == 0 or count > len(digits) - 1:
+        count = len(digits) - 1
+    return digits[1:1 + count]
+
+
+def iccid_from_ef_iccid(data: bytes) -> str:
+    """Decode a card serial number (``EF_ICCID``): also nibble-swapped, also permanent."""
+    digits = "".join(f"{byte & 0x0F:x}{byte >> 4:x}" for byte in bytes(data))
+    return digits.replace("F", "").replace("f", "")
