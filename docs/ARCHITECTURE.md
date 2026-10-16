@@ -143,7 +143,7 @@ what a demo run meets is a device that answers.
 environments contain, including the per-device catalogue, so a demo run can be inspected
 rather than taken on faith.
 
-The 762 attacks are grouped into modules by *what they need*, which is also how the
+The 848 attacks are grouped into modules by *what they need*, which is also how the
 tests and the docs are organised:
 
 | module | attacks | radio |

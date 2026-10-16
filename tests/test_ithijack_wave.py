@@ -1,4 +1,4 @@
-"""The IT hijacker wave: seventy attacks that answer as something else.
+"""The IT hijacker wave: 131 attacks that answer as something else.
 
 The IT editions of the impersonation waves.  Every attack talks to a real service — in
 demo mode the simulated network, live the segment under test — and every claim it makes is
@@ -25,8 +25,8 @@ from wifipilot.models import AccessPoint
 WAVE = tuple(ithijack.NAMES)
 
 #: the families and how many attacks each contributes
-FAMILIES = {"mimic": 14, "impersonate": 12, "hijack": 12, "poison": 12, "relay": 10,
-            "steal": 10}
+FAMILIES = {"mimic": 22, "impersonate": 15, "hijack": 20, "poison": 16, "relay": 20,
+            "steal": 22, "fuzz": 8, "survey": 8}
 
 
 @pytest.fixture()
@@ -56,13 +56,15 @@ def test_wave_runs(name, ctx):
     assert outcome.status == "success", (name, outcome.result, outcome.detail)
     assert outcome.detail
     assert outcome.extra["family"] in FAMILIES
-    assert outcome.extra["frames"] >= 1, "every attack writes at least one frame"
+    assert meta.ATTACK_META[name]["family"] == outcome.extra["family"]
+    assert outcome.extra["frames"] >= 1 or outcome.extra.get("capture_only"), \
+        "every attack writes a frame, or says its finding is the device's own greeting"
     assert outcome.extra["confirmed"] is True or outcome.extra["answers"] >= 1
 
 
 def test_wave_is_registered():
-    assert len(WAVE) == 70
-    assert len(set(WAVE)) == 70
+    assert len(WAVE) == 131
+    assert len(set(WAVE)) == 131
     assert set(WAVE) == set(ithijack.META)
     for name in WAVE:
         assert name in ATTACK_CLASSES, name
@@ -85,7 +87,7 @@ def test_the_families_are_evenly_spread():
 def test_the_wave_costs_something():
     """No attack in the wave is silent *and* harmless: the metadata has to say so."""
     for name, row in ithijack.META.items():
-        assert row["category"] in ("rogue", "capture", "exploit"), name
+        assert row["category"] in ("rogue", "capture", "exploit", "dos", "discovery"), name
         assert row["noise"] in ("silent", "quiet", "moderate", "loud"), name
         assert row["impact"] in ("info", "degraded", "outage", "loot"), name
 
@@ -200,3 +202,76 @@ def test_a_service_with_nothing_to_answer_is_graded_on_the_wire(ctx):
     assert outcome.extra["answers"] == 0
     assert outcome.extra["rogue_records"][0]["value"] == ithijack.OUR_IP
     assert "we answered as the service ourselves" in outcome.result
+
+
+# --------------------------------------------------------------------------- #
+# the edge of the wave: the fuzzers and the surveys
+# --------------------------------------------------------------------------- #
+
+def test_the_dns_fuzz_is_longer_than_a_name_may_be(ctx):
+    """Six 68-byte labels: the question is legal and the name is not."""
+    outcome = run("it_fuzz_dns_name", ctx)
+    assert outcome.extra["our_query_bytes"] > 200
+    assert (outcome.extra["labels"], outcome.extra["label_length"]) == (7, 68)
+
+
+def test_the_snmp_fuzz_asks_for_three_hundred_varbinds(ctx):
+    outcome = run("it_fuzz_snmp_varbind", ctx)
+    assert outcome.extra["varbinds_we_ask_for"] == 300
+    assert outcome.extra["community_used"] == "public"
+    assert outcome.extra["our_request_bytes"] > 1000
+
+
+def test_the_coap_write_is_answered_two_zero_four(ctx):
+    """A CoAP write the device meant for its own endpoint is answered by ours."""
+    outcome = run("it_mimic_coap_write", ctx)
+    assert outcome.extra["our_code"] == "2.04 Changed"
+    assert outcome.extra["payload_we_answer"] == "wp-mimic-ok"
+
+
+def test_the_cwmp_survey_asks_for_firmware_not_for_a_shell(ctx):
+    outcome = run("it_survey_cwmp_parameters", ctx)
+    names = outcome.extra["parameters_we_ask_for"]
+    assert len(names) == 4 and any("SoftwareVersion" in name for name in names)
+    assert outcome.extra["device_we_announce"] == "0026F4 / WP00000001"
+
+
+def test_the_mysql_greeting_is_the_finding(ctx):
+    """The server speaks first: the version, the salt and the auth plugin are enough."""
+    outcome = run("it_survey_mysql_handshake", ctx)
+    assert outcome.extra["greeting_is_the_finding"] is True
+
+
+def test_the_print_spooler_survey_names_its_commands(ctx):
+    outcome = run("it_survey_spooler_banner", ctx)
+    assert outcome.extra["commands_we_send"] == ["id", "ustatus"]
+    assert outcome.extra["spool_we_can_read"] is True
+
+
+def test_the_sip_contact_hijack_points_the_phone_at_us(ctx):
+    outcome = run("it_hijack_sip_contact", ctx)
+    assert outcome.extra["contact_we_set"] == f"sip:1002@{ithijack.OUR_IP}:5060"
+    assert outcome.extra["expires"] == 3600
+
+
+def test_the_memcached_theft_takes_a_key_a_cognition_away(ctx):
+    outcome = run("it_steal_memcached_keys", ctx)
+    assert outcome.extra["key_we_take"] == "session:admin"
+    assert outcome.extra["handed_over"] > 0
+
+
+def test_the_snmp_engine_impersonation_wears_a_switch(ctx):
+    outcome = run("it_impersonate_snmp_engine", ctx)
+    assert "wp impersonation" in outcome.extra["sys_descr_we_send"]
+    assert outcome.extra["engine_id"].startswith("80001f8880")   # the enterprise prefix
+    assert outcome.extra["engine_id"].endswith("5a5a5a5a")
+
+
+def test_the_fuzzers_and_surveys_carry_the_two_new_families():
+    families = {row["family"] for row in ithijack.META.values()}
+    assert {"fuzz", "survey"} <= families
+    for name, row in ithijack.META.items():
+        if row["family"] == "fuzz":
+            assert row["category"] == "dos", name
+        if row["family"] == "survey":
+            assert row["category"] == "discovery", name

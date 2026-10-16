@@ -1047,12 +1047,12 @@ def catalogue(category: str = "", noise: str = "", offline_only: bool = False,
 
     >>> import wifipilot as wp
     >>> len(wp.catalogue())
-    762
+    848
     >>> [entry["name"] for entry in wp.catalogue(offline_only=True)][:3]
     ['loot_audit', 'eapol_audit', 'wep_audit']
     >>> names = [entry["name"] for entry in wp.catalogue(domain="it")]
     >>> len(names), names[:2]
-    (356, ['it_mimic_dns', 'it_mimic_dhcp'])
+    (417, ['it_mimic_dns', 'it_mimic_dhcp'])
 
     Filters are exact matches on the metadata table: ``category="dos"`` for the
     denial-of-service tests, ``noise="silent"`` for everything that transmits nothing,
@@ -1086,7 +1086,7 @@ def editions() -> List[Dict[str, object]]:
 
     >>> import wifipilot as wp
     >>> [(row["id"], row["attacks"]) for row in wp.editions()]
-    [('wifi', 288), ('bluetooth', 118), ('it', 356), ('all', 762)]
+    [('wifi', 288), ('bluetooth', 143), ('it', 417), ('all', 848)]
     """
     from .itdev import edition_catalog
 

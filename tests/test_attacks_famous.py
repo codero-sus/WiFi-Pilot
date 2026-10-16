@@ -111,8 +111,9 @@ def test_the_famous_wave_is_registered():
     # 248 from the famous/Bluetooth waves + 213 services-and-devices + the 73
     # cross-cutting version/cleartext audits every service now carries + the 8 of the
     # BLE wave (HID injection, the downgrades around it, and identity) + the 25 of the
-    # imitation wave (keyboards, speakers, tags, locks: devices faked convincingly)
-    assert len(DEFAULT_ORDER) == 762
+    # imitation wave (keyboards, speakers, tags, locks: devices faked convincingly) + the
+    # 25 of the peripheral wave (what the devices a room already trusts will do for a copy)
+    assert len(DEFAULT_ORDER) == 848
 
 
 def test_registry_and_documentation_agree():
