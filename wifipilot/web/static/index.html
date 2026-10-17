@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>wifipilot · AI-piloted WiFi auditing</title>
+<link rel="stylesheet" href="/static/style.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">📡</span>
+    <div>
+      <h1>wifipilot</h1>
+      <p class="tagline">auditing for WiFi, Bluetooth and IP devices
+        <span class="dim">· wifite alternative · web UI · authorised use only</span></p>
+    </div>
+  </div>
+  <div class="status-group">
+    <span id="mode-badge" class="badge badge-demo">simulation</span>
+    <span id="edition-badge" class="badge badge-idle" title="the edition the planner is planning for">edition: all</span>
+    <span id="phase-badge" class="badge badge-idle">idle</span>
+      <span id="ai-badge" class="badge badge-off" title="the advisor is optional; off means the deterministic planner decides">ai: —</span>
+    <span id="conn-badge" class="badge badge-conn">connecting…</span>
+    <span class="kpi"><b id="kpi-aps">0</b><small>APs</small></span>
+    <span class="kpi"><b id="kpi-clients">0</b><small>clients</small></span>
+    <span class="kpi"><b id="kpi-loot">0</b><small>loot</small></span>
+    <span class="kpi"><b id="kpi-pswd">0</b><small>PSKs</small></span>
+    <span class="kpi"><b id="kpi-uptime">0s</b><small>uptime</small></span>
+  </div>
+</header>
+
+<section class="controlbar">
+  <button id="btn-campaign" class="btn btn-primary">▶ Start campaign</button>
+  <button id="btn-stop" class="btn btn-danger" disabled>■ Stop</button>
+  <button id="btn-cancel" class="btn">✂ Cancel attack</button>
+  <button id="btn-rescan" class="btn">⟳ Rescan 20s</button>
+  <button id="btn-think" class="btn">🧠 Think now</button>
+  <label class="field">budget
+    <input id="inp-duration" type="text" placeholder="e.g. 30m / 0" value="0" size="6" />
+  </label>
+  <label class="field">scope (BSSIDs)
+    <input id="inp-targets" type="text" placeholder="all discovered (or paste BSSIDs)" size="26" />
+  </label>
+  <label class="switch"><input id="chk-scanfirst" type="checkbox" checked /> scan first</label>
+  <label class="switch"><input id="chk-authorized" type="checkbox" /> I have written authorisation</label>
+  <label class="switch"><input id="chk-demo" type="checkbox" checked /> simulation</label>
+  <span class="seg" id="edition-switch" title="which toolbox the planner and the attack lists use">
+    <button class="seg-btn active" data-edition="all">All <b>—</b></button>
+    <button class="seg-btn" data-edition="wifi">📶 WiFi <b>—</b></button>
+    <button class="seg-btn" data-edition="bluetooth">🔵 Bluetooth <b>—</b></button>
+    <button class="seg-btn" data-edition="it">🖥 IT <b>—</b></button>
+  </span>
+  <span class="edition-note" id="edition-note">every edition enabled</span>
+</section>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="targets">Targets <span id="tab-count-targets" class="pill">0</span></button>
+  <button class="tab" data-tab="devices">Devices &amp; attacks <span id="tab-count-devices" class="pill">0</span></button>
+  <button class="tab" data-tab="loot">Loot <span id="tab-count-loot" class="pill">0</span></button>
+  <button class="tab" data-tab="ai" id="tab-btn-ai">AI advisor <span class="dim">· optional</span></button>
+  <button class="tab" data-tab="log">Log</button>
+  <button class="tab" data-tab="settings">Tools &amp; settings</button>
+</nav>
+
+<main>
+  <!-- ---------------------------------------------------------------- -->
+  <section id="tab-targets" class="tabpane active">
+    <div class="pane-tools">
+      <input id="inp-filter" type="search" placeholder="filter by SSID / BSSID / vendor…" />
+      <label class="switch"><input id="chk-autothink" type="checkbox" checked /> auto-think (local LLM)</label>
+      <label class="switch"><input id="chk-stealth" type="checkbox" /> stealth (passive only)</label>
+      <span class="dim" id="hint-targets"></span>
+    </div>
+    <div class="tablewrap">
+      <table id="tbl-targets">
+        <thead>
+          <tr>
+            <th></th><th>SSID</th><th>BSSID</th><th>CH</th><th>Band</th><th>Signal</th>
+            <th>Security</th><th>WPS</th><th>Kind</th><th>Tags</th><th>Clients</th><th>Loot</th><th>Score</th><th>Decided by</th><th>Attack</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div id="detail-panel" class="detail hidden"></div>
+    <div class="card" id="advice-card">
+      <h3>Next steps <span class="dim" style="font-weight:400">— heuristics, no LLM call</span></h3>
+      <div id="advice-list" class="dim">loading…</div>
+    </div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section id="tab-devices" class="tabpane">
+    <div class="toolbar-row">
+      <input id="inp-device-filter" type="search" placeholder="filter devices (camera, printer, plc, plc…)" size="30" />
+      <select id="sel-device-group" title="device group"><option value="">all groups</option></select>
+      <label class="switch"><input id="chk-device-domain" type="checkbox" /> only the active edition</label>
+      <button id="btn-devices-refresh" class="btn">⟳ reload shelf</button>
+      <span class="dim" id="device-summary"></span>
+    </div>
+    <div class="toolbar-row">
+      <input id="inp-it-host" type="text" placeholder="host to test (e.g. 192.168.1.26)" size="22" />
+      <input id="inp-it-port" type="number" min="0" placeholder="port" size="6" style="min-width:80px" />
+      <select id="sel-demo-host" title="the simulated segment (simulation mode only)"><option value="">pick a simulated host…</option></select>
+      <select id="sel-demo-bt" title="the simulated Bluetooth floor (simulation mode only)"><option value="">pick a simulated device…</option></select>
+      <button id="btn-point-host" class="btn btn-primary">🎯 point the IT attacks here</button>
+      <button id="btn-run-plan" class="btn" title="run the discovery rows for the selected device">▷ run discovery set</button>
+      <span class="dim" id="select-note"></span>
+    </div>
+    <div class="device-layout">
+      <div class="card">
+        <h3>Devices <span class="dim" style="font-weight:400">— what this toolbox knows how to test</span></h3>
+        <div id="device-grid" class="device-grid"><span class="dim">loading…</span></div>
+      </div>
+      <div class="card" id="device-panel">
+        <h3 id="dev-title">Pick a device</h3>
+        <div id="dev-briefing" class="briefing">Every attack in the catalogue is attached to the device
+        types it works against. Pick one to see the ports it uses, what it answers with, the risk of
+        leaving it as it is — and the attacks that actually apply to it.</div>
+        <div id="dev-body"></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Attacks <span class="dim" style="font-weight:400">— the whole catalogue, filtered</span>
+        <span id="cat-count" class="pill">0</span></h3>
+      <div class="toolbar-row">
+        <input id="inp-attack-filter" type="search" placeholder="filter attacks (rtsp, default, printer…)" size="30" />
+        <select id="sel-attack-category"><option value="">all categories</option></select>
+        <select id="sel-attack-domain">
+          <option value="">every edition</option>
+          <option value="wifi">WiFi</option>
+          <option value="bluetooth">Bluetooth</option>
+          <option value="it">IT</option>
+        </select>
+        <label class="switch"><input id="chk-only-device" type="checkbox" /> only this device</label>
+        <span class="dim">run runs it; ? explains it</span>
+      </div>
+      <div class="attack-scroll">
+        <table class="attack-table">
+          <thead><tr><th>attack</th><th>what it does</th><th>edition</th><th>category</th><th>noise</th><th>impact</th><th>port</th><th></th></tr></thead>
+          <tbody id="cat-body"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card help-card" id="help-card">
+      <h3>Help <span class="dim" style="font-weight:400">— answers come from the catalogue; the advisor adds to them when it is on</span></h3>
+      <div class="toolbar-row">
+        <input id="inp-help" type="text" placeholder="how do I test a printer without breaking it?" />
+        <button id="btn-help" class="btn btn-primary">ask</button>
+        <button id="btn-help-explain" class="btn">? explain the selected attack</button>
+        <span class="help-src" id="help-src"></span>
+      </div>
+      <div class="pill-row" id="help-chips">
+        <button class="chip" data-helpq="Which attacks are safe to run during office hours?">safe during office hours</button>
+        <button class="chip" data-helpq="How do I prove a default credential finding to a client?">prove a finding</button>
+        <button class="chip" data-helpq="What is the least disruptive way to test a printer?">least disruptive printer test</button>
+        <button class="chip" data-helpq="Which of these attacks would trip an IDS?">what trips an IDS</button>
+      </div>
+      <div class="help-answer" id="help-answer">Ask about an attack, a device, or how to run a test
+        without taking the site down. With the advisor off you still get the catalogue's own
+        description, the noise level and what the defender sees.</div>
+    </div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section id="tab-loot" class="tabpane">
+    <div class="pane-tools">
+      <span class="dim">Everything captured this session. Passwords marked <span class="ok">verified</span> were confirmed by recomputing the PMKID/MIC or by the cracker's own check.</span>
+      <a class="btn" href="/api/report" target="_blank" rel="noopener">📄 Markdown report</a>
+      <a class="btn" href="/api/export" target="_blank" rel="noopener">⤓ JSON export</a>
+    </div>
+    <div id="loot-grid" class="grid"></div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section id="tab-ai" class="tabpane">
+    <div id="ai-off-note" class="banner banner-off" hidden>
+      <span><b>The advisor is off.</b> The deterministic planner is scoring targets and
+      picking attacks on its own — no model is called and nothing about this engagement
+      leaves this machine. Everything else in wifipilot works exactly the same.</span>
+      <button id="btn-ai-toggle" class="btn btn-primary">turn the advisor on</button>
+    </div>
+    <div class="grid ai-grid">
+      <div class="card">
+        <h3>Model provider</h3>
+        <div class="row">
+          <select id="sel-provider">
+            <option value="auto">auto — prefer local Ollama</option>
+            <option value="ollama">Ollama — local, private</option>
+            <option value="cortex">Cortex LLMHoster — local, OpenAI-compatible</option>
+            <option value="openrouter">OpenRouter — cloud, paid</option>
+            <option value="none">disabled — planner heuristics only</option>
+          </select>
+          <button id="btn-provider" class="btn">switch</button>
+          <button id="btn-ai-off" class="btn btn-quiet" title="stop using a model entirely">off</button>
+        </div>
+        <div id="ai-status" class="kv"></div>
+        <div class="row">
+          <select id="sel-model"></select>
+          <button id="btn-model" class="btn">use model</button>
+          <button id="btn-models-refresh" class="btn" title="reload the catalogue">⟳</button>
+        </div>
+        <div class="row">
+          <input id="inp-model-search" type="text" placeholder="filter models (e.g. qwen, gpt, free)" />
+          <label class="chk"><input type="checkbox" id="chk-free" /> free only</label>
+        </div>
+        <div class="row">
+          <input id="inp-cortex-host" type="text"
+                 placeholder="Cortex LLMHoster (default http://127.0.0.1:8624)" />
+          <button id="btn-cortex" class="btn"
+                  title="use the Cortex LLMHoster already running on this machine">use cortex</button>
+        </div>
+        <div class="row" id="row-pull">
+          <input id="inp-pull" type="text" placeholder="e.g. llama3.1:8b" />
+          <button id="btn-pull" class="btn">⤓ ollama pull</button>
+        </div>
+        <p class="dim" id="ai-privacy"></p>
+      </div>
+
+      <div class="card" id="card-openrouter">
+        <h3>OpenRouter (cloud)</h3>
+        <div class="row">
+          <input id="inp-or-key" type="password" placeholder="sk-or-… (or export OPENROUTER_API_KEY)" />
+          <button id="btn-or-key" class="btn">save key</button>
+        </div>
+        <div class="banner banner-cloud">
+          <label class="chk"><input type="checkbox" id="chk-or-consent" /> I understand that
+          engagement data (SSIDs, BSSIDs, MACs and recovered PSKs) is sent to openrouter.ai,
+          a third-party cloud service.</label>
+        </div>
+        <div class="kv" id="or-status"></div>
+        <label class="chk"><input type="checkbox" id="chk-or-redact" /> pseudonymise
+        SSIDs/BSSIDs/MACs/PSKs before sending (recommended)</label>
+        <div class="row">
+          <input id="inp-or-budget" type="number" step="0.01" min="0" placeholder="spend cap in USD (0 = none)" />
+          <button id="btn-or-budget" class="btn">set budget</button>
+        </div>
+        <p class="dim">Create a key at <code>openrouter.ai/keys</code>. The key is stored in
+        <code>wifipilot.json</code> (mode 600) and is never sent back to this page. Prefer the
+        <code>OPENROUTER_API_KEY</code> environment variable or a key file in production.</p>
+      </div>
+      <div class="card" id="card-plan">
+        <h3>Last plan <span id="plan-source" class="badge badge-idle">—</span></h3>
+        <div id="plan-reasoning" class="reasoning">No plan yet. Start a campaign or press “Think now”.</div>
+        <ul id="plan-actions" class="actions"></ul>
+        <div id="plan-dropped" class="dropped"></div>
+      </div>
+    </div>
+    <div class="card chat-card" id="card-chat">
+      <h3>Ask the advisor about this engagement</h3>
+      <div id="chat-log" class="chat-log"></div>
+      <div class="row">
+        <input id="inp-chat" type="text" placeholder="Which target should I attack next, and why?" />
+        <button id="btn-chat" class="btn btn-primary">send</button>
+      </div>
+      <div class="chips">
+        <button class="chip" data-q="Which target is most promising and why?">most promising target</button>
+        <button class="chip" data-q="Summarise what we have captured so far and what it means for the client's risk.">summarise findings</button>
+        <button class="chip" data-q="What failed so far and what should we change in our approach?">triage failures</button>
+        <button class="chip" data-q="Write a short non-technical note explaining the impact of the recovered credentials.">client-facing impact note</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section id="tab-log" class="tabpane">
+    <div class="progress-wrap">
+      <div class="progress"><div id="progress-bar" class="bar"></div></div>
+      <div id="progress-label" class="dim">idle</div>
+    </div>
+    <pre id="log-stream" class="log"></pre>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section id="tab-settings" class="tabpane">
+    <div class="card">
+      <h3>External tools</h3>
+      <div class="pane-tools">
+        <button id="btn-recheck" class="btn">re-check tools</button>
+        <span class="dim" id="tool-summary"></span>
+      </div>
+      <div class="tablewrap">
+        <table id="tbl-tools">
+          <thead><tr><th>Tool</th><th>Purpose</th><th>Status</th><th>Version</th><th>Install</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="grid ai-grid">
+      <div class="card">
+        <h3>Wireless interfaces</h3>
+        <div id="iface-list" class="kv"></div>
+        <h4>Platform</h4>
+        <div id="platform-kv" class="kv"></div>
+      </div>
+      <div class="card">
+        <h3>Engagement settings</h3>
+        <div class="kv" id="settings-kv"></div>
+        <h4>Attack types</h4>
+        <div id="attack-toggles" class="chips"></div>
+        <h4>Wordlists</h4>
+        <div id="wordlists" class="chips"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <span class="dim">wifipilot 0.1.0 · MIT · only test networks you own or are contracted to test.
+  Deauthentication and WPS PIN attacks disrupt service and may violate law.
+  <span id="paths"></span></span>
+</footer>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

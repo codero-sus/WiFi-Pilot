@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wifipilot"
+version = "0.1.0"
+description = "Linux wifite alternative: AI-piloted WiFi auditing with a web UI and an optional local (Ollama) or cloud (OpenRouter) advisor"
+readme = "README.md"
+requires-python = ">=3.9"
+# SPDX licence expression (PEP 639): the recipient may choose either licence.
+# The full texts live in LICENSES/; GitHub's sidebar shows "Other" because an OR
+# of two licences has no single badge.
+license = "Apache-2.0 OR BSD-3-Clause"
+license-files = ["LICENSE", "LICENSES/*", "NOTICE"]
+authors = [{ name = "codero-sus" }]
+keywords = ["wifi", "pentest", "wifite", "aircrack-ng", "wps", "pmkid", "ollama",
+            "openrouter", "llm", "security", "linux"]
+# wifipilot is Linux-only: it drives nl80211, rfkill, /sys/class/net and the
+# aircrack-ng suite.  There is no supported non-Linux target.
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Security",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+]
+dependencies = [
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+web = ["fastapi>=0.110", "uvicorn>=0.27"]
+dev = ["pytest>=7.4", "httpx>=0.27", "fastapi>=0.110", "uvicorn>=0.27"]
+
+[project.scripts]
+wifipilot = "wifipilot.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/codero-sus/Pentest-toolkit"
+
+[tool.setuptools.packages.find]
+include = ["wifipilot*"]
+
+[tool.setuptools.package-data]
+wifipilot = ["web/static/*", "data/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
