@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Allow ``python -m wifipilot``."""
 
 from __future__ import annotations

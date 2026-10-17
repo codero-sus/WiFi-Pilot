@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Ten more analysts: the attacks that need no radio because they need no permission.
 
 Everything here reads what the engagement already has — captures, hash files,

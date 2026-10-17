@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """WPS PIN arithmetic: checksums, candidate provenance, and the attempt plan.
 
 The value of this module is that it never wastes an attempt: every PIN it hands an

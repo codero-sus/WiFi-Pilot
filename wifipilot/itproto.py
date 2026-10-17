@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Wire codecs for the protocols an IT assessment meets: the bytes, and only the bytes.
 
 Every function here either *builds* a request or *parses* a response, and every one of

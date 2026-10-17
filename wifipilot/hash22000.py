@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """hashcat mode 22000 hashes: read them, write them, crack them.
 
 Mode 22000 is the format people actually pass around: it is text, it carries

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The advisor is optional: one switch, three spellings, and nothing touches a model.
 
 Covers ``wp.ai()``, ``Config.ai_off()``, the ``WIFIPILOT_NO_AI`` environment variable,

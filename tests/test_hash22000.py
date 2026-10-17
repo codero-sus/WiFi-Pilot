@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """hashcat mode 22000: reading, writing, and cracking hash files.
 
 The published vector is hashcat's own example for mode 22000 (the TP-LINK one

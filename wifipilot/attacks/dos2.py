@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Eight more denial-of-service tests, all built in-process.
 
 ``flood2`` covered the state-exhaustion family; these are the ones that abuse the

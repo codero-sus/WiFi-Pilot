@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The peripheral wave: be the device the floor already trusts.
 
 Twenty-five attacks that all make the same argument as the imitation wave, from the other

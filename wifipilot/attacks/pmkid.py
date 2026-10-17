@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Client-less PMKID capture (hcxdumptool, with a tcpdump fallback)."""
 
 from __future__ import annotations

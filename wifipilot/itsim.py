@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """A simulated network of devices, so the IT attacks have something real to talk to.
 
 Live mode sends the bytes from :mod:`wifipilot.itproto` at a real host.  Demo mode — and

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Network-layer attacks: what the wireless network's own services expose.
 
 A wireless engagement does not end at the air interface.  Once a client — or the

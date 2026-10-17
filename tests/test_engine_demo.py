@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """End-to-end campaign in simulation mode: the whole pipeline, no radio.
 
 This is the test that proves the tool works: discovery → scoring → planning →

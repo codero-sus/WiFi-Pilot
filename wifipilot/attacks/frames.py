@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """802.11 frame parsing for attacks that have to *watch* an answer.
 
 ``pcap._parse_frame`` is built for speed over millions of stored frames and returns

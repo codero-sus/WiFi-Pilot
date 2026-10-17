@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The IT hijackers: stand up a device the network already trusts and take its place.
 
 Seventy attacks that answer *as* something else — a second DNS server, a rogue DHCP, a

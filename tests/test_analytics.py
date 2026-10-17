@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Password analytics and default-pattern heuristics.
 
 The numbers here are not security promises — they are the numbers the report

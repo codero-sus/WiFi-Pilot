@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """WPA/WPA2 crypto, implemented in the standard library only.
 
 Why re-implement this?  Because it lets wifipilot

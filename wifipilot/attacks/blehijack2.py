@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The takeover wave: the second half of the Bluetooth imitation family.
 
 Where the first imitation wave cloned an identity, this one takes what sits *behind* the

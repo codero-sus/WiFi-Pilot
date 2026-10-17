@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Targeted engagement with live progress and a report — the API in anger.
 
     sudo python3 examples/handshake_hunt.py --authorized \

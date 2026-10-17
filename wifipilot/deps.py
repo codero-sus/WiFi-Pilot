@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """External tool registry: detection, version probing and install hints.
 
 wifipilot is a *driver*: it orchestrates the classic aircrack-ng toolchain

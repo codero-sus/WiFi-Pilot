@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Protocol-level findings: the attacks that read the wire and know what went wrong.
 
 Nine techniques that exist because a wireless protocol has a documented flaw, and a

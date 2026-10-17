@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Raw frame injection: the frames no external tool sends for us.
 
 wifipilot's attacks normally drive the aircrack-ng suite, because those tools are

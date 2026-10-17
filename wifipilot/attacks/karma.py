@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Karma: answer every probe request, with the name the client just asked for.
 
 An evil twin has to know which SSID to imitate.  Karma removes the question: it

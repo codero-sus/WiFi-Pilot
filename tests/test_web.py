@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Web API tests (FastAPI TestClient) — the browser UI's whole control surface."""
 
 from __future__ import annotations

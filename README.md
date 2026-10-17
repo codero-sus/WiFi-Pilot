@@ -1076,8 +1076,30 @@ and stops rather than burning hours; `wps_pin` is off by default for exactly thi
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Built on the shoulders of the aircrack-ng suite, reaver,
-bully, hcxtools, hashcat and Ollama. Use it only where you are allowed to.
+**Dual-licensed: Apache-2.0 OR BSD-3-Clause.** You pick; both are permissive, both carry
+the same "as is, no warranty" disclaimer, and neither one restricts *what you may use the
+tool for* — authorisation to test a network is a legal and contractual matter, not a
+software licence, and it is handled separately (the `wp.authorize()` gate and
+[docs/ETHICS-AND-LEGAL.md](docs/ETHICS-AND-LEGAL.md)).
+
+| | choose it when | what it asks of you |
+|---|---|---|
+| **Apache-2.0** | you want an express **patent grant** and patent retaliation, or your policy requires one | keep the licence, the `NOTICE` and the attribution notices; mark files you changed |
+| **BSD-3-Clause** | you want the shortest obligation list, or you are combining this with GPL-2.0-only code | keep the copyright notice and disclaimer; don't use the authors' names to endorse a fork |
+
+The full texts are in [LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt) and
+[LICENSES/BSD-3-Clause.txt](LICENSES/BSD-3-Clause.txt); every Python source carries
+`SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause`, and `pyproject.toml` declares the
+same expression (PEP 639), so `pip` and scanners read it without guessing. If you are that
+kind of person: the two licences are offered **disjunctively**, not cumulatively — a
+recipient needs to comply with one of them, not both.
+
+Nothing third-party is vendored. `wifipilot` *runs* the aircrack-ng suite, reaver, bully,
+hcxtools, hashcat, hostapd, dnsmasq, tshark and nmap as separate programs, and *imports*
+`rich`, `fastapi` and `uvicorn`. Their licences, and what changes if you bundle them into a
+`.deb`/snap/container (GPL source offers, the NPSL on nmap), are catalogued in
+[THIRD-PARTY.md](THIRD-PARTY.md). Built on the shoulders of that toolchain and of Ollama.
+Use it only where you are allowed to.
 
 <!-- attack-index:start -->
 

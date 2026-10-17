@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """wifipilot -- an AI-piloted alternative to wifite.
 
 wifipilot automates the boring parts of authorised WiFi auditing:

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The IT edition: real protocol conversations with the devices on the network.
 
 Where the Wi-Fi edition talks to the radio and the Bluetooth edition talks to the host

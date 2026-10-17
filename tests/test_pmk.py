@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Precomputed PMKs: mode 22001, verification, and the ESSID-keyed cache.
 
 The golden vector is hashcat's own published example

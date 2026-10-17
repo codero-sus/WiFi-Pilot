@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The scriptable module API: ``import wifipilot as wp; wp.attack(...)``.
 
 Everything here runs in simulation mode, so the tests exercise the real API

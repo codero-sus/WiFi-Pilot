@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The hijacker wave: seventy-five attacks that wear somebody else's identity.
 
 The Wi-Fi edition of the impersonation waves.  Every attack builds frames with the

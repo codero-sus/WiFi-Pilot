@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The fourth attack batch: information elements, raw frames, Logoff, Karma, floods.
 
 Four things are new and each of them is checked against something this repository

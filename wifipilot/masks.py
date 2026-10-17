@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Mask attacks: hashcat-style ``?d`` patterns, expanded locally or handed over.
 
 Most ISP routers ship a *pattern* password — ``Telekom-0000`` to

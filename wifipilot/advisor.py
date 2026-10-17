@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The AI co-pilot: an LLM (local Ollama, or OpenRouter) that plans and explains.
 
 wifipilot stays useful without a model — the deterministic planner in

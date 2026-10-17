@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Passive intelligence: probe requests, deauth counts, rogue-twin patterns.
 
 Everything in this module is derived from a file that already exists and from the

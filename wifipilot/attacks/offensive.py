@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Rogue RADIUS: ask the enterprise network the one question that matters.
 
 The `enterprise` attack reports what the 802.1X conversation *says*.  This one

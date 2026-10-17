@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Configuration: defaults, file loading, CLI merging and wordlist discovery."""
 
 from __future__ import annotations

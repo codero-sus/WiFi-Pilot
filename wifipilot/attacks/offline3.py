@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Offline analysis: fifty more things a capture can be asked.
 
 Every attack in this module reads a capture the session already holds — or, in demo

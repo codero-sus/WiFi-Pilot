@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Follow the client: which network does this device actually trust?
 
 The interesting target on a site is usually not the loudest access point but the

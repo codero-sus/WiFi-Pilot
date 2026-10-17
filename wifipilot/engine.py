@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The orchestrator: scanner + advisor + attacks + cracker, one worker thread.
 
 Everything wifipilot does to a radio happens through this class.  A single

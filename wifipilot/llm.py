@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """LLM providers: a local Ollama server, or a remote OpenAI-compatible gateway.
 
 wifipilot's advisor does not care where the tokens come from.  This module

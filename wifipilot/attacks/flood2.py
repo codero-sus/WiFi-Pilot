@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Frame floods built in-process: the denial-of-service tests with no tool behind them.
 
 ``flood.py`` drives ``mdk4``.  The floods here are the frames ``mdk4`` does not have,

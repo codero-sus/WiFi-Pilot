@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The IT hijacker wave: 131 attacks that answer as something else.
 
 The IT editions of the impersonation waves.  Every attack talks to a real service — in

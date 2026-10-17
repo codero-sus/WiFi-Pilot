@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Two more ways to *get* the loot: the blunt handshake, and the hcxtools pipeline.
 
 * ``handshake_broadcast`` — the same 4-way capture as ``handshake``, but the

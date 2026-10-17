@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Offline cracking orchestration: aircrack-ng, hashcat and a Python fallback.
 
 Three engines, best first:

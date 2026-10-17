@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Session bookkeeping: APs, captures, attempts, dedup, reports and exports."""
 
 from __future__ import annotations

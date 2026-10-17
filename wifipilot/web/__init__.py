@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Web UI package (FastAPI + WebSocket). Imported lazily so the CLI works without it."""
 
 from __future__ import annotations

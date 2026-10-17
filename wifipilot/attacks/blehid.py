@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The BLE wave: HID injection, the downgrades around it, and identity.
 
 Bluetooth Low Energy is where the keyboards are now.  A BLE keyboard is not a cable with

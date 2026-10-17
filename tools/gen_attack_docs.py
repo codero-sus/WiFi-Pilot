@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Render the complete attack catalogue into ``docs/ATTACKS.md``.
 
 The prose in that file is written by hand — what each attack answers, how to read its

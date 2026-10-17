@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The devices an assessment meets, and the three editions of wifipilot.
 
 Three axes, kept separate because they answer three different questions:

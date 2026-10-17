@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Attack registry: every primitive wifipilot can execute.
 
 A hundred and seven attacks, and the registry is the single place that knows all of

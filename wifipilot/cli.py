@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """``wifipilot`` command line interface.
 
     wifipilot scan                        # discover access points

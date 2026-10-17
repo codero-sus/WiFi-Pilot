@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Wireless interface control: monitor mode, channel hopping, cleanup.
 
 Everything here shells out to ``airmon-ng`` / ``iw`` / ``ip`` -- the same tools

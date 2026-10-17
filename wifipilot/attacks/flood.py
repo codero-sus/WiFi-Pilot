@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Frame floods: the attacks you run to find out whether anybody is watching.
 
 Two attacks, both of which disconnect or confuse everything on the channel, and both

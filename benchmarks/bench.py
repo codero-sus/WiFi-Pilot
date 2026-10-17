@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Measure the parts of wifipilot that cost real time, CPU or tokens.
 
     python3 benchmarks/bench.py            # everything

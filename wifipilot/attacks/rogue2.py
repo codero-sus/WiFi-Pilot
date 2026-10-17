@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Rogue infrastructure: services a network should not have, run on purpose.
 
 Everything here is a real service or a real frame, not a description of one:

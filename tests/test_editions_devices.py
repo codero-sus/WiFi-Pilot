@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The editions (WiFi / Bluetooth / IT), the device shelf and the web UI's new views.
 
 The three editions are one registry cut three ways: this file checks that the cut is

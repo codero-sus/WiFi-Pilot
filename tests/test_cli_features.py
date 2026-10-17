@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The feature commands: toolbox, vendor, scoping, advice, benchmark.
 
 Every one of these has to work with no radio and no root — they are the parts an

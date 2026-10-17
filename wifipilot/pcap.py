@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Minimal but real 802.11 capture parser (pure stdlib).
 
 wifipilot does not trust a capture just because a tool wrote a file: it opens

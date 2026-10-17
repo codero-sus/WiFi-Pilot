@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Passive intelligence read out of a capture: probes, deauths, rogue twins.
 
 Three questions a capture can answer without transmitting anything:

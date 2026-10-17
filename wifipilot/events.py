@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Thread-safe publish/subscribe event bus.
 
 Every part of wifipilot talks to the UI through this bus: the CLI renders it,

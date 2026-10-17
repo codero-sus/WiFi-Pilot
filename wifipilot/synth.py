@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Build *cryptographically valid* captures for tests, demos and self-checks.
 
 A capture written here is not a mock-up: the PMK is derived from the real PSK

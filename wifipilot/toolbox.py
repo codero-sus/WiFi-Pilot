@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """File-level tooling: hash files, wordlists, potfiles and loot manifests.
 
 Everything here works on *files*, never on a radio, so it is usable in a

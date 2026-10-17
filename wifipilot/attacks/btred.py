@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The famous Bluetooth attacks, by name: BlueBorne, BIAS, KNOB, BlueBugging and the rest.
 
 The first Bluetooth wave audited a capture and did the work an assessment can do on its

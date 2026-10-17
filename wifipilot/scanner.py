@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Discovery: turn airodump-ng / wash output into AccessPoint objects.
 
 Live mode drives the real tools:

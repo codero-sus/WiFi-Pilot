@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The 54-attack build: registry ↔ metadata ↔ planner ↔ docs, plus a demo run of all.
 
 The suite this belongs to is the one that has to stay honest as the attack count grows,

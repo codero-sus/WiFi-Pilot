@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The OUI registry and what wifipilot knows about a vendor.
 
 Two related things live here:

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Offline analysts: the attacks that read what the engagement already has.
 
 Everything in this module is ``silent`` — it transmits nothing, opens no capture

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The hash/wordlist toolbox: stats, merge, dedupe, split, rescue, potfiles, manifests."""
 
 from __future__ import annotations

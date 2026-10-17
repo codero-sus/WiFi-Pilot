@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Lures: the frames that make a client do something, and the capture that proves it.
 
 Five attacks that all follow the same shape — *transmit a small, specific lie, then

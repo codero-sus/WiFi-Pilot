@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """CLI smoke tests: every subcommand must run, exit cleanly and emit valid JSON."""
 
 from __future__ import annotations

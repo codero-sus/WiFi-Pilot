@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Precomputed PMKs: hashcat mode 22001, and a cache that saves whole campaigns.
 
 A PMK depends on the passphrase *and the ESSID* — which makes it reusable: the

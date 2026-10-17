@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The feature endpoints the browser UI uses: scoping, notes, advice, analytics."""
 
 from __future__ import annotations

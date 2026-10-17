@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Scriptable API — drive wifipilot from your own Python code.
 
 Everything the command line does is available here as ordinary function calls::

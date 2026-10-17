@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The imitation wave: become the device somebody already trusts.
 
 Every peripheral is somebody's: the keyboard a desk is paired with, the speaker the
