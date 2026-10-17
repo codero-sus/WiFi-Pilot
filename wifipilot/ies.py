@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Information elements: what a beacon actually says about a network's configuration.
 
 Every beacon and probe response is a fixed header followed by a list of

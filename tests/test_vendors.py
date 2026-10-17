@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The OUI/VENDOR layer: who made this radio, and what that usually means.
 
 Two different things are being tested here and they must not be confused:

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Process execution, formatting, MAC/enum helpers and terminal colour.
 
 Kept dependency free: the whole of wifipilot's *core* works with nothing but

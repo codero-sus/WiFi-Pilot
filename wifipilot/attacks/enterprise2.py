@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """WPA-Enterprise attacks that read — and sometimes answer — the 802.1X conversation.
 
 An 802.1X network is not one handshake, it is a negotiation, and every step of it is a

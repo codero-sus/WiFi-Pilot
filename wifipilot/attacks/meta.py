@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Attack metadata: what each technique *is*, how loud it is, and what it costs.
 
 The class attributes on :class:`~wifipilot.attacks.base.Attack` describe how to run an

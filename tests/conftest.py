@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Shared pytest fixtures."""
 
 from __future__ import annotations

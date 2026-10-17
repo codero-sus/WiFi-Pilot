@@ -4,6 +4,45 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## Relicensed — Apache-2.0 OR BSD-3-Clause (was MIT)
+
+* **The project is now dual-licensed.** Every file is offered under the **Apache License
+  2.0** *or* the **BSD 3-Clause License**, at the recipient's option — not both at once.
+  The two texts live in `LICENSES/Apache-2.0.txt` and `LICENSES/BSD-3-Clause.txt`, `LICENSE`
+  explains which to choose and what each costs you, and `NOTICE` carries the attribution
+  Apache-2.0 asks downstream to propagate.
+
+  * **Why Apache-2.0.** It adds an express patent grant (section 3) and patent
+    retaliation, plus the "mark the files you changed" and NOTICE obligations. Corporate
+    security teams, and anybody embedding `wifipilot` in a product, ask for exactly this.
+  * **Why BSD-3-Clause as well.** It is the shortest obligation list in the catalogue and,
+    unlike Apache-2.0, it can be combined with GPL-2.0-only code without a compatibility
+    argument. Anyone who cannot take a patent clause can take this branch instead.
+  * **Nothing was taken away.** MIT was already permissive and compatible with both; the
+    dual grant adds a patent licence and a no-endorsement clause, and removes nothing that
+    the old licence allowed. Copies of the previous MIT-licensed revisions stay MIT.
+
+* **Machine-readable everywhere it matters.** `pyproject.toml` moved to PEP 639: a plain
+  SPDX expression (`license = "Apache-2.0 OR BSD-3-Clause"`, not the deprecated
+  `{ text = ... }` table) and `license-files`, with `setuptools>=77` to parse it. Every
+  Python source in `wifipilot/`, `tests/`, `tools/`, `examples/` and `benchmarks/` — 138
+  files — now opens with `SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause`, so
+  `reuse`, `licensee`, `scancode` and friends have nothing to infer.
+
+* **`THIRD-PARTY.md` added.** One page for the things this repository does not contain:
+  the external tools it drives (aircrack-ng, reaver, bully, mdk4, hostapd, dnsmasq,
+  hcxtools, hashcat, tshark, tcpdump, nmap — GPL-2.0/3.0, MIT, BSD-3 and the NPSL),
+  the Python packages it imports (all permissive), and the services it talks to. It also
+  spells out what changes the moment somebody bundles those binaries into an AppImage, a
+  `.deb`, a snap or a container image: the bundle has to carry each GPL tool's licence
+  text and a written offer of its source, and that obligation belongs to the bundle, not
+  to `wifipilot`'s own dual licence.
+
+* **What did not change.** The authorisation gate, `docs/ETHICS-AND-LEGAL.md` and the
+  "authorised use only" warning are usage policy, not licence terms. They stay out of the
+  licence on purpose: a field-of-use restriction inside a licence stops a project being
+  open source and buys no legal protection that the law does not already give.
+
 ## 848 attacks — the peripheral wave: the devices a room already trusts
 
 * **25 further Bluetooth attacks, 848 in total (Bluetooth 143).** The imitation wave was

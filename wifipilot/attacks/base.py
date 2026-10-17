@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Attack framework: shared context, deauth support and result objects."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """WPS PIN arithmetic: the checksum, the published generators, and a plan.
 
 Two facts drive everything here, and both are geometry rather than opinion:

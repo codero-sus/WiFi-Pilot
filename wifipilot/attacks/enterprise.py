@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """WPA-Enterprise survey: what the EAP conversation tells you, and what breaks it.
 
 An 802.1X network cannot be cracked the way WPA2-PSK can — there is no PSK to

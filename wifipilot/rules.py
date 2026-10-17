@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """hashcat-style rule files, parsed and applied in pure Python.
 
 hashcat ships ~100 rule files (``best64.rule``, ``rockyou-30000.rule``, ...);

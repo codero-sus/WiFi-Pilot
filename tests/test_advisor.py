@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The AI advisor: JSON handling, model selection, host policy and fallbacks."""
 
 from __future__ import annotations

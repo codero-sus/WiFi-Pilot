@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The two new attacks, the EAP/X.509 decoder and the CLI/API surfaces around them.
 
 `tracker` follows a station; `rogue_radius` impersonates the AP to test the

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Capture parsing: pcap/pcapng, EAPOL message numbering, PMKID KDE, edge cases."""
 
 from __future__ import annotations

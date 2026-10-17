@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The peripheral wave: be the thing, not just the name.
 
 An advertisement is a claim about identity, and almost every product on a floor believes

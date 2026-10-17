@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The two simulated environments: the Bluetooth floor and the IT segment.
 
 Demo mode is the fastest way to exercise 848 attacks, and the only way to exercise the

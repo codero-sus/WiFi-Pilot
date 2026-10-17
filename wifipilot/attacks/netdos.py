@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The network behind the wireless: DHCP, TCP/IP, name resolution, layer 2, IoT.
 
 An access point is a bridge.  Everything a client sends it goes onto the wired network,

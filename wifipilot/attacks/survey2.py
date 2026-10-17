@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The SAE-group audit: what a WPA3 network's own RSN element says about its edges.
 
 ``saewolf`` captures an SAE exchange and reports whether there is a WPA2 door next to

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """OpenRouter + provider abstraction: config, transport, redaction, advisor wiring.
 
 The HTTP layer is faked (no network in the test suite) but everything above it is

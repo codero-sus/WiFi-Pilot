@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Three more WPS attacks: the AP PIN, the lockout policy, and push-button enrolment.
 
 ``wps.py`` has the two attacks everybody knows — Pixie-Dust and the online PIN walk.

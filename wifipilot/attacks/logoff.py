@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """EAPOL-Logoff: the disconnect nobody authenticates.
 
 802.1X has no way to authenticate a Logoff.  The frame is three bytes and a length

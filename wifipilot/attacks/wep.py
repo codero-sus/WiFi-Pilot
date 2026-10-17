@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """WEP: the IV harvest, plus the injection techniques that enable it.
 
 WEP is broken in two separate ways, and the attacks here mirror that.  RC4's key

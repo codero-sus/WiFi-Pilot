@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Planner: scoring, preference ordering and — most importantly — plan validation."""
 
 from __future__ import annotations

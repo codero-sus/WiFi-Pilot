@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The BLE wave: HID injection, the downgrades around it, and identity.
 
 Eight attacks, and one of them is the one an operator asks for by name: ``ble_hid``.  A

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Cortex LLMHoster: the local, OpenAI-compatible model host provider.
 
 https://github.com/codero-sus/Cortex_LLMHoster — a local service that starts the models

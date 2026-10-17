@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The network stack, frame by frame: Ethernet, ARP, IP, TCP, UDP, ICMP, ICMPv6, L2.
 
 Half of what a wireless assessment finds is not on the wireless side at all.  Once a

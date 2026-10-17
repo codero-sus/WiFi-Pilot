@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """A simulated floor of Bluetooth devices, so the Bluetooth attacks have a radio.
 
 Wi-Fi has :mod:`wifipilot.demo` — a fake neighbourhood whose access points react to a

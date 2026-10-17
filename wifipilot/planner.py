@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Target scoring, plan validation and the deterministic fallback planner.
 
 The LLM advisor is optional; this module is what runs when it is unavailable,

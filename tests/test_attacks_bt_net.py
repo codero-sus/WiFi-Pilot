@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The Bluetooth and network waves: the second radio and the layer behind the bridge.
 
 Two waves land here, and both of them have to be honest about the same three things:

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The famous Wi-Fi attacks that were still missing: KRACK, FragAttacks, airgeddon.
 
 Five of the names on the brief were already in the registry and are still there:

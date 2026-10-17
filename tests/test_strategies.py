@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Crack strategy presets, the stage order, and rule files reaching the engine.
 
 The point of the presets is that an operator picks one word ("thorough") instead

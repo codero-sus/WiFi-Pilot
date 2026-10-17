@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Reconnaissance only: survey a neighbourhood and write a report.
 
     sudo python3 examples/triage.py wlan0          # live, listen-only

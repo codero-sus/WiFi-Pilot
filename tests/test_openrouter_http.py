@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """OpenRouter integration over *real* HTTP against a local mock of the API.
 
 The unit tests in ``test_openrouter.py`` fake ``urlopen``; this module starts an

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Bluetooth and Bluetooth Low Energy: real packets, real HCI, real parsing.
 
 wifipilot is a wireless tool, and on a modern site "wireless" is not only 802.11.  A

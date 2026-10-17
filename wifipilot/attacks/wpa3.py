@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """WPA3: the SAE capture and the audit that says where the network is still reachable.
 
 WPA3 is the one security type where the honest answer to "did it fall?" is *no*:

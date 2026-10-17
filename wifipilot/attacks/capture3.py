@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Five more ways to get material on air, and to prove the radio can do it at all.
 
 * ``injection_test`` — ``aireplay-ng --test``: does this interface really inject?  Every

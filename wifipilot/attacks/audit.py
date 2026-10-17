@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Read-only intelligence about what the neighbourhood *says* about itself.
 
 Two attacks, both of which transmit nothing and both of which change the plan:

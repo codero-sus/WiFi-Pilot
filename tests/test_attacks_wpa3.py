@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The third attack batch: WPA3, the WEP family, the active PMKID hunt, the twin.
 
 Everything the new attacks claim is checked here against captures this repository

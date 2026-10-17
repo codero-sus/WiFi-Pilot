@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The takeover wave: fifty attacks, one per profile, table, link and pairing step.
 
 Where the imitation wave copied an identity, this one takes what is behind it.  The tests

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Domain model: access points, clients, captures, attempts, findings."""
 
 from __future__ import annotations

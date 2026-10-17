@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Mask attacks: hashcat-style ``?d`` patterns, expanded locally or handed over.
 
 The tests pin three things: the mask language itself (tokens, literal ``??``,

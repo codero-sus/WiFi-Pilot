@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Cracking: the built-in engine, rule expansion and orchestration behaviour."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The element-level wave: what a beacon actually says, element by element.
 
 Every attack here reads a capture — no radio, no authorisation, no frame — and every

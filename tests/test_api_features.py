@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The module-level feature API: scoping, notes, analytics, toolbox wrappers.
 
 These are the functions a script uses *around* a campaign — before it (scope the

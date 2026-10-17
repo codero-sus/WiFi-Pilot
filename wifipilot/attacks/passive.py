@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Listen-only attack: harvest whatever the network broadcasts anyway."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """WPS attacks: offline Pixie-Dust and (opt-in) online PIN recovery.
 
 Both run through reaver or bully.  Only the Pixie-Dust variant is enabled by

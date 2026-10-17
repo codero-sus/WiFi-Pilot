@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """WPA3: SAE exchanges, PMF, OWE and the transition-mode downgrade.
 
 WPA3 is not "WPA2 but harder to crack" — it removes the offline attack entirely.

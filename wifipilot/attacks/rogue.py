@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Rogue AP / evil-twin survey — read-only, and it says so.
 
 The question this answers is not "can I attack this?" but "has somebody already

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Simulation radio: a fake neighbourhood so wifipilot is testable and demoable.
 
 Everything downstream of discovery (scoring, planning, attacks, cracking,

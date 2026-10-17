@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """FastAPI application: REST control plane + WebSocket event stream.
 
 The web UI is a *remote control* for the same :class:`wifipilot.engine.Engine`

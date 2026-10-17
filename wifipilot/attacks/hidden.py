@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Hidden SSID discovery: learn the name of a network that hides it.
 
 An AP that clears the SSID field of its beacons is not invisible: the SSID is

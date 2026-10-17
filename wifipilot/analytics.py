@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Password analytics: how weak is what we just cracked, and what is it?
 
 A recovered PSK is a finding, but "12345678" and "gT7#pQ2!xLm9" are not the same

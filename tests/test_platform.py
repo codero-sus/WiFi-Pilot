@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Linux-only enforcement and platform reporting.
 
 wifipilot drives nl80211/aircrack-ng/sysfs/rfkill: it must refuse to *run* on any

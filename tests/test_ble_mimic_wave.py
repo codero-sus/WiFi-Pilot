@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The imitation wave: clone an identity, count who believes it.
 
 Twenty-five attacks that all make one argument — a bond is a secret, but the decision to

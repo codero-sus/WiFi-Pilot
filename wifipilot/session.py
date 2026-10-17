@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Session state: the single source of truth shared by CLI, web UI and the LLM.
 
 The session owns every access point, capture, attempt and finding, keeps a

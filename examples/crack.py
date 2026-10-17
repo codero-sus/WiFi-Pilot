@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Offline cracking: point wifipilot at captures and a wordlist, get plaintext.
 
     python3 examples/crack.py loot/*.cap  -w /usr/share/wordlists/rockyou.txt

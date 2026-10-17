@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """WPA/WPA2 4-way handshake capture (deauth + targeted airodump-ng)."""
 
 from __future__ import annotations

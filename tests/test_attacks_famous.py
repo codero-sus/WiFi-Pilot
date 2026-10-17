@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The famous wave: KRACK, FragAttacks, airgeddon, and nine named Bluetooth attacks.
 
 The brief named these attacks one by one, and the tests here hold the wave to the same

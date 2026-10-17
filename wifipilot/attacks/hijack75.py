@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Hijackers: seventy-five attacks that put somebody else's identity on the air.
 
 The BLE waves answer *can a device be impersonated*.  This one is the same question

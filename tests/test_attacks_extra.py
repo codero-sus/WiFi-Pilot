@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The three survey attacks: hidden-SSID discovery, rogue-AP survey, 802.1X.
 
 Each of them answers a question that the classic handshake/PMKID attacks do not,

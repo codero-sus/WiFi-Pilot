@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Bluetooth and Bluetooth Low Energy attacks: the radio next door to Wi-Fi.
 
 Wi-Fi is one of two radios in every phone, every laptop and every door sensor, and the

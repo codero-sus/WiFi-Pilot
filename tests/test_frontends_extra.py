@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """The new surface, seen from each front end: CLI verbs, API calls, web routes.
 
 The point of these three is that a feature only counts once it is reachable: a

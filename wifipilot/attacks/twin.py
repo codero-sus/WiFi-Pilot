@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Evil twin: the network the clients already trust, served by us.
 
 A twin works because a station prefers the network it remembers over the one it can

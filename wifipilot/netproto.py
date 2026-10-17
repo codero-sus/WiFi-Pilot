@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Network protocols, implemented rather than shelled out to.
 
 The wireless engagement ends at the air interface and starts again on the network
