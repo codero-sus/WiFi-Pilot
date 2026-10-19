@@ -5,15 +5,13 @@ from __future__ import annotations
 
 import contextlib
 import os
-import re
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from ..deps import registry
 from ..pcap import analyze_file
-from ..events import EK
-from ..models import (STATUS_FAILED, STATUS_SKIPPED, STATUS_SUCCESS, AccessPoint,
+from ..models import (STATUS_SKIPPED, STATUS_SUCCESS, AccessPoint,
                       Attempt, Capture)
 from ..util import Process, human_duration, run
 from .base import Attack, AttackContext, AttackOutcome

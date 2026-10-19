@@ -6,10 +6,9 @@ from __future__ import annotations
 import contextlib
 import os
 import time
-from typing import Optional
 
 from ..deps import registry
-from ..models import STATUS_SUCCESS, AccessPoint, Attempt, Capture
+from ..models import STATUS_SUCCESS, AccessPoint, Capture
 from ..util import Process, human_duration
 from .base import Attack, AttackContext, AttackOutcome
 

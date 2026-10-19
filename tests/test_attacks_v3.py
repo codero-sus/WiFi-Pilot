@@ -527,7 +527,6 @@ def test_the_wps_attacks_agree_about_a_locked_access_point(engine):
 
 def test_hcxdump_capture_converts_a_capture_into_mode_22000(engine):
     from wifipilot.hash22000 import parse_file
-    from wifipilot.models import Capture
 
     attack = get_attack("hcxdump_capture")
     ctx = context_for(engine)

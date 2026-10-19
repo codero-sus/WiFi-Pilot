@@ -28,7 +28,7 @@ import struct
 import tempfile
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Type
 
 from .. import itproto as proto
 from .. import netproto as np
@@ -1951,7 +1951,6 @@ class ItHijackAdbAttack(_ItHijack):
 
     def confirm(self, decoded: Dict[str, Any], peers: List[Peer]) -> Dict[str, Any]:
         rows = [row for row in decoded.get("payloads") or [] if row.get("dst_port") == 5555]
-        answer = proto.parse_adb(rows[0]["payload"]) if rows else {}
         text = rows[0]["payload"] if rows else b""
         return {"confirmed": text[:4] == b"OKAY" and b"shell:id" in text,
                 "our_answer": text[:32].decode(errors="replace"),

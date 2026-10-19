@@ -38,8 +38,8 @@ from __future__ import annotations
 import hashlib
 import os
 import time
-from collections import Counter, defaultdict
-from typing import Any, Dict, List, Optional, Tuple
+from collections import defaultdict
+from typing import Any, Dict, List, Tuple
 
 from ..models import STATUS_SUCCESS, AccessPoint, Attempt
 from ..util import oui_vendor
@@ -392,7 +392,6 @@ class PmfDowngradeProbeAttack(Attack):
                             observation.get("bssid", "").lower() == ap.bssid.lower():
                         seen_left = True
                         break
-                ignored = not seen_left
                 left = seen_left
             finally:
                 injector.close()
@@ -405,10 +404,13 @@ class PmfDowngradeProbeAttack(Attack):
         detail = (f"one unprotected disassoc to {victim} on a network advertising "
                   f"{'PMF' if pmf_expected else 'no PMF'}: station "
                   + ("left and tried to reconnect" if left else "stayed associated"))
+        # close the attempt ourselves: an outcome-handed-back success whose
+        # attempt is still running gets stamped "skipped" by the engine
+        ctx.session.end_attempt(attempt, STATUS_SUCCESS, title, detail)
         return AttackOutcome.success(
             title, detail=detail,
             extra={"victim": victim, "pmf_advertised": pmf_expected, "left": left,
-                   "ignored": not left, "frames": 1,
+                   "ignored": not left, "frames": 1, "severity": severity,
                    "note": ("an ignored frame is the correct behaviour for a "
                             "PMF-capable client; a client that leaves has no PMF in "
                             "force, so the classic deauth attack still applies to it")})
@@ -482,7 +484,6 @@ class BtmHijackAttack(Attack):
                                           validity=120)
                 injector.send([frame])
                 ctx.log(f"BTM request sent to {victim} pointing at {rogue}")
-                left_at = time.time()
                 for observation in ctx.listen(10.0, channel=ap.channel):
                     if observation.get("station", "").lower() != victim.lower():
                         continue
@@ -498,9 +499,13 @@ class BtmHijackAttack(Attack):
                  else "station ignored the stolen BTM frame")
         detail = (f"one BTM request to {victim} listing {rogue} as the preferred "
                   f"neighbour: station {'left the real AP' if followed else 'stayed'}")
+        # as in the PMF probe above: close the attempt, or the engine files
+        # this successful run under "skipped"
+        ctx.session.end_attempt(attempt, STATUS_SUCCESS, title, detail)
         return AttackOutcome.success(
             title, detail=detail,
             extra={"victim": victim, "rogue_bssid": rogue, "followed": followed,
+                   "severity": severity,
                    "note": ("802.11v steering is advisory and unauthenticated without "
                             "PMF: the finding is a client that follows it")})
 

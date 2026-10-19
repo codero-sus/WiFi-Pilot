@@ -39,9 +39,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..models import STATUS_SUCCESS, AccessPoint, Attempt, Finding
 from ..netproto import (SSDP_ADDRESS, SSDP_PORT, dns_query, html_inputs, html_title,
-                        http_get, parse_dns, parse_snmp, parse_ssdp, snmp_get,
-                        snmp_get_live, ssdp_msearch)
-from ..util import human_duration
+                        http_get, parse_dhcp, parse_dns, parse_ipv4, parse_ssdp, snmp_get_live, ssdp_msearch)
 from .base import Attack, AttackContext, AttackOutcome
 
 ALL = ("WPA", "WPA2", "WPA2/WPA3", "WPA3", "WEP", "OPEN", "OWE", "WPA-ENTERPRISE",
@@ -175,7 +173,7 @@ class ApAdminAuditAttack(_NetworkAttack):
             entry: Dict[str, Any] = {"port": port, "service": label, "open": True,
                                      "banner": state.get("banner", "")}
             if port in (80, 8080, 8000, 8443, 443, 52869):
-                scheme = "https" if port in (443, 8443) else "http"
+                entry["scheme"] = "https" if port in (443, 8443) else "http"
                 page = http_get(target, port, "/", timeout=2.5)
                 if page.get("ok"):
                     entry["status"] = page.get("status", "")
@@ -360,7 +358,7 @@ class UpnpAuditAttack(_NetworkAttack):
                     "control_url": "/ctl/IPConn", "igd": True,
                     "port_mapping": bool(seed % 2)}]
         severity = "high" if devices[0]["port_mapping"] else "medium"
-        detail = (f"1 device described: TP-Link Archer C6 (simulated)"
+        detail = ("1 device described: TP-Link Archer C6 (simulated)"
                   + (" — the port-mapping control URL answers unauthenticated"
                      if devices[0]["port_mapping"] else ""))
         return self._finish(ctx, ap, attempt, "UPnP device described", detail,
@@ -674,8 +672,6 @@ class RogueDhcpDetectAttack(_NetworkAttack):
             ip = parse_ipv4(observation.get("payload") or b"")
             if ip.get("protocol") != 17 or ip.get("sport") != 67:
                 continue
-            from ..netproto import parse_dhcp
-
             reply = parse_dhcp(ip.get("l4_payload") or b"")
             if not reply or reply.get("op") != "reply":
                 continue
@@ -910,7 +906,7 @@ class Ipv6RaAuditAttack(_NetworkAttack):
             next_header = packet[6]
             if next_header != 58 or len(packet) < 40 + 16:
                 continue
-            icmp_type, icmp_code = packet[40], packet[41]
+            icmp_type = packet[40]
             source = _ipv6_text(packet[8:24])
             if icmp_type == 134:                       # router advertisement
                 entry = routers.setdefault(source, {"router": source,

@@ -61,6 +61,13 @@ __all__ = [
     "editions", "devices", "device",
     # the simulated environments a demo run meets
     "simulations",
+    # run bookkeeping and the catalogue (imported above, now also exported)
+    "current_run", "catalogue",
+    # event kinds, the transport exception tree and the data/config classes
+    # a script needs without reaching into submodules
+    "EK", "LLMAuthError", "LLMCreditError", "LLMError", "LLMPolicyError",
+    "LLMRateLimitError", "Config", "OllamaConfig", "OpenRouterConfig",
+    "AccessPoint", "Capture",
 ]
 
 TOOL_NAME = "wifipilot"

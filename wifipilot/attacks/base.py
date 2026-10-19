@@ -9,7 +9,7 @@ import glob
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Optional
 
 from ..config import Config
 from ..deps import registry
@@ -17,7 +17,7 @@ from ..events import EK
 from ..models import (STATUS_FAILED, STATUS_SKIPPED, STATUS_SUCCESS, AccessPoint,
                       Attempt, Capture)
 from ..session import Session
-from ..util import Process, clamp, mac_norm, run, safe_int
+from ..util import Process, mac_norm, run
 
 # --------------------------------------------------------------------------- #
 

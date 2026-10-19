@@ -3,10 +3,8 @@
 
 from __future__ import annotations
 
-import os
 import time
 
-import pytest
 
 from wifipilot.crack import Cracker, CrackResult, iter_wordlist, rule_expand, smart_candidates
 from wifipilot.models import AccessPoint, Capture

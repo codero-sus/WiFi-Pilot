@@ -35,13 +35,13 @@ import hashlib
 import json
 import os
 import time
-from collections import Counter, defaultdict
-from typing import Any, Dict, List, Optional, Tuple
+from collections import Counter
+from typing import Any, Dict, List, Tuple
 
-from ..models import STATUS_SUCCESS, AccessPoint, Attempt
+from ..models import AccessPoint
 from ..netproto import cleartext_credentials, parse_ipv4, pop_imap_credentials
 from ..util import human_bytes, human_duration, oui_vendor
-from .base import Attack, AttackContext, AttackOutcome
+from .base import AttackContext, AttackOutcome
 from .forensics import OfflineAttack
 
 #: the bundled suffix/word material the miner uses, all drawn from real engagements

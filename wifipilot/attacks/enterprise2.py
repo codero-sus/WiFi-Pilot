@@ -36,10 +36,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..models import STATUS_SUCCESS, AccessPoint, Attempt, Finding
-from ..netproto import (md4, mschapv2_challenge_hash, mschapv2_response,
-                        mschapv2_verify, nt_hash, radius_access_request,
+from ..netproto import (md4, mschapv2_challenge_hash, mschapv2_verify, nt_hash, radius_access_request,
                         radius_verify_response)
-from ..pcap import _strip_radiotap, analyze_file, iter_frames
+from ..pcap import analyze_file, iter_frames
 from ..util import human_duration
 from .base import Attack, AttackContext, AttackOutcome
 
@@ -1213,8 +1212,8 @@ class RadiusSecretTestAttack(_EnterpriseBase):
                     + (f"the server answered ({exchanges[-1]['code']}) but no "
                        f"authenticator matched, so the secret is not in the list"
                        if exchanges else
-                       f"nothing answered on UDP 1812/1645 — is the server reachable "
-                       f"from this segment?"))
+                       "nothing answered on UDP 1812/1645 — is the server reachable "
+                       "from this segment?"))
         path = os.path.join(ctx.session.state_dir, "creds",
                             f"radius-secret-{ap.bssid.replace(':', '')}.txt")
         os.makedirs(os.path.dirname(path), exist_ok=True)

@@ -3,9 +3,8 @@
 
 from __future__ import annotations
 
-import pytest
 
-from wifipilot.planner import (Action, heuristic_plan, preferred_attacks, rank_targets,
+from wifipilot.planner import (heuristic_plan, preferred_attacks, rank_targets,
                                score_ap, should_replan, validate_plan)
 from tests.conftest import AP_MAC
 

@@ -613,7 +613,6 @@ class BluebuggingAttack(_BtFamous):
 
     def run(self, ctx: AttackContext, ap: AccessPoint) -> AttackOutcome:
         attempt = self._attempt(ctx, ap)
-        seconds = self.seconds(ctx, 3.0)
         target = _target(ctx)
         transcript: List[Dict[str, Any]] = []
         channel = 0
@@ -933,7 +932,6 @@ class BluesnarfAttack(_BtFamous):
 
     def run(self, ctx: AttackContext, ap: AccessPoint) -> AttackOutcome:
         attempt = self._attempt(ctx, ap)
-        seconds = self.seconds(ctx, 4.0)
         target = _target(ctx)
         objects: List[Dict[str, Any]] = []
         connect_reply = b""

@@ -30,13 +30,13 @@ where the answers come from the operator's own target.
 from __future__ import annotations
 
 import struct
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 from .. import bt
 from ..models import AccessPoint
 from .base import AttackContext, AttackOutcome
-from .blehid import _att_exchange, _att_read, _att_write, _enumerate
-from .blemimic import _Mimic, _advertising, _entry
+from .blehid import _att_exchange, _att_read, _att_write
+from .blemimic import _Mimic
 
 __all__ = ["ATTACKS", "META", "NAMES", "REGISTRY"]
 
@@ -1016,7 +1016,7 @@ class BleAudioSessionTakeoverAttack(_Takeover):
         if accepted:
             title = (f"Bluetooth audio takeover: {len(accepted)} AVDTP signal(s) accepted "
                      f"by {device.name}")
-            detail = (f"the stream was discovered and configured"
+            detail = ("the stream was discovered and configured"
                       + (f" for {codec}" if codec else "")
                       + f", and {len([row for row in controls if row['answered']])} "
                         f"AVRCP command(s) were answered: play, pause and the volume are "
@@ -1112,6 +1112,7 @@ class BleSdpBrowseAttack(_Takeover):
                            for uuid in (record.get("uuids") or [])})
         state = self.link_state(device.address, "sdp")
         extra = {"device": device.to_dict(), "opened": opened, "records": records,
+                 "link_state": state,
                  "profiles": [f"0x{uuid:04x}" for uuid in profiles],
                  "channel_hint": [int(record.get("channel") or 0) for record in records],
                  "simulated": bool(getattr(ctx, "demo", False))}
@@ -1258,7 +1259,7 @@ class BleGattBlobDumpAttack(_Takeover):
                   f"{sum(row['chunks'] for row in readable)} chunk(s)"
                   + (f"; {interesting[0]['name'] or interesting[0]['uuid']} reads "
                      f"{interesting[0]['text']!r}" if interesting else "")
-                  + f": the value is the peer's to hand over, and it handed it over")
+                  + ": the value is the peer's to hand over, and it handed it over")
         return self._report(ctx, ap, attempt, title, detail, extra,
                             severity="high" if interesting else "medium")
 
@@ -1732,7 +1733,7 @@ class BleServiceTableDumpAttack(_Takeover):
                   f"specific"
                   + (f" ({', '.join(row['uuid'] for row in vendor[:4])})" if vendor
                      else "")
-                  + f": the table is the map every other attack in this wave is aimed with")
+                  + ": the table is the map every other attack in this wave is aimed with")
         return self._report(ctx, ap, attempt, title, detail, extra, severity="low")
 
 
@@ -1939,7 +1940,6 @@ class BleAdvFloodAttack(_Takeover):
 
     def run(self, ctx: AttackContext, ap: AccessPoint) -> AttackOutcome:
         attempt = self._attempt(ctx, ap)
-        from .. import blesim
         airspace = self.floor()
         sock = self.socket(ctx)
         count = 0
@@ -2016,8 +2016,8 @@ class BleScanHogAttack(_Takeover):
                  f"{device.name if device else 'the floor'}")
         detail = (f"the scan window was set equal to the interval and the link "
                   f"{'survived' if state_after.get('alive', True) else 'was dropped'}"
-                  + f"; a radio that never stops listening answers its connection more "
-                    f"slowly and its battery pays for it")
+                  + "; a radio that never stops listening answers its connection more "
+                    "slowly and its battery pays for it")
         return self._report(ctx, ap, attempt, title, detail, extra, severity="medium")
 
 
@@ -2072,8 +2072,8 @@ class BleConnFloodAttack(_Takeover):
                  f"{device.name}")
         detail = (f"{attempts} connection attempts from one address produced {accepted} "
                   f"accepted link(s) on the controller and {refused} without one"
-                  + (f": the device keeps answering, which is what makes the flood worth "
-                     f"running" if accepted else ": the peer stopped answering"))
+                  + (": the device keeps answering, which is what makes the flood worth "
+                     "running" if accepted else ": the peer stopped answering"))
         return self._report(ctx, ap, attempt, title, detail, extra,
                             severity="medium" if accepted else "info")
 
@@ -2702,7 +2702,7 @@ class BleLescDowngradeAttack(_Takeover):
                   f"{attempts[-1]['answer'] or 'nothing'}"
                   + (f" ({attempts[-1]['reason']})" if attempts[-1]["reason"] else "")
                   + ": a device that only negotiates Secure Connections is a device whose "
-                    f"keys are not the legacy ones")
+                    "keys are not the legacy ones")
         return self._report(ctx, ap, attempt, title, detail, extra, severity="info")
 
 
@@ -2810,8 +2810,8 @@ class BleCtkdAttack(_Takeover):
                  "simulated": bool(getattr(ctx, "demo", False))}
         if answer[:1] == b"\x02" and extra["ctkd_offered"]:
             title = (f"BLE cross-transport key: {device.name} accepted CTKD")
-            detail = (f"the LE pairing answered with the cross-transport bit set, so the "
-                      f"classic link key is derived from it"
+            detail = ("the LE pairing answered with the cross-transport bit set, so the "
+                      "classic link key is derived from it"
                       + f" ({extra['derived_key'][:16]}…)"
                       + ": the protection of the classic transport is now the protection of "
                         "the LE exchange")
@@ -2936,7 +2936,7 @@ class BleBondOverwriteAttack(_Takeover):
                      f"{len(stored)} key distribution command(s)")
             detail = (f"an Encryption Information command carrying a key chosen here was "
                       f"answered with {stored[0]['answer']}"
-                      + (f" and the link reports a bond" if state.get("paired") else "")
+                      + (" and the link reports a bond" if state.get("paired") else "")
                       + ": the key the host stores is the key it was handed")
             return self._report(ctx, ap, attempt, title, detail, extra, severity="critical")
         title = f"BLE bond overwrite: {device.name} ignored the key distribution"

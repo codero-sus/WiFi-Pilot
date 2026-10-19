@@ -31,7 +31,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type
 from .. import itdev
 from .. import itproto as proto
 from ..itsim import PORT_PROTOCOL as PROTOCOL_FOR_PORT
-from ..itsim import LanHost, VirtualLan, build_lan
+from ..itsim import LanHost, VirtualLan
 from ..models import AccessPoint
 from .base import Attack, AttackContext, AttackOutcome
 from .survey3 import ALL

@@ -31,13 +31,13 @@ what the operator's own hardware does rather than what this tool claims about th
 from __future__ import annotations
 
 import struct
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Tuple
 
 from .. import blesim, bt
 from ..models import AccessPoint
 from .base import AttackContext, AttackOutcome
 from .blemimic import _Mimic
-from .blehid import _att_exchange, _att_read, _att_write, _enumerate
+from .blehid import _att_exchange, _att_read, _att_write
 
 __all__ = ["ATTACKS", "META", "NAMES", "REGISTRY"]
 

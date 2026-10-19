@@ -30,13 +30,12 @@ what the operator's own devices do rather than what this tool claims about them.
 from __future__ import annotations
 
 import struct
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 from .. import bt
 from ..models import AccessPoint
 from .base import AttackContext, AttackOutcome
-from .blehid import (_BleAttack, REPORT_UUID, PROTOCOL_MODE_UUID, HID_INFO_UUID,
-                     REPORT_MAP_UUID, _att_read, _att_write, _enumerate, _floor)
+from .blehid import (_BleAttack, _att_read, _att_write, _floor)
 
 __all__ = ["ATTACKS", "META", "NAMES", "REGISTRY"]
 
@@ -916,7 +915,7 @@ class BleSmartlockMimicAttack(_Mimic):
             detail = (f"advertised as the commissioning phone and wrote Lock Control to "
                       f"{opened.get('handle')}: the lock stored {opened.get('value')} and "
                       f"read back {opened.get('read_back') or 'the same value'}"
-                      + (f"; the admin key write was accepted too"
+                      + ("; the admin key write was accepted too"
                          if admin.get("accepted") else ""))
             return self._report(ctx, ap, attempt, title, detail, extra, severity="critical")
         title = "BLE smart-lock mimic: the lock refused the write"
@@ -969,7 +968,7 @@ class BleBadgeMimicAttack(_Mimic):
             detail = (f"the reader handed back the badge identity "
                       f"{identity.get('value') or 'it holds'} and "
                       f"{(access.get('text') or access.get('value') or 'its access level')}"
-                      + (f"; the door-grant write was accepted"
+                      + ("; the door-grant write was accepted"
                          if grant.get("accepted") else ""))
             return self._report(ctx, ap, attempt, title, detail, extra, severity="critical")
         title = "BLE badge mimic: the reader refused the clone"
@@ -1053,10 +1052,6 @@ class BleMeshMimicAttack(_Mimic):
         attempt = self._attempt(ctx, ap)
         node = next((device for device in self.floor().devices
                      if "mesh_proxy" in device.gatt), self.floor().pick("gatt"))
-        from .. import blesim
-        sock = blesim.controller_socket(None, address=node.address if node else "",
-                                        role="gatt")
-        link = self.floor().link_for(node.address if node else "", "gatt")
         proxy_in = self.read_characteristic(ctx, node.address if node else "", 0x2ADD)
         proxy_out = self.read_characteristic(ctx, node.address if node else "", 0x2ADE)
         provision = self.read_characteristic(ctx, node.address if node else "", 0x2ADC)
@@ -1533,7 +1528,7 @@ class BleAudioLeMimicAttack(_Mimic):
                  "reconnected": result.get("reconnected", []),
                  "simulated": bool(getattr(ctx, "demo", False))}
         accepted = bool(media.get("accepted") or gain.get("accepted"))
-        title = (f"BLE LE-Audio mimic: the sink's control points took the clone's writes"
+        title = ("BLE LE-Audio mimic: the sink's control points took the clone's writes"
                  if accepted else "BLE LE-Audio mimic: the control points refused the clone")
         detail = (f"media state {state.get('value') or 'unread'}, volume "
                   f"{volume.get('value') or 'unread'}; the media control point "

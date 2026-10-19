@@ -30,16 +30,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
-import struct
 import time
 from collections import Counter, defaultdict
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from .. import ies as ie_module
 from ..models import AccessPoint, Attempt
-from ..pcap import (_strip_radiotap, analyze_file, iter_frames)
-from ..util import human_duration
+from ..pcap import (analyze_file, iter_frames)
 from .base import AttackContext, AttackOutcome
 from .forensics import OfflineAttack
 from .frames import parse_80211
@@ -589,7 +586,6 @@ def _ie_anomaly_audit(self: _Audit, ctx: AttackContext, ap: AccessPoint) -> Atta
         offset, ssid_count, zero_length = 0, 0, 0
         while offset + 2 <= len(body):
             tag, length = body[offset], body[offset + 1]
-            value = body[offset + 2:offset + 2 + length]
             if length == 0:
                 zero_length += 1
             if tag == 0:

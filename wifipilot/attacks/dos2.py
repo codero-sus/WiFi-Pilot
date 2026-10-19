@@ -25,12 +25,11 @@ All eight are opt-in, time-capped, and report the finding rather than a password
 
 from __future__ import annotations
 
-import struct
 from typing import Sequence
 
 from ..netproto import dhcp_discover, ipv4_udp_packet
 from ..rawtx import (build_cts, build_csa_beacon, build_data, build_disassoc,
-                     build_probe_response, build_rm_beacon_request, build_rts,
+                     build_probe_response, build_rts,
                      build_sa_query, build_tdls_teardown, spoofed_mac)
 from .flood2 import _FrameFlood
 

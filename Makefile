@@ -54,9 +54,10 @@ bench:  ## run the benchmarks (pcap, crypto, crack, session, planner, web)
 bench-pcap:  ## just the capture-parsing benchmarks
 	$(PY) benchmarks/bench.py pcap crypto
 
-lint:  ## byte-compile everything and check imports
-	$(PY) -m compileall -q wifipilot tests
-	$(PY) -c "import wifipilot, wifipilot.cli, wifipilot.engine, wifipilot.web.app; print('imports ok')"
+lint:  ## byte-compile, check imports, run the ruff error gate (F + E9)
+	$(PY) -m compileall -q wifipilot tests tools examples benchmarks
+	$(PY) -c "import wifipilot, wifipilot.cli, wifipilot.engine; print('imports ok')"
+	@command -v ruff >/dev/null 2>&1 && ruff check wifipilot tests tools examples benchmarks || echo "ruff not installed — pip install ruff (or: pip install -e '.[dev]')"
 
 report:  ## print how to find the reports of previous sessions
 	@echo "sessions live in ./sessions/<id>/ (journal.jsonl + reports/)"

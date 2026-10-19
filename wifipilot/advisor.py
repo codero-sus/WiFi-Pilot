@@ -33,16 +33,10 @@ from __future__ import annotations
 
 import json
 import re
-import socket
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from .config import CortexConfig, OllamaConfig, OpenRouterConfig
-from .deps import registry
 from .events import EK
 from .llm import (LLMAuthError, LLMClient, LLMCreditError, LLMError, LLMPolicyError,
                   LLMRateLimitError, CortexClient, ModelInfo, OllamaClient,

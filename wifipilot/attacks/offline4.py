@@ -30,14 +30,11 @@ to be told which tag it lives at, and the pair could not both be right.
 from __future__ import annotations
 
 import os
-import time
 from collections import Counter, defaultdict
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 from ..models import AccessPoint
-from .base import AttackContext, AttackOutcome, Attempt
-from .forensics import OfflineAttack
-from .frames import parse_80211
+from .base import AttackContext, AttackOutcome
 from .offline3 import (_Audit, _EapolFacts, _frames, _parsed, _security_of, _text,
                        frame_body)
 
@@ -347,7 +344,7 @@ def _hs20_audit(self: _Audit, ctx: AttackContext, ap: AccessPoint) -> AttackOutc
         rows.append({"bssid": bssid, "ssid": _ssid_of(entry), **hs20})
     releases = Counter(row.get("release") for row in rows)
     detail = (f"{len(rows)} Hotspot 2.0 network(s)"
-              + (f", releases " + ", ".join(f"{release} x{count}"
+              + (", releases " + ", ".join(f"{release} x{count}"
                                             for release, count in releases.items())
                  if rows else "")
               + ("; a Passpoint network answers ANQP queries before association — the "
@@ -741,13 +738,13 @@ def _eapol_key_flags_audit(self: _Audit, ctx: AttackContext,
         per_message[f"m{number or message.number if False else number}"] = bits
         # the expected shape per message number, from the standard
         if number == 1 and (bits["install"] or bits["mic"]):
-            anomalies.append(f"message 1 with install/mic set")
+            anomalies.append("message 1 with install/mic set")
         if number == 2 and (bits["install"] or bits["ack"]):
-            anomalies.append(f"message 2 with install/ack set")
+            anomalies.append("message 2 with install/ack set")
         if number == 3 and not bits["install"]:
-            anomalies.append(f"message 3 without the install bit")
+            anomalies.append("message 3 without the install bit")
         if number == 4 and bits["install"]:
-            anomalies.append(f"message 4 with the install bit")
+            anomalies.append("message 4 with the install bit")
     detail = (f"{len(facts.messages)} key message(s): "
               + ", ".join(f"{name} x{count}" for name, count in flags.most_common())
               + (f"; {len(anomalies)} message(s) carry flags their message number should "

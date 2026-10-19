@@ -24,12 +24,12 @@ from __future__ import annotations
 import contextlib
 import os
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from ..deps import registry
 from ..models import STATUS_SUCCESS, AccessPoint, Attempt
 from ..rawtx import (RawInjector, build_assoc_request, build_auth_request,
-                     build_deauth, frame_only, injection_available, spoofed_mac)
+                     injection_available, spoofed_mac)
 from ..util import Process, human_duration
 from .base import Attack, AttackContext, AttackOutcome
 
@@ -422,7 +422,7 @@ class MacFilterProbeAttack(Attack):
         outcome = AttackOutcome.success(
             title, detail=detail,
             extra={"probe_mac": probe_mac, "status": status, "allowed": allowed,
-                   "frames": 2,
+                   "frames": 2, "severity": severity,
                    "note": ("MAC filtering is an obstacle, not a security control: a "
                             "permitted address is easy to learn by sniffing")})
         ctx.session.end_attempt(attempt, STATUS_SUCCESS, title, detail)
@@ -554,7 +554,6 @@ def _frames_from_capture(path: str, limit: int = 400) -> List[bytes]:
     """The 802.11 frames of a capture, radiotap included, ready to re-send."""
     from ..pcap import iter_frames
 
-    import struct as _struct
 
     out: List[bytes] = []
     radiotap = bytes([0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00])

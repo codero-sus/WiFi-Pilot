@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional
 
 from ..deps import registry
 from ..models import STATUS_SUCCESS, AccessPoint, Attempt
-from ..util import Process, human_duration
+from ..util import Process
 from ..wpa3 import capture_wpa3, sae_exchange
 from .base import Attack, AttackContext, AttackOutcome
 

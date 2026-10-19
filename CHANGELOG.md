@@ -4,6 +4,38 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## Fixed — every error ruff can see, and the live paths hiding behind them
+
+A pyflakes sweep (`ruff --select F,E9`) found 200 errors the demo-driven
+suite could not see. Most were dead imports and placeholder-less f-strings;
+the interesting ones were live-only paths that had never executed:
+
+* **`rogue_dhcp_detect` raised `NameError` on its first live frame** — it
+  called `parse_ipv4` without importing it. Behind that sat the real bug:
+  `parse_ipv4` never decoded UDP, so both DHCP listeners (`rogue_dhcp_detect`,
+  `rogue_dhcp`) read a `sport` key that does not exist, skipped every frame,
+  and fed `parse_dhcp` a BOOTP body still wearing its UDP header. The rogue
+  DHCP *server* has therefore never leased anything outside demo mode.
+  `parse_ipv4` now strips the UDP header and reports `sport`/`dport`;
+  `tests/test_errorfixes.py` drives both live loops end-to-end.
+* **Successful attacks filed as "skipped".** `pmf_downgrade_probe` and
+  `btm_hijack` returned success without closing their attempt, so the
+  engine stamped them skipped; their computed `severity` (and
+  `mac_filter_probe`'s) never reached the report. Attempts are closed,
+  severities ride in `extra`.
+* Smaller drops on the floor, now wired or deleted: a management audit
+  computed `http`/`https` and never recorded it; an SDP browse fetched the
+  link state and never reported it; a mesh mimic opened a socket and link
+  it never used; duplicate keys in the simulator's port map and the vendor
+  table (all same-valued, all dead); a DHCP builder computing a client-id
+  nobody sent (the discover builder already adds option 61 itself).
+* `wifipilot/__init__.py` imported `catalogue`, `current_run`, `EK`, the
+  LLM exception tree and the Config/AccessPoint/Capture classes for scripts
+  but never listed them in `__all__` — now exported properly.
+* **Prevention:** `[tool.ruff]` (F + E9 only) in `pyproject.toml`, ruff in
+  the `dev` extra, an "Error gate" step in CI, and Python 3.13 added to the
+  CI matrix. `make lint` no longer needs FastAPI installed to pass.
+
 ## Fixed — the web UI dies on machines that have a WiFi card
 
 * **`ToolRegistry.summary()` shipped raw `WirelessInterface` dataclasses.** The

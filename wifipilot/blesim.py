@@ -48,7 +48,7 @@ import hashlib
 import random
 import struct
 from dataclasses import dataclass, field
-from typing import (Any, Callable, Dict, Iterable, List, Mapping, Optional,
+from typing import (Any, Dict, Iterable, List, Mapping, Optional,
                     Sequence, Tuple)
 
 from . import bt
