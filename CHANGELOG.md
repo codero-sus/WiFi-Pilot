@@ -4,6 +4,20 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## Fixed — the web UI dies on machines that have a WiFi card
+
+* **`ToolRegistry.summary()` shipped raw `WirelessInterface` dataclasses.** The
+  REST endpoints never noticed — FastAPI's encoder converts dataclasses — but
+  the WebSocket handler's plain `json.dumps()` raised `TypeError: Object of
+  type WirelessInterface is not JSON serializable` on the very first state
+  frame, killing the live UI on every real laptop. CI has no radio, so the
+  list was always empty there and the suite stayed green. The summary now
+  emits `to_dict()` rows (the shape `static/app.js` already renders), the
+  three `json.dumps` calls in the socket go through a `_json_default` hook
+  (`to_dict` → dataclass fields → ISO dates → sets/bytes → `str`) so no one
+  stray object can take the stream down again, and three regression tests
+  pin the behaviour with a mocked ath9k adaptor present.
+
 ## Relicensed — Apache-2.0 OR BSD-3-Clause (was MIT)
 
 * **The project is now dual-licensed.** Every file is offered under the **Apache License

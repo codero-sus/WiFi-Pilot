@@ -34,10 +34,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import os
 import threading
 import time
+from datetime import date, datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -62,6 +65,41 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _json_default(obj: Any) -> Any:
+    """Last-resort ``json.dumps`` hook for the WebSocket stream.
+
+    FastAPI's own encoder converts dataclasses, Paths and friends, so the
+    REST endpoints never noticed when a raw ``WirelessInterface`` leaked
+    into the state snapshot — the plain ``json.dumps`` in the WebSocket
+    handler is what died ("Object of type WirelessInterface is not JSON
+    serializable"), killing the live UI on any machine that actually has
+    a WiFi adaptor.  The root cause is fixed at the source
+    (``ToolRegistry.summary``); this hook is defence in depth so that no
+    future stray object can take the socket down with it: prefer the
+    object's own ``to_dict()``, then dataclass fields, then sane scalar
+    forms, and only then its string representation.
+    """
+    to_dict = getattr(obj, "to_dict", None)
+    if callable(to_dict):
+        try:
+            return to_dict()
+        except TypeError:
+            return to_dict                      # pragma: no cover - defensive
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return dataclasses.asdict(obj)
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, Path):
+        return str(obj)
+    if isinstance(obj, Enum):
+        return obj.value
+    if isinstance(obj, (set, frozenset)):
+        return sorted(obj, key=str)
+    if isinstance(obj, (bytes, bytearray)):
+        return obj.hex()
+    return str(obj)
 
 
 class WebState:
@@ -1159,8 +1197,12 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
 
         loop = asyncio.get_running_loop()
         threading.Thread(target=pump, name="ws-pump", daemon=True).start()
+
+        def dump(payload: Dict[str, Any]) -> str:
+            return json.dumps(payload, default=_json_default)
+
         try:
-            await ws.send_text(json.dumps({"kind": "state", "data": snapshot()}))
+            await ws.send_text(dump({"kind": "state", "data": snapshot()}))
             last_state = 0.0
             while True:
                 try:
@@ -1168,11 +1210,11 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
                 except asyncio.TimeoutError:
                     event = None
                 if event is not None:
-                    await ws.send_text(json.dumps({"kind": "event", "event": event}))
+                    await ws.send_text(dump({"kind": "event", "event": event}))
                 now = time.time()
                 if now - last_state > 3.0:
                     last_state = now
-                    await ws.send_text(json.dumps({"kind": "state", "data": snapshot()}))
+                    await ws.send_text(dump({"kind": "state", "data": snapshot()}))
         except (WebSocketDisconnect, RuntimeError, ConnectionError):
             pass
         finally:

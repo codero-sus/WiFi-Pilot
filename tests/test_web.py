@@ -151,6 +151,65 @@ def test_websocket_streams_state_and_events(client):
                 break
 
 
+def _one_real_adaptor():
+    """What ``iw dev`` finds on an actual laptop (CI machines have none)."""
+    from wifipilot.deps import WirelessInterface
+    return [WirelessInterface(
+        name="wlan0", phy="phy0", driver="ath9k", mode="managed",
+        bands=["2.4GHz", "5GHz"], supports_monitor=True,
+        supports_injection=True,
+    )]
+
+
+def test_tools_summary_is_json_serializable_with_a_real_interface():
+    # regression: ToolRegistry.summary() embedded raw WirelessInterface
+    # dataclasses; the WebSocket's plain json.dumps died with "Object of
+    # type WirelessInterface is not JSON serializable" on any machine that
+    # actually has a WiFi adaptor (empty list on CI hid it for months).
+    from unittest import mock
+
+    from wifipilot.deps import registry
+
+    with mock.patch("wifipilot.deps.list_interfaces", return_value=_one_real_adaptor()):
+        payload = json.dumps(registry.summary())           # must not raise
+    iface = json.loads(payload)["interfaces"][0]
+    # the keys static/app.js renders (name/driver/bands/monitor/injection)
+    assert iface["name"] == "wlan0" and iface["driver"] == "ath9k"
+    assert iface["bands"] == ["2.4GHz", "5GHz"]
+    assert iface["monitor"] is True and iface["injection"] is True
+
+
+def test_websocket_state_with_a_real_interface(client):
+    # the socket's first frame is the full snapshot — the exact frame that
+    # crashed uvicorn's ASGI handler in the field.
+    from unittest import mock
+
+    with mock.patch("wifipilot.deps.list_interfaces", return_value=_one_real_adaptor()):
+        with client.websocket_connect("/ws") as websocket:
+            first = json.loads(websocket.receive_text())
+    assert first["kind"] == "state"
+    assert first["data"]["tools"]["interfaces"][0]["name"] == "wlan0"
+
+
+def test_ws_json_default_survives_stray_objects():
+    # defence in depth: no single leaked object may kill the stream again.
+    from datetime import datetime
+    from pathlib import Path
+
+    from wifipilot.web.app import _json_default
+
+    text = json.dumps(
+        {"iface": _one_real_adaptor()[0], "cap": Path("/loot/a.cap"),
+         "at": datetime(2026, 10, 19, 9, 0), "tags": {"b", "a"},
+         "blob": b"\xde\xad"},
+        default=_json_default,
+    )
+    data = json.loads(text)
+    assert data["iface"]["name"] == "wlan0"               # to_dict() won
+    assert data["cap"] == "/loot/a.cap"
+    assert data["tags"] == ["a", "b"] and data["blob"] == "dead"
+
+
 # --------------------------------------------------------------------------- #
 # AI provider endpoints
 # --------------------------------------------------------------------------- #
