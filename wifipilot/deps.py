@@ -251,7 +251,12 @@ class ToolRegistry:
             "tools": {info.name: info.to_dict() for info in self.all()},
             "capabilities": caps,
             "missing_required": self.missing_required(),
-            "interfaces": list_interfaces(),
+            # plain dicts: this summary goes straight to json.dumps (the
+            # WebSocket state push, CLI --json).  Raw WirelessInterface
+            # dataclasses crashed the WS handler with "Object of type
+            # WirelessInterface is not JSON serializable" on any machine
+            # that actually has a WiFi adaptor — empty on CI, fatal live.
+            "interfaces": [info.to_dict() for info in list_interfaces()],
             "platform": platform_info(),
             "install_command": install_command(),
         }
