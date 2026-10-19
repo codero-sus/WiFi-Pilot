@@ -87,8 +87,18 @@ def ipv4_udp_packet(source: str, destination: str, source_port: int, dest_port: 
 
 
 def parse_ipv4(data: bytes) -> Dict[str, Any]:
-    """Decode an IPv4 packet; the L4 payload comes back as ``l4_payload``."""
+    """Decode an IPv4 packet; the L4 payload comes back as ``l4_payload``.
+
+    For UDP the 8-byte header is decoded too: ``sport``/``dport`` are set
+    and ``l4_payload`` is what the datagram *carries* (a DHCP BOOTP body, a
+    DNS message), ready for :func:`parse_dhcp` and friends.  Callers in the
+    rogue-DHCP and rogue-server surveys were written against exactly that
+    contract — without it their live loops saw no ``sport`` key, skipped
+    every frame, and the BOOTP magic cookie sat 8 bytes out of place.
+    Non-UDP payloads (TCP segments above all) pass through untouched.
+    """
     out: Dict[str, Any] = {"version": 0, "protocol": 0, "src": "", "dst": "",
+                           "sport": 0, "dport": 0,
                            "l4_payload": b"", "header_length": 0, "total_length": 0}
     if len(data) < 20 or data[0] >> 4 != 4:
         return out
@@ -96,14 +106,18 @@ def parse_ipv4(data: bytes) -> Dict[str, Any]:
     if len(data) < header_length:
         return out
     total_length = int.from_bytes(data[2:4], "big") or len(data)
+    payload = data[header_length:min(total_length, len(data))]
     out.update({
         "version": 4, "header_length": header_length, "total_length": total_length,
         "dscp": data[1] >> 2, "ttl": data[8], "protocol": data[9],
         "src": ipv4_text(data[12:16]), "dst": ipv4_text(data[16:20]),
         "fragmented": bool(int.from_bytes(data[6:8], "big") & 0x1FFF),
-        "l4_payload": data[header_length:min(total_length, len(data))],
+        "l4_payload": payload,
         "protocol_name": {1: "icmp", 6: "tcp", 17: "udp"}.get(data[9], str(data[9])),
     })
+    if data[9] == 17 and len(payload) >= 8:            # UDP: strip its header
+        out["sport"], out["dport"] = struct.unpack(">HH", payload[:4])
+        out["l4_payload"] = payload[8:]
     return out
 
 
@@ -177,8 +191,6 @@ DHCP_MESSAGE_TYPES = {1: "discover", 2: "offer", 3: "request", 4: "decline",
 def _dhcp_packet(op: int, mac: str, options: List[Tuple[int, bytes]],
                  xid: int, flags: int, requested_ip: str = "") -> bytes:
     client = mac_to_bytes(mac)
-    # a DHCP client identifier is the ethernet type byte plus the MAC
-    client_id = bytes([1]) + client
     body = struct.pack(">BBBBIHH", op, 1, 6, 0, xid, 0, flags)
     body += bytes([0, 0, 0, 0])
     body += ipv4_bytes(requested_ip or "0.0.0.0")      # yiaddr
@@ -561,7 +573,7 @@ def ssdp_notify(name: str = "router", address: str = "", location: str = "",
     """
     usn = usn or f"uuid:{name}"
     server = server or f"Linux/3.14 UPnP/1.1 {model or name}/1.0"
-    headers = [f"NOTIFY * HTTP/1.1", f"HOST: {SSDP_ADDRESS}:{SSDP_PORT}",
+    headers = ["NOTIFY * HTTP/1.1", f"HOST: {SSDP_ADDRESS}:{SSDP_PORT}",
                f"CACHE-CONTROL: max-age={cache}", f"NT: {nt}", f"NTS: {nts}",
                f"USN: {usn}::{nt}", f"SERVER: {server}"]
     if location:

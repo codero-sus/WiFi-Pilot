@@ -16,7 +16,7 @@ import pytest
 
 from wifipilot import masks
 from wifipilot.crack import Cracker
-from wifipilot.models import AccessPoint, Capture
+from wifipilot.models import Capture
 from wifipilot.masks import Mask, MaskError
 from wifipilot.pcap import analyze_file
 from wifipilot.synth import build_capture

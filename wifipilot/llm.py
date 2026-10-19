@@ -32,12 +32,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from .config import CortexConfig, OllamaConfig, OpenRouterConfig
-from .util import read_json
 
 #: attribution sent to OpenRouter (their docs ask for both headers)
 OPENROUTER_REFERER = "https://github.com/codero-sus/Pentest-toolkit"

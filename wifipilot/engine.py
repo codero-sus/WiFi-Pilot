@@ -310,10 +310,7 @@ class Engine:
         synthetic handshake, so the number is a rate, never a claim about a
         real network.  The estimate it returns is labelled ``estimate``.
         """
-        from . import analytics
         from .synth import build_capture
-        from .crack import Cracker as _Cracker
-        from .crypto import HandshakeVerifier
         from .models import Capture as _Capture
         from .pcap import analyze_file
         import tempfile

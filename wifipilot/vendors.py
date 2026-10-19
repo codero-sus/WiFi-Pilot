@@ -192,7 +192,7 @@ _ALIASES = {
     "avm": "AVM", "tplink technologies": "TP-Link", "netgear inc": "Netgear",
     "arris group inc": "ARRIS",
     "ralink": "MediaTek", "mediatek": "MediaTek",
-    "netgear inc": "Netgear", "linksys llc": "Linksys", "cisco systems inc": "Cisco",
+    "linksys llc": "Linksys", "cisco systems inc": "Cisco",
 }
 
 

@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import struct
 import time
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -34,7 +33,7 @@ from ..pcap import SUBTYPE_ASSOC_REQ, SUBTYPE_PROBE_REQ, SUBTYPE_PROBE_RESP, ite
 from ..rawtx import (RawInjector, build_assoc_request, build_csa_beacon,
                      build_probe_request, build_arp_request, injection_available,
                      spoofed_mac)
-from ..util import Process, human_duration, mac_norm
+from ..util import Process, mac_norm
 from .base import Attack, AttackContext, AttackOutcome
 
 #: management subtypes this module reads out of a capture

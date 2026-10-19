@@ -24,8 +24,8 @@ import os
 import pytest
 
 from wifipilot import bt, netproto, netstack, synth
-from wifipilot.attacks import (ATTACK_CLASSES, BATCH_ATTACKS, DEFAULT_ORDER,
-                               OFFLINE_ATTACKS, attack_catalog)
+from wifipilot.attacks import (ATTACK_CLASSES, DEFAULT_ORDER,
+                               attack_catalog)
 from wifipilot.attacks import meta
 from wifipilot.attacks.btattacks import ATTACKS as BT_ATTACKS
 from wifipilot.attacks.btattacks import META as BT_META

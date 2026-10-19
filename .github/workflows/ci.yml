@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.11", "3.12"]
+        python-version: ["3.9", "3.11", "3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
@@ -34,6 +34,14 @@ jobs:
 
       - name: Import check
         run: python -c "import wifipilot, wifipilot.cli, wifipilot.engine, wifipilot.advisor, wifipilot.web.app; print('imports ok')"
+
+      # pyflakes + syntax only (see [tool.ruff] in pyproject.toml): undefined
+      # names on live-only paths are invisible to the demo-driven suite —
+      # survey3 called parse_ipv4 without importing it for a whole release,
+      # and only a laptop in the field ever found out.  This step is that
+      # laptop, minus the embarrassment.
+      - name: Error gate (ruff F + E9)
+        run: ruff check wifipilot tests tools examples benchmarks
 
       - name: Crypto self-test (published test vectors)
         run: python -m pytest tests/test_crypto.py -q

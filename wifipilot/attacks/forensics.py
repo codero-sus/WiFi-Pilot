@@ -34,10 +34,9 @@ which is why they run before the noisy attacks in the default order.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from ..ies import capture_beacons
 from ..models import STATUS_SUCCESS, AccessPoint, Attempt, Capture
@@ -543,7 +542,6 @@ class PixieOfflineAttack(OfflineAttack):
             args += ["--rnonce", materials["rnonce"]] if materials.get("rnonce") else []
             args += ["--authkey", materials["authkey"]] if materials.get("authkey") else []
             result = run(args, timeout=60)
-            text = result.text
             pin = ""
             for line in result.lines:
                 if "WPS pin" in line or "PIN" in line:

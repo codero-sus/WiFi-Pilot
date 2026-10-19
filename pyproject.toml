@@ -32,7 +32,7 @@ dependencies = [
 
 [project.optional-dependencies]
 web = ["fastapi>=0.110", "uvicorn>=0.27"]
-dev = ["pytest>=7.4", "httpx>=0.27", "fastapi>=0.110", "uvicorn>=0.27"]
+dev = ["pytest>=7.4", "httpx>=0.27", "fastapi>=0.110", "uvicorn>=0.27", "ruff>=0.6"]
 
 [project.scripts]
 wifipilot = "wifipilot.cli:main"
@@ -49,3 +49,13 @@ wifipilot = ["web/static/*", "data/*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+# The error gate, deliberately narrow: pyflakes (F: undefined names, unused
+# imports/variables, duplicate dict keys, shadowed imports) and syntax (E9).
+# Style stays the authors' business; a NameError on a live-only path — the
+# bug this gate exists to catch — is not style.  CI runs exactly this.
+[tool.ruff]
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["F", "E9"]

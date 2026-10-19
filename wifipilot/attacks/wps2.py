@@ -31,7 +31,7 @@ from typing import List, Optional, Tuple
 
 from ..deps import registry
 from ..models import STATUS_SUCCESS, AccessPoint, Attempt, Finding
-from ..util import Process, human_duration
+from ..util import Process
 from .base import Attack, AttackContext, AttackOutcome
 from .wps import candidate_pins
 

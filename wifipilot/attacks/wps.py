@@ -11,14 +11,12 @@ access point's WPS implementation.
 from __future__ import annotations
 
 import contextlib
-import os
 import re
 import time
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from ..deps import registry
-from ..models import STATUS_FAILED, STATUS_SUCCESS, AccessPoint, Attempt, Capture
+from ..models import STATUS_SUCCESS, AccessPoint, Attempt, Capture
 from ..util import Process, human_duration
 from .base import Attack, AttackContext, AttackOutcome
 

@@ -15,7 +15,6 @@ import pytest
 
 from wifipilot.engine import Engine
 from wifipilot.events import EK
-from wifipilot.models import STATUS_FAILED, STATUS_SUCCESS
 
 
 @pytest.fixture(scope="module")

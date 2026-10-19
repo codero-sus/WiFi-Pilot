@@ -939,7 +939,7 @@ class BleIrkResolveAttack(_BleAttack):
                   + (f"; {len(single)} key(s) matched a single address, which is not enough "
                      f"to call a device followed" if single else "")
                   + ("" if identities else "; every address on air either rotated under a "
-                     f"key that is not in the dictionary or did not rotate at all"))
+                     "key that is not in the dictionary or did not rotate at all"))
         payload = {"addresses": seen, "passes": passes,
                    "identities": list(identities.values()), "followed": len(followed),
                    "dictionary_size": len(blesim.IRK_DICTIONARY),

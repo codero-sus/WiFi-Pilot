@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
 from .deps import WirelessInterface, list_interfaces, registry
-from .util import C, is_root, mac_random, run, which
+from .util import is_root, mac_random, run, which
 
 
 class InterfaceError(RuntimeError):

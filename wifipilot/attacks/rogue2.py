@@ -31,11 +31,10 @@ import contextlib
 import json
 import os
 import socket
-import struct
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from ..models import STATUS_SUCCESS, AccessPoint, Attempt, Finding
 from ..netproto import (DHCP_CLIENT_PORT, DHCP_SERVER_PORT, dhcp_offer,
@@ -190,7 +189,6 @@ class RogueDhcpAttack(_RogueService):
             if injector.error:
                 return self._fail(ctx, attempt, "injection unavailable",
                                   injector.error)
-            started = time.time()
             for observation in ctx.listen(budget, channel=ap.channel):
                 payload = observation.get("payload") or b""
                 if observation.get("ethertype") != 0x0800:
@@ -535,7 +533,6 @@ class ArpMitmAttack(_RogueService):
             poison = build_arp_reply(our_mac, gateway, "ff:ff:ff:ff:ff:ff", gateway,
                                      ap.bssid)
             deadline = time.time() + budget
-            started = time.time()
             while time.time() < deadline and not ctx.want_stop():
                 injector.send(poison)
                 sent += 1

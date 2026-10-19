@@ -10,7 +10,6 @@ missing.
 from __future__ import annotations
 
 import re
-import shutil
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path

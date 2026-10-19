@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from wifipilot.models import Attempt, Capture, Client, Finding, STATUS_FAILED, STATUS_SUCCESS
+from wifipilot.models import Capture, Client, Finding, STATUS_FAILED
 from tests.conftest import AP_MAC
 
 

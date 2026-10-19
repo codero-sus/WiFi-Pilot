@@ -9,7 +9,6 @@ only has aircrack-ng installed.
 from __future__ import annotations
 
 import contextlib
-import errno
 import json
 import os
 import re
@@ -19,7 +18,7 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Union

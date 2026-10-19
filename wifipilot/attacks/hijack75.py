@@ -38,31 +38,26 @@ capture is a hijacker that did not work.
 
 from __future__ import annotations
 
-import os
 import struct
 import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .. import ies as iecodec
-from ..models import STATUS_SUCCESS, AccessPoint, Attempt, Finding
+from ..models import AccessPoint, Attempt
 from .. import netproto as np
 from ..pcap import iter_frames
 from ..rawtx import (build_action, build_arp_reply, build_auth_request, build_btm_request,
-                     build_cts, build_data, build_disassoc, build_eapol_start,
+                     build_data, build_disassoc, build_eapol_start,
                      build_null_data, build_probe_request, build_reassoc_request,
-                     build_rm_beacon_request, build_rts, build_sa_query,
-                     build_ssid_confusion_beacon, build_tdls_teardown, injection_available,
-                     spoofed_mac)
-from ..synth import (PCAP_HEADER, RADIOTAP, build_action_frame, build_arp_frame,
-                     build_assoc_response,
-                     build_auth_frame, build_beacon, build_deauth, build_dhcp_frames,
-                     build_eapol_logoff, build_probe_response, build_qos_data_frame,
+                     build_rm_beacon_request, build_sa_query,
+                     build_ssid_confusion_beacon, build_tdls_teardown, spoofed_mac)
+from ..synth import (PCAP_HEADER, RADIOTAP, build_action_frame, build_assoc_response,
+                     build_beacon, build_eapol_logoff, build_probe_response, build_qos_data_frame,
                      country_element, extended_capabilities, he_capabilities,
                      ht_capabilities, interworking_element, mobility_domain,
-                     neighbour_report_element, rm_enabled_capabilities, rsn_element,
-                     vht_capabilities, wmm_parameter_element, write_pcap)
+                     neighbour_report_element, rm_enabled_capabilities, vht_capabilities, wmm_parameter_element)
 from .base import AttackContext, AttackOutcome
-from .lure import _LureAttack, beacon_like_ssids, management_frames, ssid_of_ies
+from .lure import _LureAttack, management_frames, ssid_of_ies
 
 __all__ = ["ATTACKS", "META", "NAMES", "REGISTRY"]
 
@@ -2173,7 +2168,6 @@ class SessionSeqInjectionAttack(_Session):
         return frames
 
     def detail(self, ctx: AttackContext, ap: AccessPoint, observed: Dict[str, Any]) -> str:
-        text = " ".join(row["text"] for row in observed.get("text") or [])
         return (f"three segments carrying a plain HTTP request were injected into "
                 f"{self.stations(ctx)[0]}'s connection across three sequence guesses; the "
                 f"capture holds the request ('GET /admin') and the acknowledgement the "
@@ -2219,8 +2213,8 @@ class SessionCookieReplayAttack(_Session):
         return (f"the capture holds {len(found)} credential pattern(s) in the clear"
                 + (f", including the cookie value(s) {', '.join(cookies[:3])}" if cookies
                    else "")
-                + f"; replayed against the portal they are the user's session, which is "
-                  f"why the finding is graded as loot rather than as noise")
+                + "; replayed against the portal they are the user's session, which is "
+                  "why the finding is graded as loot rather than as noise")
 
 
 class SessionGtkRekeyAttack(_Session):
@@ -2618,7 +2612,7 @@ class PortalAnqpSpoofAttack(_Portal):
         "we put in it.")
 
     def frames(self, ctx: AttackContext, ap: AccessPoint) -> Sequence[bytes]:
-        from ..synth import hs20_element, interworking_element
+        from ..synth import hs20_element    # interworking_element is module-level
         station = self.stations(ctx)[0]
         answer = interworking_element() + hs20_element()
         return [build_action_frame(ap.bssid, station, category=4, action=0,
@@ -2766,9 +2760,9 @@ class PortalCookieCloneAttack(_Portal):
     def detail(self, ctx: AttackContext, ap: AccessPoint, observed: Dict[str, Any],
                fields: str) -> str:
         blob = " ".join(row["text"] for row in observed.get("text") or [])
-        return (f"the clone loaded with Set-Cookie: session=8f2c1ab9d4e7 and a page that "
-                f"says Welcome back, so the client sees an authenticated session it never "
-                f"authenticated"
+        return ("the clone loaded with Set-Cookie: session=8f2c1ab9d4e7 and a page that "
+                "says Welcome back, so the client sees an authenticated session it never "
+                "authenticated"
                 + (" (the cookie is in the capture)" if "session=8f2c" in blob else "")
                 + f"; the fields a real login would have asked for ({fields or 'none'}) "
                   f"are not needed at all")
@@ -2870,8 +2864,8 @@ class PortalJavascriptInjectAttack(_Portal):
     def detail(self, ctx: AttackContext, ap: AccessPoint, observed: Dict[str, Any],
                fields: str) -> str:
         blob = " ".join(row["text"] for row in observed.get("text") or [])
-        return (f"the portal HTML left the radio with a keyup handler that posts every "
-                f"keystroke to /collect"
+        return ("the portal HTML left the radio with a keyup handler that posts every "
+                "keystroke to /collect"
                 + (" (the script is in the capture)" if "keyup" in blob else "")
                 + f"; the form's own fields ({fields or 'none'}) are real, which is the "
                   f"point — the user is typing into a page somebody else edited")
@@ -3039,7 +3033,7 @@ class EnterpriseCertificateSwapAttack(_Enterprise):
                 f"EAP-TLS to {self.stations(ctx)[0]}"
                 + (f" (the capture decoded {names})" if names else "")
                 + "; the client's decision is whether it checks the issuer, and the "
-                  f"capture records which one it was asked to make")
+                  "capture records which one it was asked to make")
 
 
 class EnterpriseEapMd5Attack(_Enterprise):
@@ -3120,10 +3114,10 @@ class EnterpriseTtlsPapAttack(_Enterprise):
                                             "corp\\jdoe", "Summer2024"))
 
     def detail(self, ctx: AttackContext, ap: AccessPoint, observed: Dict[str, Any]) -> str:
-        return (f"the TTLS/PAP exchange in the capture carries the username and password "
-                f"as AVPs inside the tunnel; a client that accepted our certificate has "
-                f"handed them to us, and one that checks the issuer has handed them to "
-                f"its real server — which is exactly the control the finding tests")
+        return ("the TTLS/PAP exchange in the capture carries the username and password "
+                "as AVPs inside the tunnel; a client that accepted our certificate has "
+                "handed them to us, and one that checks the issuer has handed them to "
+                "its real server — which is exactly the control the finding tests")
 
 
 class EnterpriseMschapv2RelayAttack(_Enterprise):
@@ -3150,7 +3144,6 @@ class EnterpriseMschapv2RelayAttack(_Enterprise):
 
     def observe(self, ctx: AttackContext, ap: AccessPoint, path: str) -> Dict[str, Any]:
         observed = super().observe(ctx, ap, path)
-        blob = b"".join(row.get("body") or b"" for row in data_rows(path))
         observed["verified"] = np.mschapv2_verify("Summer2024", b"\x11" * 16, b"\x22" * 16,
                                                   "corp\\jdoe", b"\x00" * 24)
         return observed

@@ -4,15 +4,13 @@
 from __future__ import annotations
 
 import struct
-from pathlib import Path
 
-import pytest
 
 from wifipilot import pcap
 from wifipilot.pcap import analyze_file, aircrack_handshake_count, essid_from_beacon
 from wifipilot.scanner import (band_channels, channel_to_freq, freq_to_channel,
                                normalize_encryption, parse_airodump_csv)
-from wifipilot.synth import build_capture, build_handshake_frames, write_pcap
+from wifipilot.synth import build_handshake_frames, write_pcap
 from tests.conftest import AP_MAC, PSK, SSID, STA_MAC
 
 

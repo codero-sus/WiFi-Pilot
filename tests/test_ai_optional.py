@@ -9,7 +9,6 @@ offline while disabled, and the web API's disabled-state answers.
 from __future__ import annotations
 
 import json
-import os
 
 import pytest
 

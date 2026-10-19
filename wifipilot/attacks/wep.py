@@ -15,12 +15,11 @@ import contextlib
 import os
 import re
 import time
-from pathlib import Path
 from typing import List, Optional
 
 from ..deps import registry
-from ..models import STATUS_FAILED, STATUS_SUCCESS, AccessPoint, Attempt, Capture
-from ..util import Process, human_duration, mac_norm, run
+from ..models import STATUS_SUCCESS, AccessPoint, Attempt, Capture
+from ..util import Process, human_duration, run
 from .base import Attack, AttackContext, AttackOutcome
 
 KEY_FOUND_RE = re.compile(r"KEY FOUND!\s*\[?\s*(.*?)\s*\]?\s*$", re.M)

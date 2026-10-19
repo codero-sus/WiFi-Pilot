@@ -232,10 +232,10 @@ PORT_PROTOCOL: Dict[int, str] = {
     7547: "cwmp", 8000: "http", 8008: "http", 8009: "cast", 8080: "http", 8443: "http",
     4443: "http", 8883: "mqtt", 7000: "airplay", 7001: "airplay", 3689: "airplay",
     44818: "cip", 11211: "memcached", 137: "netbios", 2222: "ssh", 50000: "http",
-    37777: "http", 5038: "ami", 2049: "nfs", 111: "rpc", 2375: "http", 5988: "http",
+    37777: "http", 2375: "http",
     8554: "rtsp", 9080: "http", 9100: "pjl", 9200: "http", 9999: "kasa", 10250: "http",
-    11112: "dicom", 20000: "dnp3", 2375: "http", 2404: "iec104", 27017: "mongo",
-    37777: "http", 47808: "bacnet", 4840: "opcua", 54321: "miio", 50000: "http",
+    11112: "dicom", 20000: "dnp3", 2404: "iec104", 27017: "mongo",
+    47808: "bacnet", 4840: "opcua", 54321: "miio",
 }
 
 #: the web-management ports answer with the device's own admin page
