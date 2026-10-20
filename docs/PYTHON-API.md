@@ -140,8 +140,24 @@ that many passwords are recovered.
 | `"offline"` | **no radio at all** | the ten attacks that read the session's own files: `loot_audit`, `crack_sweep`, `eapol_audit`, `wep_audit`, `eap_md5_crack`, `pixie_offline`, `rogue_detect`, `twin_detect`, `roam_audit`, `wps_lockout_audit` — no monitor interface, no root, no authorisation prompt |
 
 Individual knobs (`stealth=`, `wps_pin=`, `attacks=`) override the preset, and `attacks=`
-is the only way to get a deliberate subset (`attacks=["pmkid","handshake"]`). The two
-read-only attacks are worth running on any engagement, because everything after them can
+is the only way to get a deliberate subset (`attacks=["pmkid","handshake"]`).
+
+For a run that must *finish* — one network in 7–12 minutes instead of an open-ended
+848-attack march — use a **preset** (`wp.presets()` lists them). A preset is a named,
+time-boxed plan with scaled budgets, per-attack caps, parallel lanes and its own
+deadline; every preset also takes a **posture**: `:force` is the opposite of stealth
+(loud, aggressive, success first), `:stealth` transmits nothing. `accel=` opts in to
+CPU/RAM/GPU acceleration for cracking — never on unless asked:
+
+```python
+wp.attack(target=all, preset="success")                    # highest-chance key route, ~10 min
+wp.attack(target=all, preset="blitz:force", accel="all")   # fastest, loudest, all hardware
+wp.accel_info()                                            # what this machine actually has
+wp.install_tools()                                         # dry-run plan for missing tools
+wp.update(dry_run=True)                                    # what a self-update would do
+```
+
+The two read-only attacks are worth running on any engagement, because everything after them can
 be reasoned about instead of guessed:
 
 ```python

@@ -694,8 +694,14 @@ class _BtLive(Attack):
         return AttackOutcome.failed(result, detail)
 
     def seconds(self, ctx: AttackContext, fallback: float = 2.0) -> float:
-        value = getattr(ctx.config, "bt_timeout", 0.0) or fallback
-        return max(0.2, float(value))
+        value = float(getattr(ctx.config, "bt_timeout", 0.0) or fallback)
+        scale = float(getattr(ctx.config, "budget_scale", 1.0) or 1.0)
+        if scale > 0 and scale != 1.0:
+            value = value * scale
+        cap = float(getattr(ctx.config, "attack_cap", 0.0) or 0.0)
+        if cap > 0:
+            value = min(value, cap)
+        return max(0.2, value)
 
     def slept(self, ctx: AttackContext, seconds: float) -> float:
         """Wait, or in demo mode *account* for the wait without performing it."""

@@ -211,7 +211,7 @@ def banner() -> str:
         "  ██║███╗██║██║██╔══╝  ██║██╔═══╝ ██║██║     ██║   ██║   ██║\n"
         "  ╚███╔███╔╝██║██║     ██║██║     ██║███████╗╚██████╔╝   ██║\n"
         "   ╚══╝╚══╝ ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝╚══════╝ ╚═════╝    ╚═╝\n"
-        f"{C.RESET}{C.GREY}  AI-piloted wifi auditing · wifite alternative · authorised use only{C.RESET}"
+        f"{C.RESET}{C.GREY}  AI-piloted wifi auditing · wifite alternative · authorised use only · by codero-sus{C.RESET}"
     )
 
 

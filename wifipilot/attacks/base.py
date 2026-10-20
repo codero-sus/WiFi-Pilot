@@ -365,12 +365,24 @@ class Attack(abc.ABC):
                         impact=self.impact)
 
     def budget(self, ctx: AttackContext, default: float = 60.0) -> float:
-        """How long this attack is allowed to run: the config's answer or a default."""
+        """How long this attack is allowed to run: the config's answer or a default.
+
+        The preset speed levers live here so every attack obeys them for free:
+        ``budget_scale`` shrinks (or stretches) every budget and ``attack_cap``
+        is the hard ceiling no single attack may exceed.
+        """
         try:
             seconds = ctx.config.attack_timeout_for(self.name)
         except Exception:                                    # pragma: no cover - defensive
             seconds = 0.0
-        return float(seconds or default)
+        seconds = float(seconds or default)
+        scale = float(getattr(ctx.config, "budget_scale", 1.0) or 1.0)
+        if scale > 0 and scale != 1.0:
+            seconds = seconds * scale
+        cap = float(getattr(ctx.config, "attack_cap", 0.0) or 0.0)
+        if cap > 0:
+            seconds = min(seconds, cap)
+        return max(1.0, seconds)
 
     def finding(self, ctx: AttackContext, ap: AccessPoint, title: str, detail: str,
                 severity: str = "info", kind: str = "") -> None:

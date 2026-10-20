@@ -32,6 +32,9 @@ an engagement directly::
 See docs/PYTHON-API.md.  Live runs refuse to transmit without
 ``wp.authorize(...)``, and everything is Linux-only.
 
+Written and maintained by **codero-sus** —
+https://github.com/codero-sus · https://the-codero.web.app
+
 The Linux-only tools are imported lazily, so ``import wifipilot`` works
 everywhere (CI, docs builds, a laptop that only wants the type hints) and only
 fails — with a clear message — when you actually run something.
@@ -41,15 +44,24 @@ from __future__ import annotations
 
 __version__ = "0.1.0"
 
+#: wifipilot is written and maintained by codero-sus.
+__author__ = "codero-sus"
+AUTHOR = "codero-sus"
+AUTHOR_GITHUB = "https://github.com/codero-sus"
+AUTHOR_SITE = "https://the-codero.web.app"
+CREDIT = "wifipilot by codero-sus — https://github.com/codero-sus · https://the-codero.web.app"
+
 __all__ = [
-    "__version__", "TOOL_NAME", "LEGAL_NOTICE",
+    "__version__", "__author__", "AUTHOR", "AUTHOR_GITHUB", "AUTHOR_SITE", "CREDIT",
+    "TOOL_NAME", "LEGAL_NOTICE",
     # scriptable API
     "ALL", "ALL_ATTACKS", "MODES", "WifiPilotError", "PlatformError", "AuthorizationError",
     "BusyError",
     "TargetError", "Run", "ScanResult", "CampaignResult",
     "configure", "config", "demo", "authorize", "ai", "set_provider", "providers",
     "advisor_status", "scan", "attack", "crack", "analyze", "export", "suggest_masks",
-    "strategies", "targets", "select", "selected", "note", "notes", "tag", "history",
+    "strategies", "presets", "accel_info", "install_tools", "update",
+    "targets", "select", "selected", "note", "notes", "tag", "history",
     "vendor", "identify", "passwords", "advice", "benchmark", "hash_stats",
     "merge_hashes", "rescue_capture", "wordlist_stats", "expand_wordlist",
     "rules_info", "loot_manifest", "verify_loot", "loot", "report",
@@ -90,11 +102,16 @@ maintenance window and a named authorising party.
 # --------------------------------------------------------------------------- #
 # eager: pure stdlib, no side effects, and the whole point of the package is
 # that `import wifipilot as wp` gives you something to call.
+# `wp.presets` is the API function and `wifipilot.presets` is also a submodule
+# (the same dual life `wp.config` leads): loading the submodule first keeps
+# the package attribute from flipping to the module on first lazy import.
+from . import presets as _presets_module  # noqa: E402,F401
 from .api import (  # noqa: E402  (import at the end: api.py imports config/models)
     ALL, ALL_ATTACKS, MODES, AuthorizationError, BusyError, CampaignResult, PlatformError, Run,
     ScanResult, TargetError, WifiPilotError, advisor_status, analyze, attack, authorize,
     config, configure, crack, current_run, demo, engine, export, is_running, loot,
-    suggest_masks, strategies, catalogue, targets, select, selected, note, notes, tag, history,
+    suggest_masks, strategies, presets, accel_info, install_tools, update,
+    catalogue, targets, select, selected, note, notes, tag, history,
     editions, devices, device, simulations,
     vendor, identify, passwords, advice, benchmark, hash_stats, merge_hashes,
     rescue_capture, wordlist_stats, expand_wordlist, rules_info, loot_manifest,

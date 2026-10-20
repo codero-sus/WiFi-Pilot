@@ -22,6 +22,7 @@ import os
 import queue
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -49,6 +50,21 @@ class _StopFlag:
 
     def is_set(self) -> bool:
         return any(event.is_set() for event in self.events)
+
+
+def _side_lane_attack(attack: str) -> bool:
+    """May this attack run beside the radio work instead of after it?
+
+    One adapter means Wi-Fi attacks stay serial, and one HCI means Bluetooth
+    does too — but IT-edition attacks talk to sockets and offline attacks read
+    files, so nothing is gained by making them queue behind a 90-second
+    handshake window.  Those get the parallel side lane (``config.jobs``).
+    """
+    from .attacks import ATTACK_META
+    meta = ATTACK_META.get(attack, {})
+    if meta.get("domain", "wifi") == "it":
+        return True
+    return meta.get("category", "") == "offline"
 
 
 @dataclass
@@ -100,6 +116,12 @@ class Engine:
         self._new_aps_at_plan = 0
         self._targets_filter: List[str] = []
         self.campaign_deadline = 0.0
+        # speed lanes: non-radio attacks and loot cracking beside the radio
+        # work (created lazily, only when a preset/config asks for them)
+        self._side_pool: Optional[ThreadPoolExecutor] = None
+        self._crack_pool: Optional[ThreadPoolExecutor] = None
+        self._side_futures: List[Any] = []
+        self._crack_futures: List[Any] = []
 
     # ------------------------------------------------------------------ #
     # lifecycle
@@ -167,6 +189,10 @@ class Engine:
                      level="info")
         self.stop_event.set()
         self.attack_cancel.set()
+        for pool in (self._side_pool, self._crack_pool):
+            if pool is not None:
+                pool.shutdown(wait=False, cancel_futures=True)
+        self._side_pool = self._crack_pool = None
         if self.scanner is not None:
             with contextlib.suppress(Exception):
                 self.scanner.stop()
@@ -456,12 +482,21 @@ class Engine:
     # ------------------------------------------------------------------ #
     # attacks
     # ------------------------------------------------------------------ #
-    def context(self) -> AttackContext:
+    def context(self, cancel: Optional[threading.Event] = None) -> AttackContext:
+        """The context handed to attacks.
+
+        ``cancel`` is a per-attack stop used by the side lanes and the budget
+        watchdog: a parallel attack must be stoppable without touching the
+        shared ``attack_cancel`` that the radio lane is watching.
+        """
+        events = [self.stop_event, self.attack_cancel]
+        if cancel is not None:
+            events.append(cancel)
         return AttackContext(
             session=self.session, config=self.config, bus=self.bus,
             iface=self.iface, scanner=self.scanner, radio=self.radio, demo=self.demo,
             processes=self.processes,
-            stop_event=_StopFlag(self.stop_event, self.attack_cancel),
+            stop_event=_StopFlag(*events),
         )
 
     def attackable(self, ap: AccessPoint) -> List[str]:
@@ -469,7 +504,10 @@ class Engine:
         return preferred_attacks(ap, self.config)
 
     def run_attack(self, bssid: str, attack: str, reason: str = "",
-                   source: str = "operator") -> Optional[Attempt]:
+                   source: str = "operator", lane: bool = False) -> Optional[Attempt]:
+        """Run one attack.  ``lane=True`` runs it on a side lane thread: same
+        bookkeeping, but the shared phase/attacking indicators and the advisor
+        triage stay with the radio lane that owns them."""
         cls = ATTACK_CLASSES.get(attack)
         if cls is None:
             self.bus.warn(f"unknown attack: {attack}")
@@ -485,7 +523,10 @@ class Engine:
         if ap is None:
             self.bus.warn(f"no such target: {bssid}")
             return None
-        ctx = self.context()
+        # every attack gets its own cancel event: a watchdog (or a side lane)
+        # must be able to stop *this* attack without poisoning the next one
+        own_cancel = threading.Event()
+        ctx = self.context(cancel=own_cancel)
         if not module.available(ctx):
             self.bus.warn(f"{attack} unavailable: {module.unavailable_reason(ctx)}")
             return None
@@ -496,22 +537,29 @@ class Engine:
         ap.picked_by = source
         if reason:
             ap.pick_reason = reason
-        self.status.phase = "attacking"
-        self.status.detail = f"{attack} → {ap.display_name}"
-        self.session.attacking = True
+        if not lane:
+            self.status.phase = "attacking"
+            self.status.detail = f"{attack} → {ap.display_name}"
+            self.session.attacking = True
         self.bus.log(f"▶ {module.label} against {ap.display_name} "
                      f"({ap.bssid}, ch {ap.channel}, {ap.signal} dBm)", level="attack")
+        known = {id(item) for item in self.session.attempts}
+        watchdog = self._watchdog(module, ctx, own_cancel)
         try:
             outcome = module.run(ctx, ap)
         except Exception as exc:  # pragma: no cover - defensive
             self.bus.error(f"attack {attack} crashed: {exc}")
-            attempt = self.session.attempts[-1] if self.session.attempts else None
+            attempt = self._find_attempt(known, ap.bssid, attack)
             if attempt is not None and attempt.status == STATUS_RUNNING:
                 self.session.end_attempt(attempt, STATUS_FAILED, "internal error", str(exc))
             outcome = None
-        self.session.attacking = False
-        self.status.phase = "idle"
-        attempt = self.debug_last_attempt()
+        finally:
+            if watchdog is not None:
+                watchdog.cancel()
+        if not lane:
+            self.session.attacking = False
+            self.status.phase = "idle"
+        attempt = self._find_attempt(known, ap.bssid, attack)
         if (outcome is not None and attempt is not None
                 and attempt.status == STATUS_RUNNING):
             # an attack that decided not to act (already captured, nothing to do,
@@ -525,20 +573,141 @@ class Engine:
             attempt.extra.update(outcome.extra)
         if attempt is not None and attempt.status == STATUS_FAILED:
             self._failures_since_plan += 1
-            diagnosis = self._triage(attempt)
+            diagnosis = "" if lane else self._triage(attempt)
             if diagnosis:
                 self.bus.publish(EK.FINDING, {
                     "kind": "advice", "severity": "medium", "bssid": attempt.bssid,
                     "title": "advisor diagnosis", "detail": diagnosis,
                     "source": "advisor",
                 })
-        # loot => try to crack it right away
+        # loot => try to crack it right away (on the crack lane when the
+        # preset allows: a 3-minute crack must never stall the next attack)
         if outcome is not None and outcome.ok and outcome.capture is not None:
             if outcome.capture.password:
                 pass
             elif not self.config.skip_crack:
-                self.crack_capture(ap, outcome.capture, quick=True)
+                if self.config.parallel_crack:
+                    self._crack_async(ap, outcome.capture, quick=True)
+                else:
+                    self.crack_capture(ap, outcome.capture, quick=True)
         return attempt
+
+    def _find_attempt(self, known: set, bssid: str, attack: str) -> Optional[Attempt]:
+        """The attempt this run just created — found by identity, not position.
+
+        ``session.attempts[-1]`` is only ours while attacks are serial; with
+        side lanes the newest attempt may belong to a parallel attack.
+        """
+        wanted = (bssid or "").lower()
+        for attempt in reversed(self.session.attempts):
+            if id(attempt) in known:
+                continue
+            if attempt.attack == attack and (attempt.bssid or "").lower() == wanted:
+                return attempt
+        return None
+
+    def _watchdog(self, module: Any, ctx: AttackContext,
+                  cancel: threading.Event) -> Optional[threading.Timer]:
+        """Arm the per-attack hard cap: past the budget (+grace) the attack's
+        own stop flag fires, so even an attack that ignores its budget cannot
+        run the campaign into the ground."""
+        cap = float(getattr(self.config, "attack_cap", 0.0) or 0.0)
+        if cap <= 0:
+            return None
+        try:
+            budget = float(module.budget(ctx))
+        except Exception:                                    # pragma: no cover - defensive
+            budget = cap
+        limit = max(budget, 1.0) + max(10.0, 0.25 * budget)
+
+        def fire() -> None:
+            cancel.set()
+            self.bus.warn(f"{module.name} exceeded its budget "
+                          f"({human_duration(limit)}): stopping it")
+
+        timer = threading.Timer(limit, fire)
+        timer.daemon = True
+        timer.start()
+        return timer
+
+    # ------------------------------------------------------------------ #
+    # speed lanes: side attacks + background cracking
+    # ------------------------------------------------------------------ #
+    def _side_executor(self) -> Optional[ThreadPoolExecutor]:
+        jobs = max(1, int(getattr(self.config, "jobs", 1) or 1))
+        if jobs <= 1:
+            return None
+        if self._side_pool is None:
+            self._side_pool = ThreadPoolExecutor(max_workers=jobs,
+                                                 thread_name_prefix="wifipilot-side")
+        return self._side_pool
+
+    def _crack_executor(self) -> ThreadPoolExecutor:
+        if self._crack_pool is None:
+            self._crack_pool = ThreadPoolExecutor(max_workers=1,
+                                                  thread_name_prefix="wifipilot-crack")
+        return self._crack_pool
+
+    def _crack_async(self, ap: AccessPoint, capture: Capture, quick: bool = False) -> None:
+        self._crack_futures = [f for f in self._crack_futures if not f.done()]
+        self._crack_futures.append(
+            self._crack_executor().submit(self._crack_lane_run, ap, capture, quick))
+
+    def _crack_lane_run(self, ap: AccessPoint, capture: Capture, quick: bool) -> None:
+        with contextlib.suppress(Exception):
+            self.crack_capture(ap, capture, quick=quick)
+
+    def _reap_lanes(self, wait: bool = False) -> None:
+        """Collect finished lane work; with ``wait`` block (bounded) for the rest."""
+        timeout = max(30.0, float(getattr(self.config, "attack_cap", 0.0) or 0.0) + 30.0)
+        for futures in (self._side_futures, self._crack_futures):
+            for future in list(futures):
+                if future.done():
+                    with contextlib.suppress(Exception):
+                        future.result()
+                    futures.remove(future)
+                elif wait:
+                    with contextlib.suppress(Exception):
+                        future.result(timeout=timeout)
+                    if future.done():
+                        futures.remove(future)
+
+    def _side_sweep(self, attackable_cache: Dict[str, List[str]]) -> int:
+        """Feed the side lane from every target's backlog.
+
+        The planner only ever nominates a couple of attacks per round, which
+        is right for the one radio — but IT/offline backlog would then take
+        forever to drain.  The sweep submits up to ``jobs * 3`` queued side
+        attacks per round (hard cap 24), skipping anything already running.
+        """
+        pool = self._side_executor()
+        if pool is None:
+            return 0
+        self._side_futures = [f for f in self._side_futures if not f.done()]
+        quota = min(24, max(1, int(self.config.jobs)) * 3) - len(self._side_futures)
+        if quota <= 0:
+            return 0
+        running = {(a.bssid.lower(), a.attack) for a in self.session.attempts
+                   if a.status == STATUS_RUNNING}
+        submitted = 0
+        for ap in list(self.session.aps.values()):
+            if submitted >= quota or self.stop_event.is_set():
+                break
+            if not self._wanted(ap.bssid) or ap.cracked:
+                continue
+            for name in attackable_cache.get(ap.bssid, []):
+                if submitted >= quota:
+                    break
+                if not _side_lane_attack(name):
+                    continue
+                if (ap.bssid.lower(), name) in running:
+                    continue
+                self._side_futures.append(pool.submit(
+                    self.run_attack, ap.bssid, name,
+                    "side lane (parallel to radio work)", "preset", True))
+                running.add((ap.bssid.lower(), name))
+                submitted += 1
+        return submitted
 
     def debug_last_attempt(self) -> Optional[Attempt]:
         return self.session.attempts[-1] if self.session.attempts else None
@@ -586,10 +755,43 @@ class Engine:
     # ------------------------------------------------------------------ #
     # campaign
     # ------------------------------------------------------------------ #
+    def _apply_preset_if_any(self) -> float:
+        """Stamp the configured preset (+ allowed acceleration) onto the config.
+
+        Returns the campaign length in minutes the preset asks for (0 = none).
+        Applied here, at campaign start, so CLI/API/web/config-file presets
+        all take effect the same way.
+        """
+        from .accel import apply_accel
+        for note in apply_accel(self.config).get("notes", []):
+            self.bus.log(f"acceleration: {note}", level="info")
+        spec = (self.config.preset or "").strip()
+        if not spec:
+            return 0.0
+        from .presets import apply_preset, get_preset
+        try:
+            report = apply_preset(self.config, spec, self.config.posture)
+        except KeyError as error:
+            self.bus.error(str(error))
+            return 0.0
+        # CPU acceleration may raise the lane count the preset just set
+        apply_accel(self.config)
+        posture = f":{report['posture']}" if report["posture"] else ""
+        self.bus.log(
+            f"preset {report['preset']}{posture} ({report['label']}): "
+            f"{report['attacks']} attacks, budgets x{report['budget_scale']}, "
+            f"per-attack cap {report['attack_cap']:.0f}s, {report['jobs']} lane(s), "
+            f"campaign budget {report['minutes']:.0f} min", level="info")
+        preset = get_preset(spec)
+        return float(preset.minutes or 0.0) if preset else 0.0
+
     def run_campaign(self, targets: Optional[Sequence[str]] = None,
                      duration: float = 0.0, scan_first: bool = True) -> None:
         """The main loop: scan, think, attack, crack — until done or told to stop."""
         self._targets_filter = [mac_norm(t) for t in (targets or []) if mac_norm(t)]
+        minutes = self._apply_preset_if_any()
+        if not duration and minutes:
+            duration = minutes * 60.0
         if duration:
             self.campaign_deadline = time.time() + duration
         self.status.campaign_running = True
@@ -597,6 +799,9 @@ class Engine:
             "id": self.session.id, "demo": self.demo, "authorized": self.authorized,
             "config": {
                 "attacks": self.config.attacks,
+                "preset": self.config.preset,
+                "posture": self.config.posture,
+                "accel": self.config.accel,
                 "stealth": self.config.stealth,
                 "ai": self.config.ai_enabled(),
                 "provider": self.advisor.provider,
@@ -620,6 +825,9 @@ class Engine:
         except Exception as exc:
             self.bus.error(f"campaign failed: {exc}")
         finally:
+            # let the side lanes land before the report is written
+            with contextlib.suppress(Exception):
+                self._reap_lanes(wait=True)
             self.status.campaign_running = False
             with contextlib.suppress(Exception):
                 self.stop_scan()
@@ -633,6 +841,8 @@ class Engine:
     def _campaign_loop(self) -> None:
         rounds = 0
         empty_rounds = 0
+        stale_rounds = 0
+        force_replan = False
         last_crack_pass = 0.0
         while not self.stop_event.is_set():
             rounds += 1
@@ -644,7 +854,9 @@ class Engine:
                              level="success")
                 break
 
-            plan = self.think(force=True) if rounds == 1 else self._maybe_replan()
+            plan = self.think(force=True) if (rounds == 1 or force_replan) \
+                else self._maybe_replan()
+            force_replan = False
             actions = [a for a in (plan.actions if plan else []) if self._wanted(a.bssid)]
             if not actions:
                 empty_rounds += 1
@@ -661,6 +873,11 @@ class Engine:
                 continue
 
             empty_rounds = 0
+            ran_any = False
+            # preferred_attacks() re-derives the whole ladder per call; one
+            # answer per target per round is plenty and keeps big presets fast
+            attackable_cache: Dict[str, List[str]] = {}
+            side_pool = self._side_executor()
             for action in actions:
                 if self.stop_event.is_set():
                     break
@@ -673,7 +890,8 @@ class Engine:
                     self.bus.log(f"{ap.display_name}: already cracked, skipping "
                                  f"{action.attack}", level="debug")
                     continue
-                if action.attack != "crack" and action.attack not in self.attackable(ap):
+                if action.attack != "crack" and action.attack not in \
+                        attackable_cache.setdefault(ap.bssid, self.attackable(ap)):
                     self.bus.log(f"{ap.display_name}: {action.attack} is no longer "
                                  f"sensible, skipping the stale plan entry", level="debug")
                     continue
@@ -681,6 +899,7 @@ class Engine:
                     capture = next((c for c in reversed(ap.captures)
                                     if c.kind in ("handshake", "pmkid") and not c.password), None)
                     if capture is not None:
+                        ran_any = True
                         self.crack_capture(ap, capture)
                     continue
                 if action.attack == "stop":
@@ -688,13 +907,38 @@ class Engine:
                 reason = action.reason
                 if action.source == "llm":
                     reason = f"AI: {action.reason}"
-                self.run_attack(ap.bssid, action.attack, reason=reason,
-                                source="llm" if action.source == "llm" else "heuristic")
+                source = "llm" if action.source == "llm" else "heuristic"
+                if side_pool is not None and _side_lane_attack(action.attack):
+                    # IT/offline work runs beside the radio, not behind it
+                    ran_any = True
+                    self._side_futures.append(side_pool.submit(
+                        self.run_attack, ap.bssid, action.attack, reason, source, True))
+                    continue
+                if self.run_attack(ap.bssid, action.attack, reason=reason,
+                                   source=source) is not None:
+                    ran_any = True
                 # a fresh crack pass every few minutes keeps loot from piling up uncracked
                 if time.time() - last_crack_pass > 300:
                     last_crack_pass = time.time()
                     self._crack_all_pending()
 
+            # drain the non-radio backlog in parallel while the planner's
+            # radio choices run their course
+            if self._side_sweep(attackable_cache):
+                ran_any = True
+            self._reap_lanes()
+            if ran_any:
+                stale_rounds = 0
+            else:
+                # every planned action was stale (target cracked since the
+                # plan was made, attack no longer sensible): do not execute
+                # the same dead plan until the deadline — replan now, and
+                # stop after three dead rounds in a row
+                stale_rounds += 1
+                force_replan = True
+                if stale_rounds >= 3:
+                    self.bus.log("the planner has nothing actionable left", level="info")
+                    break
             if self._all_done():
                 self.bus.log("every discovered target has been handled", level="success")
                 break
@@ -734,6 +978,8 @@ class Engine:
         return not self._targets_filter or bssid in self._targets_filter
 
     def _all_done(self) -> bool:
+        if any(not f.done() for f in self._side_futures):
+            return False
         candidates = [ap for ap in self.session.aps.values() if self._wanted(ap.bssid)]
         if not candidates:
             return False
@@ -757,9 +1003,14 @@ class Engine:
     # operator controls (web UI)
     # ------------------------------------------------------------------ #
     def request_start(self, targets: Sequence[str] = (), duration: float = 0.0,
-                      scan_first: bool = True) -> str:
+                      scan_first: bool = True, preset: str = "",
+                      accel: str = "") -> str:
         if self.status.campaign_running:
             return "a campaign is already running"
+        if preset:
+            self.config.preset = preset
+        if accel:
+            self.config.accel = accel
         self.stop_event.clear()
         self.attack_cancel.clear()
         self.add_job("campaign", lambda: self.run_campaign(list(targets), duration, scan_first))

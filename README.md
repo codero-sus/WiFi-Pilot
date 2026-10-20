@@ -2,6 +2,8 @@
 
 **An AI-piloted WiFi auditing tool — a modern alternative to `wifite`, in Python, for Linux, with a web UI and an optional local- or cloud-LLM advisor you can switch off completely.**
 
+> Written and maintained by **[codero-sus](https://github.com/codero-sus)** · **[the-codero.web.app](https://the-codero.web.app)**
+
 `wifipilot` automates the boring, error-prone parts of an authorised wireless assessment:
 it finds the targets, decides which attack is worth the time, runs it, cracks what it
 captures, and explains every decision in plain language.
@@ -55,6 +57,7 @@ wp.ai(disable=True)                     # deterministic planner only, nothing se
 - [Use it as a library](#use-it-as-a-library)
 - [Quickstart (no hardware required)](#quickstart-no-hardware-required)
 - [Real engagement](#real-engagement)
+- [Presets: finished in minutes, not an hour](#presets-finished-in-minutes-not-an-hour)
 - [The terminal UI](#the-terminal-ui)
 - [The web UI](#the-web-ui)
 - [Optional: the advisor (a local model, or OpenRouter)](#optional-the-advisor-a-local-model-or-openrouter)
@@ -280,11 +283,12 @@ aircrack-ng suite properly) and rebuilds everything around it:
 Requires Linux (Kali, Parrot, Debian, Ubuntu, Arch, Fedora …) and Python 3.9+.
 
 ```bash
-git clone https://github.com/codero-sus/Pentest-toolkit
-cd Pentest-toolkit
+git clone https://github.com/codero-sus/WiFi-Pilot
+cd WiFi-Pilot
 pip install -e .            # core CLI (needs only `rich`)
 pip install -e '.[web]'     # + FastAPI/uvicorn for the web UI
-./scripts/install-tools.sh  # optional: install aircrack-ng, reaver, hcxtools, hashcat…
+wifipilot tools install     # install every external dependency (aircrack-ng, hashcat, …)
+wifipilot tools install --yes   # …for real, after showing you the plan
 ```
 
 External tools (install what you need — `wifipilot tools` tells you exactly what is missing):
@@ -435,6 +439,51 @@ What happens next:
    and a Markdown report is written for the client.
 
 Press `Ctrl+C` once for a clean stop (interface restored, report written).
+
+## Presets: finished in minutes, not an hour
+
+848 attacks at full per-attack budgets is a recipe for an hour-long run. A **preset**
+fixes that: a named set of attacks with scaled budgets, a hard per-attack cap (a
+watchdog stops anything that overruns), parallel side lanes for IT/offline work,
+background cracking, and a whole-campaign deadline. One Wi-Fi network lands in the
+**7–12 minute** window.
+
+```bash
+wifipilot presets                          # the menu, with sizes and time budgets
+sudo wifipilot -y attack --preset success  # highest-success-chance route to a key, ~10 min
+sudo wifipilot -y attack --preset blitz    # the four classic key attacks, ~7 min
+```
+
+| preset | what it is |
+|---|---|
+| `success` | PMKID/handshake capture, WPS pixie + offline PIN, WEP, then the audits — pick this when the goal is *getting in* |
+| `blitz` | the fastest possible answer: key recovery only |
+| `balanced` | sensible default audit (alias `default`) |
+| `stealth` | listen-only: no injection, no floods (alias `passive`) |
+| `survey` | discovery across Wi-Fi, Bluetooth and the LAN |
+| `rogue` | evil twin, Karma, captive portal, rogue DHCP/DNS |
+| `enterprise` | 802.1X: rogue RADIUS, EAP harvest, MSCHAPv2 |
+| `disrupt` | DoS testing, every flood hard-capped |
+| `bluetooth` / `it` | the two side editions, highly parallel |
+| `full` | all 848, but with the speed governor on |
+
+Every preset has **postures**. `--preset success:force` (or `--force`) is **FORCE** —
+the opposite of stealth: it wants success rather than subtlety (aggressive mode,
+broadcast handshake deauth, boosters like `wps_pin`, bigger crack budgets).
+`:stealth` strips everything that transmits. From Python:
+`wp.attack(target=all, preset="success:force")`.
+
+And if you allow it, real hardware joins in — opt-in only, never by default:
+
+```bash
+sudo wifipilot -y attack --preset success --accel cpu,ram,gpu
+# cpu = process-pool cracking + parallel lanes · ram = candidate caching ·
+# gpu = hashcat drives the GPU · `wifipilot tools` shows what was detected
+```
+
+Missing tools? `wifipilot tools install` prints the exact plan for your distro
+(apt/pacman/dnf/zypper/apk); `--yes` runs it. Keeping current is one command too:
+`wifipilot update --yes` downloads the latest snapshot and swaps it in (backup kept).
 
 ## The terminal UI
 
@@ -1073,6 +1122,16 @@ and stops rather than burning hours; `wps_pin` is off by default for exactly thi
 - [ ] Attack scheduling by time window, and a "resume session" flag
 - [ ] Landscape/PDF report templates for client deliverables
 - [ ] Ollama tool-calling instead of JSON plans (for models that support it)
+
+## Credits
+
+wifipilot is designed, written and maintained by **[codero-sus](https://github.com/codero-sus)**
+— [github.com/codero-sus](https://github.com/codero-sus) · [the-codero.web.app](https://the-codero.web.app).
+
+All credit for this project goes to codero-sus. If wifipilot saved you time on an
+engagement, star the repo and say so. The external tools wifipilot drives
+(aircrack-ng, hashcat, reaver, hcxtools, …) belong to their own authors and are
+listed with their licences in [THIRD-PARTY.md](THIRD-PARTY.md).
 
 ## License
 

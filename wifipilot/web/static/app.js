@@ -143,6 +143,7 @@ function render() {
   renderSettings(SNAPSHOT);
   renderPlatform(SNAPSHOT);
   renderEditions(SNAPSHOT);
+  renderPresets(SNAPSHOT);
 }
 
 function renderHeader(state) {
@@ -591,6 +592,31 @@ function editionCounts(state) {
   return ((state || SNAPSHOT || {}).edition || {}).attacks || {};
 }
 
+let PRESETS = [];
+function renderPresets(state) {
+  const select = $('#sel-preset');
+  if (!select || !state) return;
+  const rows = state.presets || [];
+  if (rows.length && rows !== PRESETS) {
+    PRESETS = rows;
+    const current = select.value;
+    select.innerHTML = '<option value="">— none (planner decides) —</option>'
+      + rows.map((p) => `<option value="${escapeHtml(p.name)}">${escapeHtml(p.label)} · ${p.attacks} attacks · ~${p.minutes} min</option>`).join('')
+      + rows.map((p) => `<option value="${escapeHtml(p.name)}:stealth">${escapeHtml(p.label)} :stealth · ${p.stealth_attacks} attacks · ~${p.minutes} min</option>`).join('');
+    select.value = current;
+  }
+  const chosen = select.value.replace(/:.*$/, '');
+  const hint = rows.find((p) => p.name === chosen);
+  select.title = hint ? hint.description : 'a time-boxed set of attacks';
+  const accelSel = $('#sel-accel');
+  if (accelSel && state.accel && state.accel.hardware) {
+    const hw = state.accel.hardware;
+    accelSel.title = `detected: ${hw.cpu.count} CPU · ${hw.ram.available_mb} MB RAM free · `
+      + (hw.gpu.present ? `GPU via ${hw.gpu.via}` : 'no GPU')
+      + ' — acceleration is only used when you allow it';
+  }
+}
+
 function renderEditions(state) {
   const summary = (state || {}).edition || {};
   const counts = summary.attacks || {};
@@ -877,6 +903,9 @@ function wire() {
     targets: $('#inp-targets').value,
     duration: parseDuration($('#inp-duration').value),
     scan_first: $('#chk-scanfirst').checked,
+    preset: $('#sel-preset') ? $('#sel-preset').value : '',
+    force: $('#chk-force') ? $('#chk-force').checked : false,
+    accel: $('#sel-accel') ? $('#sel-accel').value : '',
     action: 'start',
   });
   $('#btn-stop').onclick = () => api('/api/campaign', { action: 'stop' });

@@ -217,6 +217,31 @@ class Config:
     deauth_interval: float = 5.0       # seconds between deauth bursts
     deauth_burst: int = 3
 
+    # -- presets and speed -------------------------------------------------- #
+    #: named preset controlling the attack set, budgets and campaign length
+    #: (see ``wifipilot.presets``); empty = the engine default behaviour
+    preset: str = ""
+    #: how a run should behave: "" (preset default), "force" (loud, success at
+    #: any cost — the opposite of stealth) or "stealth" (quiet, no injection)
+    posture: str = ""
+    #: every per-attack budget is multiplied by this (0.5 = twice as fast)
+    budget_scale: float = 1.0
+    #: hard cap in seconds for any single attack, enforced by a watchdog; 0 = none
+    attack_cap: float = 0.0
+    #: how many non-radio attacks (IT / offline analysis) may run side by side
+    #: while the one adapter works; 1 = the classic strictly serial behaviour
+    jobs: int = 1
+    #: crack freshly captured loot on a side thread instead of blocking the
+    #: attack that captured it
+    parallel_crack: bool = False
+    #: hardware acceleration, only when the operator allows it: "off", "cpu",
+    #: "ram", "gpu", "all" (comma combinations allowed, see ``wifipilot.accel``)
+    accel: str = "off"
+    #: crack worker processes when CPU acceleration is on; 0 = auto
+    accel_workers: int = 0
+    #: MB of RAM acceleration may spend on candidate caches; 0 = auto
+    accel_ram_mb: int = 0
+
     # -- attack enable/disable (wifite-compatible spirit) ------------------
     #: wps_pin is deliberately NOT here: online PIN brute force is opt-in
     #: (CLI: --wps-pin / --attacks wps_pin, UI: attack toggles)
