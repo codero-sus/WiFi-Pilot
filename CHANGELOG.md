@@ -4,6 +4,46 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## Speed — presets, FORCE postures, parallel lanes, hardware acceleration
+
+One Wi-Fi network ran **1h 2m unfinished**: `mode="force"` enabled all 848
+attacks at full budgets, the planner served them two at a time, loot cracks
+blocked the next attack for up to three minutes, nothing had a deadline — and
+rounds whose planned actions had all gone stale (target cracked since the plan
+was made) re-executed the same dead plan forever.  Now a single network lands
+in **7–12 minutes**:
+
+* **Presets** (`wifipilot.presets`, `wifipilot presets`, `--preset`,
+  `wp.attack(preset=…)`, web preset picker): named, time-boxed plans —
+  `success` (highest-success-chance route to a key), `blitz`, `balanced`,
+  `stealth`, `survey`, `rogue`, `enterprise`, `disrupt`, `bluetooth`, `it`,
+  `full` — each with scaled budgets, a watchdog-enforced per-attack cap, a
+  short scan and a campaign deadline of its own.
+* **Postures in every preset**: `:force` (`--force` / `force=True`) is the
+  opposite of stealth — loud, aggressive, broadcast deauth, boosters like
+  `wps_pin`, success over subtlety.  `:stealth` strips everything that
+  transmits.
+* **Parallel everything that can be**: IT/offline attacks run on side lanes
+  beside the one radio (`jobs`), loot cracks on a dedicated crack lane
+  instead of blocking the capturing attack, per-round planner caching, and
+  stale rounds now force an immediate replan (three dead rounds end the
+  campaign).  Demo proof: `success` finishes the simulated neighbourhood in
+  ~52s with 15 passwords; `blitz` in ~79s via the API.
+* **Opt-in hardware acceleration** (`wifipilot.accel`, `--accel cpu,ram,gpu`,
+  `wp.attack(accel="all")`): CPU = process-pool candidate verification
+  (PBKDF2 across cores), RAM = bounded candidate de-duplication caches,
+  GPU = hashcat pointed at the detected GPU.  Off unless the operator allows
+  it; `wp.accel_info()` reports what the machine actually has.
+* **`wifipilot tools install`** installs every missing external dependency
+  for the detected distro (apt/pacman/dnf/zypper/apk), plan first, `--yes`
+  to run; same on the web UI (`POST /api/tools/install`) and in Python
+  (`wp.install_tools()`).
+* **`wifipilot update`** updates in place from a downloaded zip snapshot —
+  no git needed, current package backed up beside the new one.
+* Credits: wifipilot is by **codero-sus** — github.com/codero-sus ·
+  the-codero.web.app (now stated in the package, README, web footer,
+  `--version` and project metadata).
+
 ## Fixed — every error ruff can see, and the live paths hiding behind them
 
 A pyflakes sweep (`ruff --select F,E9`) found 200 errors the demo-driven

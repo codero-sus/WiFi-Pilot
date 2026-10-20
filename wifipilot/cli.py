@@ -194,7 +194,8 @@ def _global_arguments(parser: argparse.ArgumentParser, suppress: bool = False) -
         return container.add_argument(*args, **kwargs)
 
     add(parser, "--version", action="version",
-                        version=f"{TOOL_NAME} {__version__}")
+                        version=f"{TOOL_NAME} {__version__} by codero-sus — "
+                                "https://github.com/codero-sus · https://the-codero.web.app")
     add(parser, "-c", "--config", default="", help="config file to load")
     add(parser, "-i", "--interface", default="", help="wireless interface to use")
     add(parser, "-m", "--monitor", default="", help="monitor interface to use")
@@ -228,6 +229,21 @@ def _global_arguments(parser: argparse.ArgumentParser, suppress: bool = False) -
                              "capture (drops every client of the AP at once instead of one)")
     add(parser, "--no-pmk-cache", action="store_true",
                         help="do not reuse PMKs learned earlier for the same ESSID")
+    add(parser, "--preset", default="", metavar="NAME[:POSTURE]",
+                        help="run a named, time-boxed preset (success, blitz, balanced, "
+                             "stealth, survey, rogue, enterprise, disrupt, bluetooth, it, "
+                             "full; `wifipilot presets` lists them). Append :force for the "
+                             "anti-stealth posture or :stealth for listen-only")
+    add(parser, "--force", action="store_true",
+                        help="FORCE posture: the opposite of stealth — loud, aggressive, "
+                             "success over subtlety (works with any --preset; for "
+                             "`wifipilot tools` it means re-probe)")
+    add(parser, "--accel", default="", metavar="MODE",
+                        help="opt-in hardware acceleration: cpu, ram, gpu, all (comma "
+                             "combinations work). Never on unless you ask for it")
+    add(parser, "--jobs", type=int, default=0, metavar="N",
+                        help="parallel non-radio attack lanes (IT/offline attacks run "
+                             "beside the radio work; presets pick a sensible default)")
     add(parser, "-w", "--wordlist", action="append", default=[],
                         help="wordlist to crack with (repeatable)")
     add(parser, "-o", "--output", default="", help="loot directory (default: loot/)")
@@ -589,7 +605,31 @@ def build_parser() -> argparse.ArgumentParser:
                           help="prefer hcxpcapngtool when it is installed")
 
     p_tools = sub.add_parser("tools", parents=[common], help="show tool availability and capabilities")
-    p_tools.add_argument("--force", action="store_true", help="re-probe instead of using cache")
+    tools_sub = p_tools.add_subparsers(dest="tools_command", metavar="ACTION")
+    p_tools_install = tools_sub.add_parser(
+        "install", parents=[common],
+        help="install every missing external dependency for this distro")
+    p_tools_install.add_argument("--yes", action="store_true",
+                                 help="actually run the package manager (without it, "
+                                      "only the plan is printed)")
+    p_tools_install.add_argument("--dry-run", action="store_true",
+                                 help="print the install plan and exit")
+    p_tools_install.add_argument("--category", action="append", default=[],
+                                 metavar="NAME",
+                                 help="only these tool categories (core, wps, pmkid, "
+                                      "crack, iface, flood, twin, optional); repeatable")
+    p_tools_install.add_argument("--with-web", action="store_true",
+                                 help="also pip-install the web UI extras (fastapi, uvicorn)")
+
+    sub.add_parser("presets", parents=[common],
+                   help="list the attack presets (sets of attacks with time budgets)")
+
+    p_update = sub.add_parser("update", parents=[common],
+                              help="update wifipilot in place (downloaded snapshot, no git)")
+    p_update.add_argument("--yes", action="store_true",
+                          help="download and apply the update (a backup is kept)")
+    p_update.add_argument("--dry-run", action="store_true",
+                          help="say what an update would do, change nothing")
 
     p_ai = sub.add_parser("ai", parents=[common],
                           help="optional advisor: status, models, providers, off/on, "
@@ -662,6 +702,33 @@ def apply_cli_config(args: argparse.Namespace) -> Config:
             raise SystemExit(str(error))
         if not getattr(args, "json", False):
             print(f"strategy {preset['label']}: {preset['note']}", file=sys.stderr)
+    preset_spec = getattr(args, "preset", "") or ""
+    force_posture = bool(getattr(args, "force", False))
+    if preset_spec:
+        from .presets import apply_preset
+        try:
+            report = apply_preset(config, preset_spec, "force" if force_posture else "")
+        except KeyError as error:
+            raise SystemExit(str(error))
+        if not getattr(args, "json", False):
+            posture = f":{report['posture']}" if report["posture"] else ""
+            print(f"preset {report['preset']}{posture} ({report['label']}): "
+                  f"{report['attacks']} attacks, ~{report['minutes']:.0f} min, "
+                  f"{report['jobs']} lane(s)", file=sys.stderr)
+    elif force_posture and getattr(args, "command", "") in ("attack", "demo"):
+        config.posture = "force"
+        config.stealth = False
+        config.aggressive = True
+        config.broadcast_handshake = True
+        config.deauth_count = max(int(config.deauth_count or 5), 10)
+    if getattr(args, "accel", ""):
+        from .accel import apply_accel
+        accel_report = apply_accel(config, args.accel)
+        if not getattr(args, "json", False):
+            for note in accel_report.get("notes", []):
+                print(f"acceleration: {note}", file=sys.stderr)
+    if getattr(args, "jobs", 0):
+        config.jobs = max(1, int(args.jobs))
     if getattr(args, "crack_order", ""):
         config.crack_order = args.crack_order
     if getattr(args, "rule_file", ""):
@@ -2680,11 +2747,102 @@ def command_attacks(args, config: Config, console) -> int:
     return 0
 
 
+def command_tools_install(args, config: Config, console) -> int:
+    from .deps import install_tools
+    categories = list(getattr(args, "category", []) or []) or None
+    result = install_tools(categories=categories, dry_run=bool(args.dry_run),
+                           yes=bool(args.yes), with_web=bool(args.with_web))
+    plan = result["plan"]
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return 0 if result["ok"] else 1
+    if plan["missing_tools"]:
+        console.print(f"[bold]missing tools[/bold] ({len(plan['missing_tools'])}): "
+                      + ", ".join(plan["missing_tools"]))
+    else:
+        console.print("[green]every external tool wifipilot can drive is installed[/green]")
+    if plan["packages"]:
+        console.print(f"[bold]packages[/bold] ({plan['manager'] or 'unknown distro'}): "
+                      + " ".join(plan["packages"]))
+        console.print(f"[bold]command[/bold]: {plan['display']}")
+    if plan.get("hint"):
+        console.print(f"[yellow]{plan['hint']}[/yellow]")
+    if result["needs_confirmation"]:
+        console.print("\nre-run with [bold]--yes[/bold] to run it: "
+                      "[bold]wifipilot tools install --yes[/bold]")
+        return 0
+    for entry in result["results"]:
+        mark = "[green]ok[/green]" if entry["ok"] else "[red]failed[/red]"
+        console.print(f"  {mark} {entry['command']}")
+    if result["results"]:
+        if result["after_missing"]:
+            console.print("[red]still missing[/red]: " + ", ".join(result["after_missing"])
+                          + " — check the package manager output above")
+        else:
+            console.print("[green]done[/green]: everything requested is now installed. "
+                          "Verify with: wifipilot tools")
+    return 0 if result["ok"] else 1
+
+
+def command_presets(args, config: Config, console) -> int:
+    from .presets import list_presets
+    rows = list_presets()
+    if args.json:
+        print(json.dumps({"presets": rows}, indent=2))
+        return 0
+    if HAVE_RICH:
+        table = Table(title="attack presets — time-boxed plans (each also takes "
+                            ":force and :stealth)", box=None)
+        for column in ("PRESET", "ATTACKS", "FORCE", "STEALTH", "BUDGETS", "CAP",
+                       "CAMPAIGN", "LANES", "WHAT IT DOES"):
+            table.add_column(column)
+        for row in rows:
+            table.add_row(row["name"], str(row["attacks"]), str(row["force_attacks"]),
+                          str(row["stealth_attacks"]), f"x{row['budget_scale']}",
+                          f"{row['attack_cap']:.0f}s", f"~{row['minutes']:.0f} min",
+                          str(row["jobs"]), row["description"])
+        console.print(table)
+    else:
+        for row in rows:
+            print(f"{row['name']:<12} {row['attacks']:>4} attacks "
+                  f"(force {row['force_attacks']}, stealth {row['stealth_attacks']}) "
+                  f"~{row['minutes']:.0f} min — {row['description']}")
+    console.print("\nrun one with: [bold]wifipilot attack --preset success[/bold]  ·  "
+                  "loud: [bold]--preset success:force[/bold] (or --force)  ·  "
+                  "quiet: [bold]--preset success:stealth[/bold]")
+    return 0
+
+
+def command_update(args, config: Config, console) -> int:
+    from .updater import update_self
+    result = update_self(dry_run=bool(args.dry_run), yes=bool(args.yes))
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return 0 if result["ok"] else 1
+    console.print(f"[bold]wifipilot[/bold] {result['from_version']} at {result['root']}")
+    if result.get("plan"):
+        console.print(result["plan"])
+    if result["needs_confirmation"]:
+        console.print("\nre-run with [bold]--yes[/bold] to download and apply: "
+                      "[bold]wifipilot update --yes[/bold]")
+    if result["error"]:
+        console.print(f"[red]{result['error']}[/red]")
+    if result["changed"]:
+        console.print(f"[green]updated[/green]: {result['from_version']} → "
+                      f"{result['to_version']}")
+        if result["backup"]:
+            console.print(f"previous package kept at {result['backup']}")
+        console.print("restart wifipilot (and the web UI) to run the new code")
+    return 0 if result["ok"] else 1
+
+
 def command_tools(args, config: Config, console) -> int:
+    if getattr(args, "tools_command", "") == "install":
+        return command_tools_install(args, config, console)
     from .deps import list_interfaces
-    infos = registry.all(force=args.force)
+    infos = registry.all(force=getattr(args, "force", False))
     caps = registry.capabilities()
-    interfaces = list_interfaces(force=args.force)
+    interfaces = list_interfaces(force=getattr(args, "force", False))
     if args.json:
         print(json.dumps({
             "tools": [i.to_dict() for i in infos],
@@ -3110,6 +3268,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "potfile": command_potfile,
         "loot": command_loot,
         "tools": command_tools,
+        "presets": command_presets,
+        "update": command_update,
         "ai": command_ai,
         "config": command_config,
         "demo": command_demo,

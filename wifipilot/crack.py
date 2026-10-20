@@ -26,9 +26,10 @@ import itertools
 import os
 import re
 import time
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 from .config import Config, default_wordlist, find_wordlists
 from .crypto import (HandshakeVerifier, PmkidVerifier, pmk, verify_handshake,
@@ -349,6 +350,39 @@ def iter_wordlist(path: str) -> Iterator[str]:
 # --------------------------------------------------------------------------- #
 # cracker
 # --------------------------------------------------------------------------- #
+
+
+# -- CPU acceleration workers (opt-in, see wifipilot.accel) ---------------- #
+# Top-level on purpose: ProcessPoolExecutor pickles its entry points.  The
+# verifiers are shipped to each worker once (they are small and picklable);
+# after that only candidate strings cross the process boundary.
+_POOL_VERIFIERS: List[Any] = []
+_POOL_ESSID: str = ""
+
+
+def _init_verify_pool(verifiers: List[Any], essid: str) -> None:
+    global _POOL_VERIFIERS, _POOL_ESSID
+    _POOL_VERIFIERS = list(verifiers)
+    _POOL_ESSID = essid
+
+
+def _verify_chunk(candidates: List[str]) -> Tuple[str, int]:
+    """Verify one chunk in a worker process: ``(hit or "", candidates tested)``."""
+    tested = 0
+    for candidate in candidates:
+        tested += 1
+        if len(_POOL_VERIFIERS) == 1:
+            if _POOL_VERIFIERS[0].check(candidate):
+                return candidate, tested
+            continue
+        try:
+            key = pmk(candidate, _POOL_ESSID)
+        except (ValueError, UnicodeEncodeError):
+            continue
+        for verifier in _POOL_VERIFIERS:
+            if verifier.check_pmk(key):
+                return candidate, tested
+    return "", tested
 
 
 class Cracker:
@@ -819,6 +853,12 @@ class Cracker:
                          f" at {min(mask.space for mask in chosen):,})", level="debug")
             return "", 0, ""
         patterns = [mask.pattern for mask in runnable]
+        parallel = self._verify_parallel(
+            ap, capture, analysis, masks.mask_candidates(patterns, limit=budget),
+            deadline, on_progress, f"mask {patterns[0]} (parallel)")
+        if parallel is not None:
+            found, counted = parallel
+            return found, counted, patterns[0] if found else ""
         started = time.time()
         tested = 0
         for candidate in masks.mask_candidates(patterns, limit=budget):
@@ -1003,6 +1043,98 @@ class Cracker:
                     return True
         return False
 
+    # -- acceleration (opt-in: CPU worker processes, RAM candidate cache) -- #
+    def _accel_workers(self) -> int:
+        from .accel import workers
+        return workers(self.config)
+
+    def _deduped(self, candidates: Iterable[str]) -> Iterator[str]:
+        """Drop repeats using an in-memory seen-set sized by the RAM budget.
+
+        Rule expansion produces the same candidate from many base words; each
+        repeat costs a full PBKDF2.  The set is bounded (and reset when full)
+        so a huge dictionary cannot eat the machine.
+        """
+        from .accel import cache_entries
+        cap = cache_entries(self.config) or 200_000
+        seen: set = set()
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            if len(seen) >= cap:
+                seen.clear()
+            seen.add(candidate)
+            yield candidate
+
+    def _verify_parallel(self, ap: AccessPoint, capture: Capture,
+                         analysis: CaptureAnalysis, candidates: Iterable[str],
+                         deadline: float,
+                         on_progress: Callable[[int, str], None],
+                         label: str) -> Optional[Tuple[str, int]]:
+        """Verify candidates across CPU worker processes.
+
+        Returns ``(password or "", tested)``, or ``None`` when acceleration
+        does not apply (not allowed, nothing preparable to verify against, or
+        the pool would not start) — decided *before* the candidate iterator is
+        touched, so the caller can fall back to the serial pass cleanly.
+        """
+        count = self._accel_workers()
+        if count < 2:
+            return None
+        verifiers = self._verifiers(ap, capture, analysis)
+        if not verifiers:
+            return None
+        try:
+            pool = ProcessPoolExecutor(max_workers=count, initializer=_init_verify_pool,
+                                       initargs=(verifiers, ap.essid))
+        except Exception as exc:  # pragma: no cover - defensive
+            self.bus.log(f"CPU acceleration unavailable ({exc}): cracking serially",
+                         level="warning")
+            return None
+        self.bus.log(f"CPU acceleration: verifying with {count} worker process(es)",
+                     level="info")
+        tested = 0
+        started = time.time()
+        source = iter(self._deduped(candidates))
+        inflight: set = set()
+        exhausted = False
+        try:
+            while True:
+                while not exhausted and len(inflight) < count * 2:
+                    if time.time() > deadline:
+                        exhausted = True
+                        break
+                    chunk = list(itertools.islice(source, 256))
+                    if not chunk:
+                        exhausted = True
+                        break
+                    inflight.add(pool.submit(_verify_chunk, chunk))
+                if not inflight:
+                    break
+                done, inflight = wait(inflight, timeout=0.25,
+                                      return_when=FIRST_COMPLETED)
+                for future in done:
+                    hit, chunk_tested = future.result()
+                    tested += chunk_tested
+                    if hit:
+                        rate = tested / max(0.001, time.time() - started)
+                        self.bus.log(f"built-in engine (x{count} workers) cracked it "
+                                     f"after {tested:,} candidates ({rate:,.0f}/s)",
+                                     level="debug")
+                        return hit, tested
+                    on_progress(tested, label)
+                if time.time() > deadline and not done:
+                    break
+        except Exception as exc:
+            self.bus.log(f"parallel verify failed ({exc}); {tested:,} candidates "
+                         f"were still tested", level="warning")
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+        rate = tested / max(0.001, time.time() - started)
+        self.bus.log(f"built-in engine tested {tested:,} candidates across "
+                     f"{count} worker(s) ({rate:,.0f}/s)", level="debug")
+        return "", tested
+
     def _python_pass(self, ap: AccessPoint, capture: Capture, analysis: CaptureAnalysis,
                      candidates: Sequence[str], deadline: float,
                      on_progress: Callable[[int, str], None]) -> Tuple[str, int]:
@@ -1011,6 +1143,12 @@ class Cracker:
         The count is what was really tested, not the length of the list: an early
         hit must not be reported (or logged) as a full sweep of the space.
         """
+        if len(candidates) >= 512:
+            parallel = self._verify_parallel(
+                ap, capture, analysis, candidates, deadline, on_progress,
+                "built-in engine (parallel)")
+            if parallel is not None:
+                return parallel
         started = time.time()
         seen: set = set()
         tested = 0
@@ -1054,11 +1192,59 @@ class Cracker:
                          f"case, or a path to a .rule file)", level="warning")
         return preset
 
+    def _wordlist_candidates(self, lists: List[str], use_rules: bool,
+                             rule_set: List[Any]) -> Iterator[str]:
+        """Every candidate a wordlist sweep would try, rules included."""
+        for wordlist in lists[:2]:
+            for word in iter_wordlist(wordlist):
+                yield word
+                if use_rules:
+                    if rule_set:
+                        yield from rules_module.apply_rules(word, rule_set, limit=24)
+                    else:
+                        yield from rule_expand(word, limit=8)
+
+    def _python_wordlist_pass_fast(self, ap: AccessPoint, capture: Capture,
+                                   analysis: CaptureAnalysis, lists: List[str],
+                                   deadline: float,
+                                   on_progress: Callable[[int, str], None]
+                                   ) -> Tuple[str, int]:
+        """The accelerated sweep: de-duplicated candidates (RAM), verified
+        across worker processes when CPU acceleration is allowed too."""
+        use_rules = bool(self.config.use_rules)
+        rule_set = self._rule_set() if use_rules else []
+        stream = self._deduped(self._wordlist_candidates(lists, use_rules, rule_set))
+        parallel = self._verify_parallel(
+            ap, capture, analysis, stream, deadline, on_progress,
+            "built-in dictionary sweep (parallel)")
+        if parallel is not None:
+            return parallel
+        # RAM-only acceleration: still serial, but no candidate is paid for twice
+        # (the parallel attempt returns None before touching the stream)
+        tested = 0
+        started = time.time()
+        for candidate in stream:
+            tested += 1
+            if tested % 250 == 0:
+                if time.time() > deadline:
+                    return "", tested
+                rate = tested / max(0.001, time.time() - started)
+                on_progress(tested, f"built-in dictionary sweep (cached, {rate:,.0f}/s)")
+            if self._verify(ap, capture, analysis, candidate):
+                return candidate, tested
+        self.bus.log(f"built-in dictionary sweep exhausted {tested:,} unique words",
+                     level="debug")
+        return "", tested
+
     def _python_wordlist_pass(self, ap: AccessPoint, capture: Capture,
                               analysis: CaptureAnalysis, lists: List[str],
                               deadline: float,
                               on_progress: Callable[[int, str], None]) -> Tuple[str, int]:
         """Sweep wordlists; return ``(password or "", words verified)``."""
+        from .accel import accel_enabled
+        if self._accel_workers() >= 2 or accel_enabled(self.config, "ram"):
+            return self._python_wordlist_pass_fast(
+                ap, capture, analysis, lists, deadline, on_progress)
         tested = 0
         started = time.time()
         use_rules = bool(self.config.use_rules)

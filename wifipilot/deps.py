@@ -419,3 +419,142 @@ def pick_interface(preferred: str = "") -> Optional[WirelessInterface]:
 
 
 registry = ToolRegistry()
+
+
+# --------------------------------------------------------------------------- #
+# `wifipilot tools install` — install the toolchain, don't just hint at it
+# --------------------------------------------------------------------------- #
+#: package names that differ from the Debian spelling, per manager family
+_PACKAGE_OVERRIDES = {
+    "pacman": {"network-manager": "networkmanager", "tshark": "wireshark-cli",
+               "wpasupplicant": "wpa_supplicant", "wireless-tools": "wireless_tools"},
+    "dnf": {"network-manager": "NetworkManager", "tshark": "wireshark-cli",
+            "wpasupplicant": "wpa_supplicant"},
+    "zypper": {"network-manager": "NetworkManager", "tshark": "wireshark",
+               "wpasupplicant": "wpa_supplicant"},
+    "apk": {"network-manager": "networkmanager", "wpasupplicant": "wpa_supplicant"},
+}
+
+#: how each supported manager family installs a package list (argv templates;
+#: ``{pkgs}`` is replaced by the package names — no shell is ever involved)
+_INSTALL_ARGV = {
+    "apt": [["apt-get", "update"], ["apt-get", "install", "-y", "{pkgs}"]],
+    "pacman": [["pacman", "-Sy", "--needed", "--noconfirm", "{pkgs}"]],
+    "dnf": [["dnf", "install", "-y", "{pkgs}"]],
+    "zypper": [["zypper", "--non-interactive", "install", "-y", "{pkgs}"]],
+    "apk": [["apk", "add", "{pkgs}"]],
+}
+
+
+def _manager_family(manager: str = "") -> str:
+    from .util import package_manager
+    name = (manager or package_manager() or "").lower()
+    if name.startswith("apt"):
+        return "apt"
+    for family in ("pacman", "dnf", "zypper", "apk"):
+        if name.startswith(family):
+            return family
+    return ""
+
+
+def _package_for(spec: ToolSpec, family: str) -> str:
+    package = spec.package or spec.name
+    return _PACKAGE_OVERRIDES.get(family, {}).get(package, package)
+
+
+def install_plan(categories=None, only_missing: bool = True,
+                 manager: str = "", with_web: bool = False) -> dict:
+    """What ``wifipilot tools install`` would run, without running anything.
+
+    Returns the manager family, the deduplicated package list, and the exact
+    argv command lines (sudo-prefixed when we are not root and sudo exists),
+    so the operator sees precisely what will happen before it does.
+    """
+    import sys as _sys
+
+    family = _manager_family(manager)
+    wanted = [spec for spec in TOOLS.values()
+              if categories is None or spec.category in categories]
+    present = [spec.name for spec in wanted if which(spec.name)]
+    missing = [spec.name for spec in wanted if not which(spec.name)]
+    targets = missing if only_missing else [spec.name for spec in wanted]
+    packages: List[str] = []
+    for name in targets:
+        package = _package_for(TOOLS[name], family)
+        if package and package not in packages:
+            packages.append(package)
+    sudo = (not is_root()) and bool(which("sudo"))
+    commands: List[List[str]] = []
+    if family in _INSTALL_ARGV and packages:
+        for template in _INSTALL_ARGV[family]:
+            argv: List[str] = []
+            for part in template:
+                if part == "{pkgs}":
+                    argv.extend(packages)
+                else:
+                    argv.append(part)
+            commands.append((["sudo"] + argv) if sudo else argv)
+    if with_web:
+        commands.append([_sys.executable, "-m", "pip", "install", "fastapi", "uvicorn"])
+    return {
+        "manager": family,
+        "supported": family in _INSTALL_ARGV,
+        "sudo": sudo,
+        "missing_tools": missing,
+        "present_tools": present,
+        "packages": packages,
+        "commands": commands,
+        "display": " && ".join(" ".join(argv) for argv in commands)
+                   or install_command(),
+        "hint": "" if family in _INSTALL_ARGV else
+                f"no supported package manager found — install manually: "
+                f"{' '.join(packages) or '(see wifipilot tools)'}",
+    }
+
+
+def install_tools(categories=None, dry_run: bool = False, yes: bool = False,
+                  with_web: bool = False, runner=None, manager: str = "") -> dict:
+    """Install every missing external dependency for the detected distro.
+
+    This is the engine behind ``wifipilot tools install``.  Nothing runs
+    unless ``yes=True`` (the CLI asks, or takes ``--yes``); ``dry_run`` only
+    ever returns the plan.  ``runner`` is injectable for tests.
+    """
+    from .util import run as _run
+
+    plan = install_plan(categories=categories, manager=manager, with_web=with_web)
+    result = {"ok": True, "dry_run": dry_run, "needs_confirmation": False,
+              "plan": plan, "results": [], "before_missing": plan["missing_tools"],
+              "after_missing": plan["missing_tools"]}
+    if dry_run:
+        return result
+    if not plan["commands"]:
+        result["ok"] = plan["supported"] or not plan["missing_tools"]
+        return result
+    if not yes:
+        result["needs_confirmation"] = True
+        return result
+    if not plan["supported"] and plan["packages"]:
+        result["ok"] = False
+        return result
+    run_cmd = runner or _run
+    env = {"DEBIAN_FRONTEND": "noninteractive"} if plan["manager"] == "apt" else None
+    for argv in plan["commands"]:
+        completed = run_cmd(argv, timeout=1800, env=env)
+        result["results"].append({
+            "command": " ".join(argv),
+            "ok": bool(getattr(completed, "ok", False)),
+            "returncode": int(getattr(completed, "returncode", -1)),
+            "timed_out": bool(getattr(completed, "timed_out", False)),
+        })
+        if not getattr(completed, "ok", False):
+            result["ok"] = False
+    after = []
+    for name in plan["missing_tools"]:
+        info = registry.probe(name, force=True)
+        if not info.path:
+            after.append(name)
+    result["after_missing"] = after
+    if after:
+        result["ok"] = False
+    return result

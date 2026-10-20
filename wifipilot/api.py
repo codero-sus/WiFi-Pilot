@@ -58,7 +58,8 @@ __all__ = [
     "configure", "config", "demo", "authorize", "ai", "set_provider", "providers",
     "advisor_status",
     "scan", "attack", "crack", "analyze", "export", "suggest_masks", "loot", "report",
-    "strategies", "catalogue", "editions", "simulations", "devices", "device",
+    "strategies", "presets", "accel_info", "install_tools", "update",
+    "catalogue", "editions", "simulations", "devices", "device",
     "targets", "select", "selected", "note", "notes", "tag", "history",
     "vendor", "identify", "passwords", "advice", "benchmark", "hash_stats",
     "merge_hashes", "rescue_capture", "wordlist_stats", "expand_wordlist",
@@ -411,6 +412,8 @@ _CONFIG_KEYS = {
     "restore_interface", "check_handshakes", "save_session", "ignore_known",
     "config_file", "config", "openrouter_key", "ollama_host", "authorization_note",
     "deauth_count", "deauth_interval", "deauth_burst", "scan_rounds",
+    "preset", "posture", "budget_scale", "attack_cap", "jobs", "parallel_crack",
+    "accel", "accel_workers", "accel_ram_mb",
 }
 
 
@@ -471,6 +474,10 @@ def configure(**kwargs: Any) -> Config:
             "ignore_known": "ignore_known", "deauth_count": "deauth_count",
             "deauth_interval": "deauth_interval", "deauth_burst": "deauth_burst",
             "scan_rounds": "scan_rounds", "authorization_note": "authorization_note",
+            "preset": "preset", "posture": "posture", "budget_scale": "budget_scale",
+            "attack_cap": "attack_cap", "jobs": "jobs",
+            "parallel_crack": "parallel_crack", "accel": "accel",
+            "accel_workers": "accel_workers", "accel_ram_mb": "accel_ram_mb",
         }
         for key, attribute in direct.items():
             if key in kwargs and kwargs[key] is not None:
@@ -799,13 +806,78 @@ def scan(target: Any = ALL, duration: Union[float, str] = 15.0, demo: Optional[b
         return result
 
 
+def _apply_preset_args(config: Config, preset: str, force: bool, accel: Any) -> None:
+    """Stamp preset/posture/acceleration onto the config for one run."""
+    from .presets import apply_preset as _apply_preset
+
+    if preset:
+        _apply_preset(config, preset, "force" if force else "")
+    elif force:
+        # FORCE without a named preset: succeed loudly with what is enabled
+        config.posture = "force"
+        config.stealth = False
+        config.aggressive = True
+        config.broadcast_handshake = True
+        config.deauth_count = max(int(config.deauth_count or 5), 10)
+    if accel is not None:
+        from .accel import apply_accel as _apply_accel
+        _apply_accel(config, accel)
+
+
+def presets() -> List[Dict[str, Any]]:
+    """Every attack preset: name, size, time budget and postures.
+
+    ``wp.attack(target=all, preset="success")`` runs one; append ``":force"``
+    (or pass ``force=True``) for the anti-stealth posture, ``":stealth"`` for
+    the listen-only one.
+    """
+    from .presets import list_presets
+    return list_presets()
+
+
+def accel_info() -> Dict[str, Any]:
+    """Detected CPU/RAM/GPU hardware and what acceleration is currently allowed.
+
+    Acceleration is opt-in: this only *reports*; pass ``accel="all"`` to
+    :func:`attack` (or ``wp.configure(accel="cpu,gpu")``) to allow it.
+    """
+    from .accel import accel_summary
+    return accel_summary(config())
+
+
+def install_tools(categories: Optional[Sequence[str]] = None,
+                  dry_run: bool = True, yes: bool = False,
+                  with_web: bool = False) -> Dict[str, Any]:
+    """Install the external toolchain (aircrack-ng, hashcat, reaver, …).
+
+    The programmatic twin of ``wifipilot tools install``.  Safe by default:
+    ``dry_run=True`` only returns the plan; the install itself needs
+    ``dry_run=False, yes=True`` and a supported package manager.
+    """
+    from .deps import install_tools as _install
+    return _install(categories=list(categories) if categories else None,
+                    dry_run=dry_run, yes=yes, with_web=with_web)
+
+
+def update(dry_run: bool = False, yes: bool = False) -> Dict[str, Any]:
+    """Update wifipilot in place from the project's update channel.
+
+    Downloads a packaged snapshot and swaps it over the current install (a
+    backup is kept).  Like the CLI's ``wifipilot update``, nothing changes
+    on disk unless ``yes=True``.
+    """
+    from .updater import update_self
+    return update_self(dry_run=dry_run, yes=yes)
+
+
 def attack(target: Any = ALL, mode: str = "force", duration: Union[float, str] = 0.0,
            scan_time: Union[float, str, None] = None, demo: Optional[bool] = None,
            authorized: Optional[bool] = None, interface: str = "",
            on_event: Optional[Callable[[Event], Any]] = None, verbose: bool = False,
            background: bool = False, crack: bool = True, raise_on_error: bool = True,
            wps_pin: Optional[bool] = None, stealth: Optional[bool] = None,
-           attacks: Optional[Sequence[str]] = None, **kwargs: Any) -> CampaignResult:
+           attacks: Optional[Sequence[str]] = None, preset: str = "",
+           force: bool = False, accel: Any = None, **kwargs: Any) -> CampaignResult:
     """Run a full engagement against ``target`` and return the result.
 
     ``target`` is ``wifipilot.ALL`` (or ``all``/``"all"``/``"*"``/``None``) for
@@ -817,6 +889,14 @@ def attack(target: Any = ALL, mode: str = "force", duration: Union[float, str] =
     deauth flood, the twin, the active PMKID hunt and the online WPS PIN attack
     (which can lock an access point's WPS for good).  Use ``"stealth"``
     for listen-only, ``"quick"`` for handshake/PMKID only.
+
+    ``preset`` picks a named, time-boxed plan instead (see :func:`presets`):
+    ``wp.attack(target=all, preset="success")`` finishes one network in about
+    ten minutes; ``preset="blitz:force"`` (or ``force=True``) adds the FORCE
+    posture — the opposite of stealth, success over subtlety.  ``accel``
+    (``"cpu"`` / ``"ram"`` / ``"gpu"`` / ``"all"`` / ``True``) opts in to
+    hardware acceleration for cracking and parallel lanes; it is never on
+    unless asked for.
 
     Live runs need :func:`authorize` first (or ``authorized=True``); without it
     this raises :class:`AuthorizationError` before touching the radio.  Pass
@@ -831,6 +911,8 @@ def attack(target: Any = ALL, mode: str = "force", duration: Union[float, str] =
     """
     config = configure(demo=demo, interface=interface or None, **kwargs)
     _apply_mode(mode, config, wps_pin=wps_pin, stealth=stealth, attacks=attacks)
+    if preset or force or accel is not None:
+        _apply_preset_args(config, preset, force, accel)
     seconds = float(parse_duration(str(duration), 0.0)) if duration else 0.0
     discovery = None if scan_time is None else float(parse_duration(str(scan_time), 0.0))
     if discovery is None:

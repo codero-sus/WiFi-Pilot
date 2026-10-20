@@ -197,6 +197,13 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
         if getattr(config, "it_device", ""):
             data["device"] = device_payload(str(config.it_device),
                                             str(getattr(config, "it_host", "")))
+        # presets + opt-in acceleration, for the campaign controls
+        from ..accel import accel_summary
+        from ..presets import list_presets
+        from .. import CREDIT
+        data["presets"] = list_presets()
+        data["accel"] = accel_summary(config)
+        data["credit"] = CREDIT
         return data
 
     # ------------------------------------------------------------------ #
@@ -620,6 +627,42 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
     async def api_tools(force: bool = False):
         return registry.summary()
 
+    @app.post("/api/tools/install")
+    async def api_tools_install(payload: Dict[str, Any] = Body(default={})):
+        """Plan (default) or run the dependency install — `tools install` for the UI.
+
+        Without ``yes`` this only ever returns the plan; with it, the install
+        runs on a side thread and progress lands in the event log.
+        """
+        from ..deps import install_tools
+
+        dry_run = bool(payload.get("dry_run", True))
+        yes = bool(payload.get("yes", False))
+        categories = payload.get("categories") or None
+        if dry_run or not yes:
+            return install_tools(categories=categories, dry_run=True, yes=False)
+        engine = engine_or_404()
+
+        def _run_install() -> None:
+            engine.bus.log("installing external tools (this can take a few minutes)…",
+                           level="info")
+            result = install_tools(categories=categories, dry_run=False, yes=True,
+                                   with_web=bool(payload.get("with_web", False)))
+            for entry in result["results"]:
+                engine.bus.log(f"{'✔' if entry['ok'] else '✘'} {entry['command']}",
+                               level="success" if entry["ok"] else "error")
+            if result["after_missing"]:
+                engine.bus.log("still missing: " + ", ".join(result["after_missing"]),
+                               level="warning")
+            else:
+                engine.bus.log("tool installation finished", level="success")
+
+        import threading
+        threading.Thread(target=_run_install, name="wifipilot-install",
+                         daemon=True).start()
+        return {"ok": True, "started": True,
+                "message": "installation running — watch the event log"}
+
     @app.get("/api/interfaces")
     async def api_interfaces(force: bool = False):
         return {"interfaces": [i.to_dict() for i in list_interfaces(force=force)]}
@@ -748,7 +791,12 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
             targets = [t for t in targets.replace(",", " ").split() if t]
         duration = float(payload.get("duration") or 0)
         scan_first = bool(payload.get("scan_first", True))
-        message = engine.request_start(targets, duration, scan_first)
+        preset = str(payload.get("preset") or "")
+        if payload.get("force") and preset and ":" not in preset:
+            preset = preset + ":force"
+        accel = str(payload.get("accel") or "")
+        message = engine.request_start(targets, duration, scan_first,
+                                       preset=preset, accel=accel)
         return {"ok": True, "message": message}
 
     @app.post("/api/attack")
