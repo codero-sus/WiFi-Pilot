@@ -197,7 +197,7 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
         if getattr(config, "it_device", ""):
             data["device"] = device_payload(str(config.it_device),
                                             str(getattr(config, "it_host", "")))
-        # presets + opt-in acceleration, for the campaign controls
+        # presets + acceleration state, for the campaign controls
         from ..accel import accel_summary
         from ..presets import list_presets
         from .. import CREDIT

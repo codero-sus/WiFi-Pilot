@@ -255,7 +255,8 @@ def test_quick_campaign_recovers_and_verifies_loot():
         assert result.get(item["bssid"]).password == item["password"]
     assert result.cracked() == result.passwords
     assert result.summary().startswith("simulation ")
-    assert "passwords recovered" in result.summary()
+    summary = result.summary()
+    assert "password recovered" in summary or "passwords recovered" in summary
     payload = result.to_dict()
     assert payload["passwords"] and payload["stats"]["passwords"] >= 1
     assert json.loads(json.dumps(payload, default=str))["loot"] is not None

@@ -239,11 +239,12 @@ def _global_arguments(parser: argparse.ArgumentParser, suppress: bool = False) -
                              "success over subtlety (works with any --preset; for "
                              "`wifipilot tools` it means re-probe)")
     add(parser, "--accel", default="", metavar="MODE",
-                        help="opt-in hardware acceleration: cpu, ram, gpu, all (comma "
-                             "combinations work). Never on unless you ask for it")
+                        help="hardware acceleration: auto (the default — multiprocessing "
+                             "CPU + RAM caches, GPU via hashcat when detected), cpu, ram, "
+                             "gpu, all, or off for the classic single-threaded run")
     add(parser, "--jobs", type=int, default=0, metavar="N",
-                        help="parallel non-radio attack lanes (IT/offline attacks run "
-                             "beside the radio work; presets pick a sensible default)")
+                        help="parallel non-radio attack lanes (0 = auto, one per CPU; "
+                             "IT/offline attacks run beside the radio work)")
     add(parser, "-w", "--wordlist", action="append", default=[],
                         help="wordlist to crack with (repeatable)")
     add(parser, "-o", "--output", default="", help="loot directory (default: loot/)")

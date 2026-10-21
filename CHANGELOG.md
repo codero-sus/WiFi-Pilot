@@ -4,6 +4,23 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## Faster still — multiprocessing and acceleration are now the default
+
+* **`accel="auto"` out of the box**: the cracker verifies candidates in a
+  persistent multiprocessing pool (one process per usable CPU, affinity-mask
+  aware), RAM de-duplication caches are always sized, and a detected GPU is
+  handed to hashcat automatically.  `jobs` defaults to auto (one parallel
+  attack lane per CPU, cap 8) and loot cracks on the background lane by
+  default.  `--accel off` / `accel="off"` restores the classic single
+  thread everywhere.
+* **The crack pool is persistent**: previously every parallel pass spawned
+  fresh worker processes (~100 ms each); one pool per cracker now serves
+  every capture, verifiers ride with each chunk, and the parallel threshold
+  dropped from 512 to 128 candidates.
+* **`attack_timeout_for` is cached**: the ~200-entry budget table was
+  rebuilt on every call (some attacks ask per loop iteration); it is now
+  memoised per timeout-field set and never serialises.
+
 ## Speed — presets, FORCE postures, parallel lanes, hardware acceleration
 
 One Wi-Fi network ran **1h 2m unfinished**: `mode="force"` enabled all 848

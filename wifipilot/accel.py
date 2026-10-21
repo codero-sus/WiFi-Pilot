@@ -1,19 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 # Copyright (c) 2025-2026 codero-sus
-"""Opt-in hardware acceleration: CPU, RAM and GPU — only when allowed.
+"""Hardware acceleration: multiprocessing CPU, RAM caches and GPU — on by default.
 
-wifipilot never spins up worker processes, preloads dictionaries into RAM or
-hands work to the GPU unless the operator says so (``config.accel`` /
-``--accel`` / ``wp.attack(accel=...)``).  This module is the single place that
-turns that permission into concrete settings:
+wifipilot uses the machine it is given.  ``config.accel`` defaults to
+``"auto"``: CPU worker processes and RAM candidate caches are always on, and
+the GPU joins in (via hashcat) when one is actually detected.  This module is
+the single place that turns that setting into concrete numbers:
 
 * **cpu** — the built-in cracker verifies candidates in a process pool, and
-  the engine may run several non-radio attacks side by side (``jobs``).
+  the engine runs several non-radio attacks side by side (``jobs`` lanes).
 * **ram** — candidates are de-duplicated across every pass in a big in-memory
-  cache, and wordlists small enough to fit are read once into RAM.
+  cache, so rule expansion never pays for the same PBKDF2 twice.
 * **gpu** — hashcat (which drives the GPU) becomes the chosen cracker, with a
   full workload profile.
-* **all** — everything above.
+* **all** — everything above, GPU included whether or not one was detected.
+* **off** — the classic single-threaded behaviour, for tiny VMs and shared
+  boxes: ``--accel off`` / ``wp.configure(accel="off")``.
 
 Detection is cheap and honest: :func:`detect` reports what the machine
 actually has, and nothing here pretends a GPU exists when there is none.
@@ -30,21 +32,40 @@ from .util import which
 
 __all__ = [
     "ACCEL_MODES", "parse_accel", "accel_enabled", "detect", "workers",
-    "cache_mb", "cache_entries", "apply_accel", "accel_summary",
+    "lanes", "cpu_count", "cache_mb", "cache_entries", "apply_accel",
+    "accel_summary",
 ]
 
 #: the values ``config.accel`` understands (comma combinations work too)
-ACCEL_MODES = ("off", "cpu", "ram", "gpu", "all")
+ACCEL_MODES = ("auto", "off", "cpu", "ram", "gpu", "all")
 
 _PARTS = ("cpu", "ram", "gpu")
 
 
-def parse_accel(value: Any) -> FrozenSet[str]:
-    """Normalise an accel setting to the set of allowed resources.
+def cpu_count() -> int:
+    """Usable CPUs: the affinity mask when the OS gives one (containers, CI)."""
+    try:
+        return max(1, len(os.sched_getaffinity(0)))
+    except (AttributeError, OSError):
+        return max(1, os.cpu_count() or 1)
 
-    Accepts ``"all"``, ``"cpu,gpu"``, ``True`` (everything), ``False``/``"off"``
+
+def _resolve_auto() -> FrozenSet[str]:
+    """What ``"auto"`` means on this machine: CPU + RAM, GPU if it can crack."""
+    parts = {"cpu", "ram"}
+    gpu = detect()["gpu"]
+    if gpu.get("usable_for_cracking"):
+        parts.add("gpu")
+    return frozenset(parts)
+
+
+def parse_accel(value: Any) -> FrozenSet[str]:
+    """Normalise an accel setting to the set of enabled resources.
+
+    Accepts ``"auto"`` (CPU + RAM, plus GPU when detected — the default),
+    ``"all"``, ``"cpu,gpu"``, ``True`` (everything), ``False``/``"off"``
     (nothing) and lists of parts.  Unknown words are ignored rather than
-    guessed at, so a typo never silently enables hardware use.
+    guessed at.
     """
     if value is True:
         return frozenset(_PARTS)
@@ -54,6 +75,8 @@ def parse_accel(value: Any) -> FrozenSet[str]:
         parts = {str(v).strip().lower() for v in value}
     else:
         parts = {p.strip().lower() for p in str(value).replace("+", ",").split(",")}
+    if parts == {"auto"}:
+        return _resolve_auto()
     if "all" in parts or "everything" in parts or "full" in parts:
         return frozenset(_PARTS)
     return frozenset(p for p in parts if p in _PARTS)
@@ -61,7 +84,7 @@ def parse_accel(value: Any) -> FrozenSet[str]:
 
 def accel_enabled(config: Any, part: str) -> bool:
     """Did the operator allow this resource (``"cpu"`` / ``"ram"`` / ``"gpu"``)?"""
-    return part in parse_accel(getattr(config, "accel", "off"))
+    return part in parse_accel(getattr(config, "accel", "auto"))
 
 
 def _meminfo_mb() -> Dict[str, int]:
@@ -105,7 +128,7 @@ def _gpu_info() -> Dict[str, Any]:
 def _detect_cached() -> Dict[str, Any]:
     mem = _meminfo_mb()
     return {
-        "cpu": {"count": os.cpu_count() or 1},
+        "cpu": {"count": cpu_count()},
         "ram": mem,
         "gpu": _gpu_info(),
     }
@@ -127,7 +150,22 @@ def workers(config: Any) -> int:
     wanted = int(getattr(config, "accel_workers", 0) or 0)
     if wanted > 0:
         return max(1, wanted)
-    return max(1, os.cpu_count() or 1)
+    return cpu_count()
+
+
+def lanes(config: Any) -> int:
+    """Parallel non-radio attack lanes the engine may run.
+
+    An explicit ``config.jobs`` (> 0) wins — presets and ``--jobs`` set one.
+    Otherwise the lanes follow the CPU: one per core, capped at 8, while CPU
+    acceleration is on; strictly 1 (the classic serial engine) when off.
+    """
+    explicit = int(getattr(config, "jobs", 0) or 0)
+    if explicit > 0:
+        return explicit
+    if not accel_enabled(config, "cpu"):
+        return 1
+    return max(1, min(cpu_count(), 8))
 
 
 def cache_mb(config: Any) -> int:
@@ -151,25 +189,29 @@ def cache_entries(config: Any) -> int:
 def apply_accel(config: Any, mode: Optional[Any] = None) -> Dict[str, Any]:
     """Apply an acceleration mode to a config; returns what was switched on.
 
-    Only ever *adds* capability the operator asked for: CPU raises the engine's
-    parallel ``jobs`` (capped, one radio still serialises Wi-Fi work), GPU
-    points the cracker at hashcat when it exists, RAM just sizes the caches.
+    CPU sizes the crack process pool and the engine's parallel lanes (one
+    radio still serialises Wi-Fi work), GPU points the cracker at hashcat
+    when it exists, RAM sizes the candidate caches.
     """
     if mode is not None:
-        parts = parse_accel(mode)
-        config.accel = "all" if parts == frozenset(_PARTS) else (
-            ",".join(p for p in _PARTS if p in parts) or "off")
-    parts = parse_accel(getattr(config, "accel", "off"))
-    report: Dict[str, Any] = {"mode": getattr(config, "accel", "off"),
-                              "parts": sorted(parts), "notes": []}
+        if isinstance(mode, str) and mode.strip().lower() == "auto":
+            config.accel = "auto"
+        else:
+            parts = parse_accel(mode)
+            config.accel = "all" if parts == frozenset(_PARTS) else (
+                ",".join(p for p in _PARTS if p in parts) or "off")
+    parts = parse_accel(getattr(config, "accel", "auto"))
+    report: Dict[str, Any] = {"mode": getattr(config, "accel", "auto"),
+                              "parts": sorted(parts),
+                              "resolved": sorted(parts), "notes": []}
     hardware = detect()
     if "cpu" in parts:
         count = workers(config)
         report["crack_workers"] = count
-        jobs = max(int(getattr(config, "jobs", 1) or 1), min(count, 8))
-        config.jobs = jobs
-        report["jobs"] = jobs
-        report["notes"].append(f"CPU: {count} crack worker(s), {jobs} parallel attack lane(s)")
+        report["lanes"] = lanes(config)
+        report["jobs"] = report["lanes"]
+        report["notes"].append(
+            f"CPU: {count} crack worker(s), {report['lanes']} parallel attack lane(s)")
     if "ram" in parts:
         report["cache_mb"] = cache_mb(config)
         report["notes"].append(
@@ -194,13 +236,15 @@ def apply_accel(config: Any, mode: Optional[Any] = None) -> Dict[str, Any]:
 
 
 def accel_summary(config: Any) -> Dict[str, Any]:
-    """Detected hardware + what the operator has allowed, for UIs and reports."""
+    """Detected hardware + what acceleration resolves to, for UIs and reports."""
     hardware = detect()
-    allowed = sorted(parse_accel(getattr(config, "accel", "off")))
+    resolved = sorted(parse_accel(getattr(config, "accel", "auto")))
     return {
-        "allowed": allowed,
-        "mode": getattr(config, "accel", "off"),
+        "allowed": resolved,
+        "resolved": resolved,
+        "mode": getattr(config, "accel", "auto"),
         "hardware": hardware,
         "crack_workers": workers(config),
+        "lanes": lanes(config),
         "cache_mb": cache_mb(config),
     }

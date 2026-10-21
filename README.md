@@ -473,12 +473,15 @@ broadcast handshake deauth, boosters like `wps_pin`, bigger crack budgets).
 `:stealth` strips everything that transmits. From Python:
 `wp.attack(target=all, preset="success:force")`.
 
-And if you allow it, real hardware joins in — opt-in only, never by default:
+Real hardware joins in **by default** (`--accel auto`): multiprocessing
+candidate verification across every CPU core, parallel attack lanes, RAM
+candidate caching, and the GPU (via hashcat) when one is detected.
+`wifipilot tools` shows what was found; `--accel off` restores the classic
+single-threaded run for tiny VMs:
 
 ```bash
-sudo wifipilot -y attack --preset success --accel cpu,ram,gpu
-# cpu = process-pool cracking + parallel lanes · ram = candidate caching ·
-# gpu = hashcat drives the GPU · `wifipilot tools` shows what was detected
+sudo wifipilot -y attack --preset success              # auto: CPU + RAM (+ GPU if present)
+sudo wifipilot -y attack --preset success --accel off  # one thread, like the old days
 ```
 
 Missing tools? `wifipilot tools install` prints the exact plan for your distro
