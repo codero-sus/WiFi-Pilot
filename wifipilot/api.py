@@ -838,8 +838,8 @@ def presets() -> List[Dict[str, Any]]:
 def accel_info() -> Dict[str, Any]:
     """Detected CPU/RAM/GPU hardware and what acceleration is currently allowed.
 
-    Acceleration is opt-in: this only *reports*; pass ``accel="all"`` to
-    :func:`attack` (or ``wp.configure(accel="cpu,gpu")``) to allow it.
+    Acceleration is on by default (``"auto"``: multiprocessing CPU + RAM,
+    GPU when detected); ``wp.configure(accel="off")`` turns it off.
     """
     from .accel import accel_summary
     return accel_summary(config())
@@ -895,8 +895,8 @@ def attack(target: Any = ALL, mode: str = "force", duration: Union[float, str] =
     ten minutes; ``preset="blitz:force"`` (or ``force=True``) adds the FORCE
     posture — the opposite of stealth, success over subtlety.  ``accel``
     (``"cpu"`` / ``"ram"`` / ``"gpu"`` / ``"all"`` / ``True``) opts in to
-    hardware acceleration for cracking and parallel lanes; it is never on
-    unless asked for.
+    hardware acceleration for cracking and parallel lanes; it is on by
+    default (``"auto"``) — pass ``"off"`` for the classic single thread.
 
     Live runs need :func:`authorize` first (or ``authorized=True``); without it
     this raises :class:`AuthorizationError` before touching the radio.  Pass

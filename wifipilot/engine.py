@@ -193,6 +193,8 @@ class Engine:
             if pool is not None:
                 pool.shutdown(wait=False, cancel_futures=True)
         self._side_pool = self._crack_pool = None
+        with contextlib.suppress(Exception):
+            self.cracker.close()
         if self.scanner is not None:
             with contextlib.suppress(Exception):
                 self.scanner.stop()
@@ -634,7 +636,8 @@ class Engine:
     # speed lanes: side attacks + background cracking
     # ------------------------------------------------------------------ #
     def _side_executor(self) -> Optional[ThreadPoolExecutor]:
-        jobs = max(1, int(getattr(self.config, "jobs", 1) or 1))
+        from .accel import lanes
+        jobs = lanes(self.config)
         if jobs <= 1:
             return None
         if self._side_pool is None:
@@ -683,8 +686,9 @@ class Engine:
         pool = self._side_executor()
         if pool is None:
             return 0
+        from .accel import lanes
         self._side_futures = [f for f in self._side_futures if not f.done()]
-        quota = min(24, max(1, int(self.config.jobs)) * 3) - len(self._side_futures)
+        quota = min(24, lanes(self.config) * 3) - len(self._side_futures)
         if quota <= 0:
             return 0
         running = {(a.bssid.lower(), a.attack) for a in self.session.attempts

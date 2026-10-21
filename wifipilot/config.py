@@ -229,14 +229,17 @@ class Config:
     #: hard cap in seconds for any single attack, enforced by a watchdog; 0 = none
     attack_cap: float = 0.0
     #: how many non-radio attacks (IT / offline analysis) may run side by side
-    #: while the one adapter works; 1 = the classic strictly serial behaviour
-    jobs: int = 1
+    #: while the one adapter works; 0 = auto (one lane per CPU, cap 8),
+    #: 1 = the classic strictly serial behaviour
+    jobs: int = 0
     #: crack freshly captured loot on a side thread instead of blocking the
     #: attack that captured it
-    parallel_crack: bool = False
-    #: hardware acceleration, only when the operator allows it: "off", "cpu",
-    #: "ram", "gpu", "all" (comma combinations allowed, see ``wifipilot.accel``)
-    accel: str = "off"
+    parallel_crack: bool = True
+    #: hardware acceleration: "auto" (default — multiprocessing CPU + RAM
+    #: caches, GPU via hashcat when one is detected), "cpu", "ram", "gpu",
+    #: "all", or "off" for the classic single-threaded run (see
+    #: ``wifipilot.accel``)
+    accel: str = "auto"
     #: crack worker processes when CPU acceleration is on; 0 = auto
     accel_workers: int = 0
     #: MB of RAM acceleration may spend on candidate caches; 0 = auto
@@ -366,6 +369,27 @@ class Config:
 
     # ------------------------------------------------------------------ #
     def attack_timeout_for(self, attack: str) -> float:
+        """Seconds this attack may run (before budget_scale/attack_cap).
+
+        Cached per (attack, timeout fields): the table below has ~200
+        entries and every attack asks for its budget, some per loop
+        iteration — rebuilding the dict each time was measurable waste.
+        The cache lives outside the dataclass fields, so it never
+        serialises; changing any timeout field simply misses once.
+        """
+        key = (attack, self.attack_timeout, self.handshake_timeout,
+               self.pmkid_timeout, self.wps_timeout, self.wep_timeout,
+               self.bt_timeout, self.crack_timeout, self.scan_time)
+        cache = self.__dict__.setdefault("_timeout_cache", {})
+        if key in cache:
+            return cache[key]
+        value = self._attack_timeout_for(attack)
+        if len(cache) > 4096:
+            cache.clear()
+        cache[key] = value
+        return value
+
+    def _attack_timeout_for(self, attack: str) -> float:
         if self.attack_timeout > 0:
             return self.attack_timeout
         budget = {

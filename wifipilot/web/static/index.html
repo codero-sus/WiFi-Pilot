@@ -47,12 +47,13 @@
   </label>
   <label class="switch"><input id="chk-force" type="checkbox" /> FORCE (anti-stealth)</label>
   <label class="field">accel
-    <select id="sel-accel" title="opt-in hardware acceleration for cracking: only used when you allow it">
-      <option value="">off</option>
+    <select id="sel-accel" title="hardware acceleration: auto = multiprocessing CPU + RAM caches, GPU (hashcat) when detected">
+      <option value="auto" selected>auto (CPU+RAM+GPU)</option>
       <option value="cpu">CPU</option>
       <option value="ram">RAM</option>
       <option value="gpu">GPU (hashcat)</option>
-      <option value="all">CPU + RAM + GPU</option>
+      <option value="all">all (force GPU)</option>
+      <option value="off">off (single thread)</option>
     </select>
   </label>
   <label class="field">scope (BSSIDs)

@@ -146,8 +146,9 @@ For a run that must *finish* — one network in 7–12 minutes instead of an ope
 848-attack march — use a **preset** (`wp.presets()` lists them). A preset is a named,
 time-boxed plan with scaled budgets, per-attack caps, parallel lanes and its own
 deadline; every preset also takes a **posture**: `:force` is the opposite of stealth
-(loud, aggressive, success first), `:stealth` transmits nothing. `accel=` opts in to
-CPU/RAM/GPU acceleration for cracking — never on unless asked:
+(loud, aggressive, success first), `:stealth` transmits nothing. CPU/RAM/GPU
+acceleration is **on by default** (`accel="auto"` — multiprocessing + caches + GPU
+when detected); `accel="off"` is the classic single thread:
 
 ```python
 wp.attack(target=all, preset="success")                    # highest-chance key route, ~10 min

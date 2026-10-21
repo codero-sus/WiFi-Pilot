@@ -25,6 +25,7 @@ import gzip
 import itertools
 import os
 import re
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -352,34 +353,27 @@ def iter_wordlist(path: str) -> Iterator[str]:
 # --------------------------------------------------------------------------- #
 
 
-# -- CPU acceleration workers (opt-in, see wifipilot.accel) ---------------- #
+# -- CPU acceleration workers (multiprocessing, see wifipilot.accel) ------- #
 # Top-level on purpose: ProcessPoolExecutor pickles its entry points.  The
-# verifiers are shipped to each worker once (they are small and picklable);
-# after that only candidate strings cross the process boundary.
-_POOL_VERIFIERS: List[Any] = []
-_POOL_ESSID: str = ""
-
-
-def _init_verify_pool(verifiers: List[Any], essid: str) -> None:
-    global _POOL_VERIFIERS, _POOL_ESSID
-    _POOL_VERIFIERS = list(verifiers)
-    _POOL_ESSID = essid
-
-
-def _verify_chunk(candidates: List[str]) -> Tuple[str, int]:
+# verifiers ride along with each chunk (they are a few hundred bytes against
+# ~256 PBKDF2 derivations of work), which keeps the pool itself stateless —
+# one persistent pool per Cracker serves every capture, no respawn per pass.
+def _verify_chunk(payload: Tuple[List[Any], str, List[str]]) -> Tuple[str, int]:
     """Verify one chunk in a worker process: ``(hit or "", candidates tested)``."""
+    verifiers, essid, candidates = payload
     tested = 0
+    single = verifiers[0] if len(verifiers) == 1 else None
     for candidate in candidates:
         tested += 1
-        if len(_POOL_VERIFIERS) == 1:
-            if _POOL_VERIFIERS[0].check(candidate):
+        if single is not None:
+            if single.check(candidate):
                 return candidate, tested
             continue
         try:
-            key = pmk(candidate, _POOL_ESSID)
+            key = pmk(candidate, essid)
         except (ValueError, UnicodeEncodeError):
             continue
-        for verifier in _POOL_VERIFIERS:
+        for verifier in verifiers:
             if verifier.check_pmk(key):
                 return candidate, tested
     return "", tested
@@ -395,6 +389,11 @@ class Cracker:
         self.radio = radio
         # prepared per-capture verification state (see _verifiers)
         self._prepared: Dict[Tuple[str, str, str], List[object]] = {}
+        # the persistent multiprocessing pool (see _get_pool); created lazily
+        # on first parallel pass, closed by close() (engine shutdown)
+        self._pool: Optional[ProcessPoolExecutor] = None
+        self._pool_workers: int = 0
+        self._pool_lock = threading.Lock()
         #: masks for *this* call only (the web UI's per-request patterns)
         self._call_masks: List[str] = []
         #: strategy for *this* call only (``--strategy`` on the CLI, ``strategy=`` in the API)
@@ -1043,10 +1042,39 @@ class Cracker:
                     return True
         return False
 
-    # -- acceleration (opt-in: CPU worker processes, RAM candidate cache) -- #
+    # -- acceleration (multiprocessing workers, RAM candidate cache) ------ #
     def _accel_workers(self) -> int:
         from .accel import workers
         return workers(self.config)
+
+    def _get_pool(self, count: int) -> Optional[ProcessPoolExecutor]:
+        """The persistent worker pool, (re)created only when the size changes.
+
+        Spawning processes costs ~100 ms each; a campaign cracks many
+        captures, so the pool is built once and kept for the Cracker's life.
+        """
+        with self._pool_lock:
+            if self._pool is not None and self._pool_workers == count:
+                return self._pool
+            if self._pool is not None:
+                self._pool.shutdown(wait=False, cancel_futures=True)
+                self._pool = None
+            try:
+                self._pool = ProcessPoolExecutor(max_workers=count)
+            except Exception as exc:  # pragma: no cover - defensive
+                self.bus.log(f"CPU acceleration unavailable ({exc}): cracking serially",
+                             level="warning")
+                return None
+            self._pool_workers = count
+            return self._pool
+
+    def close(self) -> None:
+        """Shut the worker pool down (called by Engine.shutdown)."""
+        with self._pool_lock:
+            if self._pool is not None:
+                self._pool.shutdown(wait=False, cancel_futures=True)
+                self._pool = None
+                self._pool_workers = 0
 
     def _deduped(self, candidates: Iterable[str]) -> Iterator[str]:
         """Drop repeats using an in-memory seen-set sized by the RAM budget.
@@ -1084,12 +1112,8 @@ class Cracker:
         verifiers = self._verifiers(ap, capture, analysis)
         if not verifiers:
             return None
-        try:
-            pool = ProcessPoolExecutor(max_workers=count, initializer=_init_verify_pool,
-                                       initargs=(verifiers, ap.essid))
-        except Exception as exc:  # pragma: no cover - defensive
-            self.bus.log(f"CPU acceleration unavailable ({exc}): cracking serially",
-                         level="warning")
+        pool = self._get_pool(count)
+        if pool is None:
             return None
         self.bus.log(f"CPU acceleration: verifying with {count} worker process(es)",
                      level="info")
@@ -1108,7 +1132,8 @@ class Cracker:
                     if not chunk:
                         exhausted = True
                         break
-                    inflight.add(pool.submit(_verify_chunk, chunk))
+                    inflight.add(pool.submit(_verify_chunk,
+                                             (verifiers, ap.essid, chunk)))
                 if not inflight:
                     break
                 done, inflight = wait(inflight, timeout=0.25,
@@ -1128,8 +1153,10 @@ class Cracker:
         except Exception as exc:
             self.bus.log(f"parallel verify failed ({exc}); {tested:,} candidates "
                          f"were still tested", level="warning")
+            self.close()          # a broken pool must not serve the next pass
         finally:
-            pool.shutdown(wait=False, cancel_futures=True)
+            for future in inflight:
+                future.cancel()
         rate = tested / max(0.001, time.time() - started)
         self.bus.log(f"built-in engine tested {tested:,} candidates across "
                      f"{count} worker(s) ({rate:,.0f}/s)", level="debug")
@@ -1143,7 +1170,7 @@ class Cracker:
         The count is what was really tested, not the length of the list: an early
         hit must not be reported (or logged) as a full sweep of the space.
         """
-        if len(candidates) >= 512:
+        if len(candidates) >= 128:
             parallel = self._verify_parallel(
                 ap, capture, analysis, candidates, deadline, on_progress,
                 "built-in engine (parallel)")

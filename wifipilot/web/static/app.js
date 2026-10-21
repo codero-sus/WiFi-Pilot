@@ -613,7 +613,7 @@ function renderPresets(state) {
     const hw = state.accel.hardware;
     accelSel.title = `detected: ${hw.cpu.count} CPU · ${hw.ram.available_mb} MB RAM free · `
       + (hw.gpu.present ? `GPU via ${hw.gpu.via}` : 'no GPU')
-      + ' — acceleration is only used when you allow it';
+      + ` — active: ${(state.accel.resolved || state.accel.allowed || []).join('+') || 'off'}`;
   }
 }
 

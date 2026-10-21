@@ -158,10 +158,41 @@ def test_accel_parse_and_defaults():
     assert accel.parse_accel(True) == frozenset({"cpu", "ram", "gpu"})
     assert accel.parse_accel("cpu,gpu") == frozenset({"cpu", "gpu"})
     assert accel.parse_accel("nonsense") == frozenset()
+    # multiprocessing + acceleration are ON by default ("auto")
     config = Config()
-    assert config.accel == "off"                  # never on unless allowed
+    assert config.accel == "auto"
+    assert config.parallel_crack is True
+    resolved = accel.parse_accel(config.accel)
+    assert {"cpu", "ram"} <= resolved
+    assert accel.workers(config) == accel.cpu_count()
+    assert accel.cache_mb(config) > 0
+    # …and "off" still means the classic single thread, everywhere
+    config.accel = "off"
     assert accel.workers(config) == 1
+    assert accel.lanes(config) == 1
     assert accel.cache_mb(config) == 0
+
+
+def test_accel_lanes_follow_the_cpu_and_explicit_jobs():
+    config = Config()
+    assert accel.lanes(config) == max(1, min(accel.cpu_count(), 8))
+    config.jobs = 3                                # explicit (--jobs) wins
+    assert accel.lanes(config) == 3
+    config.jobs = 1
+    assert accel.lanes(config) == 1
+
+
+def test_accel_auto_adds_gpu_only_when_it_can_crack(monkeypatch):
+    monkeypatch.setattr(accel, "detect", lambda force=False: {
+        "cpu": {"count": 4}, "ram": {"total_mb": 1024, "available_mb": 512},
+        "gpu": {"present": True, "via": "nvidia-smi", "hashcat": True,
+                "usable_for_cracking": True}})
+    assert accel.parse_accel("auto") == frozenset({"cpu", "ram", "gpu"})
+    monkeypatch.setattr(accel, "detect", lambda force=False: {
+        "cpu": {"count": 4}, "ram": {"total_mb": 1024, "available_mb": 512},
+        "gpu": {"present": False, "via": "", "hashcat": False,
+                "usable_for_cracking": False}})
+    assert accel.parse_accel("auto") == frozenset({"cpu", "ram"})
 
 
 def test_accel_cpu_raises_workers_and_jobs():
@@ -169,17 +200,22 @@ def test_accel_cpu_raises_workers_and_jobs():
     report = accel.apply_accel(config, "cpu,ram")
     assert config.accel == "cpu,ram"
     assert report["crack_workers"] >= 1
-    assert config.jobs >= 2 or report["crack_workers"] == 1
+    assert report["lanes"] >= 1
     assert accel.cache_mb(config) > 0
+    auto = accel.apply_accel(Config(), "auto")
+    assert auto["mode"] == "auto"
+    assert "cpu" in auto["resolved"]
 
 
 def test_accel_detect_reports_real_hardware():
     found = accel.detect()
-    assert found["cpu"]["count"] >= 1
+    assert found["cpu"]["count"] == accel.cpu_count() >= 1
     assert "present" in found["gpu"]
     summary = accel.accel_summary(Config())
-    assert summary["allowed"] == []
-    assert summary["crack_workers"] == 1
+    assert summary["mode"] == "auto"
+    assert "cpu" in summary["resolved"] and "ram" in summary["resolved"]
+    assert summary["crack_workers"] == accel.cpu_count()
+    assert summary["lanes"] >= 1
 
 
 # -- parallel cracking -------------------------------------------------------- #
@@ -214,6 +250,42 @@ def test_cpu_accel_cracks_in_worker_processes():
         time.time() + 120, lambda n, s: None)
     assert found == PASSWORD
     assert 0 < tested <= len(candidates)
+    cracker.close()
+
+
+def test_multiprocessing_is_the_default_and_pool_is_persistent():
+    cracker, ap, capture = _pmkid_cracker("auto")   # Config() default
+    if cracker._accel_workers() < 2:
+        pytest.skip("single-core machine: nothing to parallelise")
+    candidates = [f"wrongpass{i}" for i in range(300)] + [PASSWORD]
+    found, _ = cracker._python_pass(ap, capture, CaptureAnalysis(), candidates,
+                                    time.time() + 120, lambda n, s: None)
+    assert found == PASSWORD
+    pool = cracker._pool
+    assert pool is not None
+    # second pass reuses the same processes — no respawn per capture
+    found, _ = cracker._python_pass(ap, capture, CaptureAnalysis(), candidates[:200],
+                                    time.time() + 120, lambda n, s: None)
+    assert found == ""
+    assert cracker._pool is pool
+    cracker.close()
+    assert cracker._pool is None
+    # and the cracker still works after close (fresh pool on demand)
+    found, _ = cracker._python_pass(ap, capture, CaptureAnalysis(),
+                                    candidates[:160] + [PASSWORD],
+                                    time.time() + 120, lambda n, s: None)
+    assert found == PASSWORD
+    cracker.close()
+
+
+def test_attack_timeout_cache_is_correct_and_invalidates():
+    config = Config()
+    first = config.attack_timeout_for("handshake")
+    assert config.attack_timeout_for("handshake") == first
+    config.handshake_timeout = 33.0
+    assert config.attack_timeout_for("handshake") == 33.0
+    # the cache never serialises into the config dict
+    assert "_timeout_cache" not in config.to_dict()
 
 
 def test_serial_crack_unchanged_without_accel():
@@ -258,7 +330,10 @@ def test_api_surface():
     names = [row["name"] for row in wp.presets()]
     assert "success" in names and "blitz" in names
     info = wp.accel_info()
-    assert info["allowed"] == []
+    assert info["mode"] == "auto"                  # acceleration on by default
+    assert "cpu" in info["resolved"] and "ram" in info["resolved"]
     config = wp.configure(accel="cpu", preset="blitz", jobs=3)
     assert config.accel == "cpu" and config.preset == "blitz" and config.jobs == 3
+    wp.configure(accel="off")
+    assert wp.accel_info()["resolved"] == []        # off means off
     wp.reset()
