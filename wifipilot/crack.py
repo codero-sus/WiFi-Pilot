@@ -299,7 +299,7 @@ def smart_candidates(ap: AccessPoint, analysis: Optional[CaptureAnalysis] = None
                   compact.lower() + "12345"]
     bssid_bits = ap.bssid.replace(":", "")
     words += [bssid_bits[-4:], bssid_bits[-6:], bssid_bits[-8:], bssid_bits[-4:].upper()]
-    words += ["admin", "password", "wifi", "internet", "guest", "default", "changeme"]
+    words += ["admin", "password", "wifi", "internet", "guest", "default", "changeme"]  # ggignore: cracker candidate seed words it tries, not credentials it uses
     # known default schemes for this vendor/ISP (data/default-patterns.json)
     scheme = analytics.vendor_patterns(essid, ap.vendor or "")
     words += [str(word) for word in (scheme.get("words") or [])]

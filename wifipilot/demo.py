@@ -311,7 +311,7 @@ class DemoRadio:
         return None
 
     def add_ap(self, essid: str, channel: int = 6, encryption: str = "WPA2",
-               signal: int = -50, wps: bool = False, psk: str = "password123") -> DemoAP:
+               signal: int = -50, wps: bool = False, psk: str = "password123") -> DemoAP:  # ggignore: fake demo-world password, not a real credential
         ap = DemoAP(
             bssid=_demo_mac(self.rng), essid=essid, channel=channel, encryption=encryption,
             privacy={"WPA2": "WPA2", "WPA3": "WPA3", "WEP": "WEP", "OPEN": "OPN"}.get(encryption, "WPA2"),

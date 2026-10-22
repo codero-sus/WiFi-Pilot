@@ -188,7 +188,7 @@ class WpsApPinAttack(_WpsProbeAttack):
         if vulnerable:
             pin, source = pins[0]
             demo_ap = ctx.radio.find(ap.bssid) if ctx.radio else None
-            password = (demo_ap.psk if demo_ap else "") or "wifipilot-demo"
+            password = (demo_ap.psk if demo_ap else "") or "wifipilot-demo"  # ggignore: demo-mode placeholder password, not a real credential
             ctx.session.add_capture(_credential_capture(ctx, ap, password,
                                                         "wps-ap-pin"))
             ctx.session.stats.wps_cracks += 1
@@ -395,7 +395,7 @@ class WpsPbcAttack(_WpsProbeAttack):
         open_window = int(ap.bssid.replace(":", ""), 16) % 2 == 1
         if open_window:
             demo_ap = ctx.radio.find(ap.bssid) if ctx.radio else None
-            password = (demo_ap.psk if demo_ap else "") or "wifipilot-demo"
+            password = (demo_ap.psk if demo_ap else "") or "wifipilot-demo"  # ggignore: demo-mode placeholder password, not a real credential
             ctx.session.add_capture(_credential_capture(ctx, ap, password, "wps-pbc"))
             ctx.session.stats.wps_cracks += 1
             ctx.session.stats.passwords += 1
