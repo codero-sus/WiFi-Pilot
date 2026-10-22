@@ -407,11 +407,31 @@ def pmk(passphrase: str, ssid) -> bytes:
     return hashlib.pbkdf2_hmac("sha1", passphrase.encode("utf-8"), salt, WPA_PMK_BITS, 32)
 
 
+def _hmac_sha1_templates(key: bytes):
+    """Pre-keyed inner/outer SHA1 states for repeated HMAC with one key.
+
+    ``hmac.new`` re-derives both pads (and copies the key block) on every
+    call; the PRF asks five times with the same key, per candidate.
+    """
+    if len(key) > 64:
+        key = hashlib.sha1(key).digest()
+    key = key.ljust(64, b"\x00")
+    inner = hashlib.sha1(bytes(b ^ 0x36 for b in key))
+    outer = hashlib.sha1(bytes(b ^ 0x5C for b in key))
+    return inner, outer
+
+
 def prf512(key: bytes, label: bytes, data: bytes) -> bytes:
     """802.11i PRF (HMAC-SHA1 based) producing 512 bits of PTK."""
+    inner_t, outer_t = _hmac_sha1_templates(key)
+    base = label + b"\x00" + data
     out, counter = b"", 0
     while len(out) < PTK_BITS // 8:
-        out += hmac.new(key, label + b"\x00" + data + bytes([counter]), hashlib.sha1).digest()
+        inner = inner_t.copy()
+        inner.update(base + bytes([counter]))
+        outer = outer_t.copy()
+        outer.update(inner.digest())
+        out += outer.digest()
         counter += 1
     return out[: PTK_BITS // 8]
 
@@ -527,11 +547,14 @@ class PmkidVerifier:
     microsecond of bookkeeping is a lost candidate.
     """
 
-    __slots__ = ("pmkid", "ssid", "ap_mac", "station_mac", "ap", "station")
+    __slots__ = ("pmkid", "ssid", "ap_mac", "station_mac", "ap", "station",
+                 "salt", "msg", "pmkid_bytes")
 
     def __init__(self, pmkid_hex: str, ssid, ap_mac: str, station_mac: str):
         self.pmkid = (pmkid_hex or "").strip().lower()
         self.ssid = ssid if ssid else b""
+        # the PBKDF2 salt is derived once here, not per candidate
+        self.salt = ssid_bytes(ssid)
         self.ap_mac = ap_mac or ""
         self.station_mac = station_mac or ""
         try:
@@ -539,18 +562,26 @@ class PmkidVerifier:
             self.station = bytes(int(part, 16) for part in self.station_mac.split(":"))
         except ValueError:
             self.ap = self.station = b""
+        # per-candidate constants, built once: the HMAC message and the
+        # expected digest as bytes (compare_digest on bytes, no .hex() churn)
+        self.msg = PMKID_LABEL + self.ap + self.station
+        try:
+            self.pmkid_bytes = bytes.fromhex(self.pmkid)
+        except ValueError:
+            self.pmkid_bytes = b""
 
     @property
     def usable(self) -> bool:
-        return bool(self.pmkid and self.ssid and len(self.ap) == 6
-                    and len(self.station) == 6)
+        return bool(self.pmkid_bytes and self.salt and len(self.salt) <= 32
+                    and len(self.ap) == 6 and len(self.station) == 6)
 
     def check(self, password: str) -> bool:
         """Does ``password`` hash to this PMKID?"""
-        if not self.usable:
+        if not self.usable or not 8 <= len(password) <= 63:
             return False
         try:
-            key = pmk(password, self.ssid)
+            key = hashlib.pbkdf2_hmac("sha1", password.encode("utf-8"),
+                                      self.salt, WPA_PMK_BITS, 32)
         except (ValueError, UnicodeEncodeError):
             return False
         return self.check_pmk(key)
@@ -558,7 +589,8 @@ class PmkidVerifier:
     def check_pmk(self, pmk_bytes: bytes) -> bool:
         if not self.usable:
             return False
-        return compute_pmkid(pmk_bytes, self.ap, self.station) == self.pmkid
+        digest = hmac.new(pmk_bytes, self.msg, hashlib.sha1).digest()
+        return hmac.compare_digest(digest[:16], self.pmkid_bytes)
 
 
 class HandshakeVerifier:
@@ -572,13 +604,14 @@ class HandshakeVerifier:
     """
 
     __slots__ = ("ssid", "ap", "station", "anonce", "snonce", "key_descriptor",
-                 "targets")
+                 "targets", "salt", "ptk_data")
 
     def __init__(self, frames: Dict[int, bytes], ssid, ap_mac: str,
                  station_mac: str, anonce: bytes, snonce: bytes,
                  key_descriptor: int = 0, eapol_frames: Sequence[bytes] = (),
                  mic: bytes = b""):
         self.ssid = ssid if ssid else b""
+        self.salt = ssid_bytes(ssid)
         self.anonce = _nonce_bytes(anonce)
         self.snonce = _nonce_bytes(snonce)
         self.key_descriptor = key_descriptor
@@ -587,6 +620,10 @@ class HandshakeVerifier:
             self.station = bytes.fromhex((station_mac or "").replace(":", ""))
         except ValueError:
             self.ap = self.station = b""
+        # the PTK expansion input never changes per candidate: sort once
+        self.ptk_data = (min(self.ap, self.station) + max(self.ap, self.station)
+                         + min(self.anonce, self.snonce)
+                         + max(self.anonce, self.snonce))
         targets = []
         for frame in eapol_frames:               # already an EAPOL-Key frame
             if len(frame) < 97:
@@ -628,10 +665,11 @@ class HandshakeVerifier:
 
     def check(self, password: str) -> bool:
         """Does ``password`` produce the MIC that is on air?"""
-        if not self.usable:
+        if not self.usable or not 8 <= len(password) <= 63 or not self.salt:
             return False
         try:
-            key = pmk(password, self.ssid)
+            key = hashlib.pbkdf2_hmac("sha1", password.encode("utf-8"),
+                                      self.salt, WPA_PMK_BITS, 32)
         except (ValueError, UnicodeEncodeError):
             return False
         return self.check_pmk(key)
@@ -639,23 +677,24 @@ class HandshakeVerifier:
     def check_pmk(self, pmk_bytes: bytes) -> bool:
         if not self.usable:
             return False
-        ptk_bytes = ptk(pmk_bytes, self.ap, self.station, self.anonce, self.snonce)
+        ptk_bytes = prf512(pmk_bytes, b"Pairwise key expansion", self.ptk_data)
         kck = ptk_bytes[:16]
-        engines: Dict[str, "_Cmac"] = {}
+        compare = hmac.compare_digest
+        fallback_kdv = self.key_descriptor
+        cmac_engine = None
         for expected_mic, eapol, kdv in self.targets:
             # every frame says which MIC it carries; a version of 0 is the only
             # case that needs more than one algorithm tried
-            for algorithm in mic_algorithms(kdv or self.key_descriptor):
+            for algorithm in mic_algorithms(kdv or fallback_kdv):
                 if algorithm == "cmac":
-                    engine = engines.get("cmac")
-                    if engine is None:
-                        engine = engines["cmac"] = _Cmac(kck)
-                    digest = engine.digest(eapol)
+                    if cmac_engine is None:
+                        cmac_engine = _Cmac(kck)
+                    digest = cmac_engine.digest(eapol)
                 elif algorithm == "sha1":
                     digest = hmac.new(kck, eapol, hashlib.sha1).digest()[:16]
                 else:
                     digest = hmac.new(kck, eapol, hashlib.md5).digest()[:16]
-                if hmac.compare_digest(expected_mic, digest):
+                if compare(expected_mic, digest):
                     return True
         return False
 

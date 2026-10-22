@@ -20,6 +20,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Union
 
@@ -169,9 +170,9 @@ def kernel_release() -> str:
         return ""
 
 
-def platform_info() -> Dict[str, str]:
-    """Everything the dashboards and reports need to say about the host OS."""
-    info = {
+@lru_cache(maxsize=1)
+def _platform_info_cached() -> Dict[str, str]:
+    return {
         "platform": platform_name(),
         "os": "linux" if is_linux() else platform_name(),
         "kernel": kernel_release(),
@@ -179,7 +180,15 @@ def platform_info() -> Dict[str, str]:
         "package_manager": package_manager() if is_linux() else "",
         "supported": is_linux(),
     }
-    return info
+
+
+def platform_info() -> Dict[str, str]:
+    """Everything the dashboards and reports need to say about the host OS.
+
+    Computed once (it reads /etc/os-release and probes for a package
+    manager): the web state push asks every tick, the answer never changes.
+    """
+    return dict(_platform_info_cached())
 
 
 def require_linux(component: str = "wifipilot",
@@ -321,6 +330,11 @@ def mac_norm(mac: Optional[str]) -> str:
     """Normalise to lower-case colon form; ``""`` when not a MAC."""
     if not mac:
         return ""
+    return _mac_norm_cached(mac)
+
+
+@lru_cache(maxsize=8192)
+def _mac_norm_cached(mac: str) -> str:
     mac = mac.strip().lower().replace("-", ":")
     return mac if MAC_RE.match(mac) else ""
 
@@ -346,10 +360,17 @@ def oui_vendor(mac: str, strict: bool = False) -> str:
     The registry lives in ``wifipilot/data/oui-wifi.json`` (see
     :mod:`wifipilot.vendors`); this wrapper keeps the historical call sites
     working and falls back to a small inline table if the data file is missing.
+    The answer only depends on the OUI prefix, so it is cached per prefix —
+    a snapshot asks once per AP and client, every tick.
     """
     key = mac_norm(mac)
     if not key:
         return ""
+    return _oui_vendor_cached(key, strict)
+
+
+@lru_cache(maxsize=8192)
+def _oui_vendor_cached(key: str, strict: bool) -> str:
     try:
         from .vendors import oui_vendor as registry_lookup
     except Exception:                                  # pragma: no cover - import cycle
@@ -745,13 +766,41 @@ def write_json(path: Union[str, Path], data, indent: int = 2) -> bool:
         return False
 
 
+_jsonl_handles: Dict[str, Any] = {}
+_jsonl_dirs: set = set()
+_jsonl_lock = threading.Lock()
+
+
+def _jsonl_handle(path: Path):
+    """A cached, line-buffered append handle for ``path``.
+
+    The event journal appends per log line — open()+mkdir+close per line was
+    three syscalls where one write does.  Line buffering keeps the crash
+    durability identical (every line reaches the OS immediately).
+    """
+    key = str(path)
+    handle = _jsonl_handles.get(key)
+    if handle is None or handle.closed:
+        parent = str(path.parent)
+        if parent not in _jsonl_dirs:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _jsonl_dirs.add(parent)
+        if len(_jsonl_handles) >= 32:
+            eldest_key, eldest = next(iter(_jsonl_handles.items()))
+            with contextlib.suppress(Exception):
+                eldest.close()
+            _jsonl_handles.pop(eldest_key, None)
+        handle = open(path, "a", encoding="utf-8", buffering=1)
+        _jsonl_handles[key] = handle
+    return handle
+
+
 def append_jsonl(path: Union[str, Path], record) -> None:
     try:
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, default=str) + "\n")
-    except OSError:
+        line = json.dumps(record, default=str) + "\n"
+        with _jsonl_lock:
+            _jsonl_handle(Path(path)).write(line)
+    except (OSError, ValueError):
         pass
 
 

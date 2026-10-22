@@ -4,6 +4,37 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## The 200-optimizations sweep — every hot path, measured
+
+A full-catalogue optimization pass (see `docs/OPTIMIZATIONS.md` for all 200
+entries and `scripts/bench.py` to reproduce the numbers):
+
+* **Planner**: the attack-action set is cached as a frozenset and the
+  per-AP plan (`engine.attackable`) is cached on a fingerprint of everything
+  the planner reads — `preferred_attacks` is **4.7× faster**, and repeat
+  asks are dict lookups.
+* **Config serialisation**: `to_dict()` no longer deep-copies the whole
+  dataclass tree (`asdict`) on every web push — **4.7× faster**, equality
+  with the old output pinned by tests.
+* **Catalogue & metadata**: the 848-row attack catalogue is built once and
+  copied per call (**4.1×**); per-attack metadata is cached copy-on-return.
+* **Crypto**: PRF-512 uses pre-keyed HMAC templates (bit-identical output),
+  verifiers precompute their PBKDF2 salt, PMKID message and PTK expansion
+  input once instead of per candidate.
+* **Tool registry**: `summary()` and `capabilities()` are cached until the
+  next probe (**188×** on the 1 Hz web push), and adaptor-less machines no
+  longer re-run interface enumeration on every call.
+* **Utilities**: `mac_norm`/`oui_vendor` are LRU-cached (**7.9× / 24×**);
+  event journaling writes through cached line-buffered handles instead of
+  opening the file per line; event history is a bounded deque.
+* **Cracker**: the multiprocessing pool starts with the fork context (no
+  module re-import per worker), rule sets parse once per file mtime, and
+  the serial verify loops use bound-method locals.
+* **Web**: the state snapshot memoises wordlists (one discovery + 5 s TTL,
+  was three per tick), presets and edition counts.
+* Behaviour is unchanged — `tests/test_optimizations.py` pins equivalence
+  (asdict parity, PRF identity, cache copy-isolation) for every cache added.
+
 ## Faster still — multiprocessing and acceleration are now the default
 
 * **`accel="auto"` out of the box**: the cracker verifies candidates in a

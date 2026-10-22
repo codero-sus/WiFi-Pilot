@@ -178,14 +178,30 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
             raise HTTPException(status_code=503, detail="engine unavailable")
         return engine
 
+    # snapshot() runs on every UI poll: memoise the parts that cannot change
+    # tick-to-tick (wordlist discovery stats disk, presets are constants,
+    # edition counts come from the static registry)
+    _snapshot_cache: Dict[str, Any] = {}
+
+    def _cached_wordlists() -> List[Any]:
+        import time as _time
+        now = _time.monotonic()
+        hit = _snapshot_cache.get("wordlists")
+        if hit is None or now - hit[0] > 5.0:
+            found = find_wordlists(config)
+            _snapshot_cache["wordlists"] = (now, found)
+            return found
+        return hit[1]
+
     def snapshot() -> Dict[str, Any]:
         engine = engine_or_404()
         data = engine.snapshot()
         data["platform"] = platform_info()
         data["config"] = config.to_dict(redact_secrets=True)
         data["tools"] = registry.summary()
-        data["wordlists"] = find_wordlists(config)
-        data["wordlist"] = find_wordlists(config)[0]["path"] if find_wordlists(config) else ""
+        wordlists = _cached_wordlists()
+        data["wordlists"] = wordlists
+        data["wordlist"] = wordlists[0]["path"] if wordlists else ""
         # the edition view: one shape for the first paint of the UI (no second round-trip)
         summary = edition_summary()
         data["edition"] = summary
@@ -201,7 +217,10 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
         from ..accel import accel_summary
         from ..presets import list_presets
         from .. import CREDIT
-        data["presets"] = list_presets()
+        presets = _snapshot_cache.get("presets")
+        if presets is None:
+            presets = _snapshot_cache["presets"] = list_presets()
+        data["presets"] = presets
         data["accel"] = accel_summary(config)
         data["credit"] = CREDIT
         return data
@@ -215,17 +234,22 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
         return attack_catalog()
 
     def edition_summary() -> Dict[str, Any]:
-        from ..itdev import edition_catalog
-        counts: Dict[str, int] = {}
-        for entry in catalogue():
-            domain = str(entry.get("domain", "wifi"))
-            counts[domain] = counts.get(domain, 0) + 1
-        total = sum(counts.values())
-        editions = []
-        for edition in edition_catalog():
-            row = dict(edition)
-            row["attacks"] = counts.get(str(row.get("id")), total)
-            editions.append(row)
+        # registry is static after import: count once, refresh only "active"
+        cached = _snapshot_cache.get("edition")
+        if cached is None:
+            from ..itdev import edition_catalog
+            counts: Dict[str, int] = {}
+            for entry in catalogue():
+                domain = str(entry.get("domain", "wifi"))
+                counts[domain] = counts.get(domain, 0) + 1
+            total = sum(counts.values())
+            editions = []
+            for edition in edition_catalog():
+                row = dict(edition)
+                row["attacks"] = counts.get(str(row.get("id")), total)
+                editions.append(row)
+            cached = _snapshot_cache["edition"] = (editions, counts, total)
+        editions, counts, total = cached
         return {"active": getattr(config, "edition", "all") or "all",
                 "editions": editions, "attacks": counts, "total": total}
 

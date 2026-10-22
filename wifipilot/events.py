@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import itertools
 import queue
+from collections import deque
 import threading
 import time
 from dataclasses import dataclass, field
@@ -152,7 +153,8 @@ class EventBus:
         self._subs: List[Subscription] = []
         self._lock = threading.RLock()
         self._counter = itertools.count(1)
-        self._recent: List[Event] = []
+        # bounded deque: O(1) append+evict vs the old list's slice-delete
+        self._recent: deque = deque(maxlen=history)
         self.history_size = history
         self.journal_path = journal_path
         self.echo = echo
@@ -185,8 +187,6 @@ class EventBus:
         with self._lock:
             self.counts[kind] = self.counts.get(kind, 0) + 1
             self._recent.append(event)
-            if len(self._recent) > self.history_size:
-                del self._recent[: len(self._recent) - self.history_size]
             subs = list(self._subs)
         for sub in subs:
             try:

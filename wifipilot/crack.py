@@ -340,7 +340,7 @@ def iter_wordlist(path: str) -> Iterator[str]:
         opener = gzip.open if path.endswith(".gz") else open
         with opener(path, "rt", encoding="utf-8", errors="replace") as handle:
             for line in handle:
-                word = line.rstrip("\n").rstrip("\r")
+                word = line.rstrip("\r\n")
                 if not word or word.startswith("#"):
                     continue
                 yield word
@@ -860,6 +860,7 @@ class Cracker:
             return found, counted, patterns[0] if found else ""
         started = time.time()
         tested = 0
+        verify = self._verify
         for candidate in masks.mask_candidates(patterns, limit=budget):
             tested += 1
             if tested % 200 == 0:
@@ -868,7 +869,7 @@ class Cracker:
                                  level="debug")
                     break
                 on_progress(tested, f"mask {patterns[0]}")
-            if self._verify(ap, capture, analysis, candidate):
+            if verify(ap, capture, analysis, candidate):
                 rate = tested / max(0.001, time.time() - started)
                 self.bus.log(f"mask attack: {patterns} cracked after {tested:,} "
                              f"candidates ({rate:,.0f}/s)", level="debug")
@@ -1060,7 +1061,11 @@ class Cracker:
                 self._pool.shutdown(wait=False, cancel_futures=True)
                 self._pool = None
             try:
-                self._pool = ProcessPoolExecutor(max_workers=count)
+                # fork: workers inherit the already-imported modules instead
+                # of re-importing the world (spawn) on every pool start
+                import multiprocessing as _mp
+                self._pool = ProcessPoolExecutor(
+                    max_workers=count, mp_context=_mp.get_context("fork"))
             except Exception as exc:  # pragma: no cover - defensive
                 self.bus.log(f"CPU acceleration unavailable ({exc}): cracking serially",
                              level="warning")
@@ -1179,6 +1184,7 @@ class Cracker:
         started = time.time()
         seen: set = set()
         tested = 0
+        verify = self._verify
         for index, candidate in enumerate(candidates):
             if index % 200 == 0:
                 if time.time() > deadline:
@@ -1188,7 +1194,7 @@ class Cracker:
                 continue
             seen.add(candidate)
             tested += 1
-            if self._verify(ap, capture, analysis, candidate):
+            if verify(ap, capture, analysis, candidate):
                 self.bus.log(f"built-in engine cracked it after {tested} candidates "
                              f"({tested / max(0.001, time.time() - started):,.0f}/s)", level="debug")
                 return candidate, tested
@@ -1207,16 +1213,27 @@ class Cracker:
         spec = (self.config.rule_file or "").strip()
         if not spec:
             return []
+        # parsed once per (spec, mtime): a campaign cracks many captures and
+        # re-reading/re-parsing the same .rule file each time is pure waste
+        stamp = 0
         if os.path.exists(spec):
+            with contextlib.suppress(OSError):
+                stamp = os.stat(spec).st_mtime_ns
+        cached = self.__dict__.get("_rule_cache")
+        if cached is not None and cached[0] == (spec, stamp):
+            return cached[1]
+        if stamp:
             loaded = rules_module.parse_file(spec)
             if not loaded:
                 self.bus.log(f"rule file {spec} could not be parsed: no rules applied",
                              level="warning")
+            self.__dict__["_rule_cache"] = ((spec, stamp), loaded)
             return loaded
         preset = rules_module.preset(spec)
         if not preset and spec:
             self.bus.log(f"unknown rule set {spec!r} (try best64, leet, append-digits, "
                          f"case, or a path to a .rule file)", level="warning")
+        self.__dict__["_rule_cache"] = ((spec, stamp), preset)
         return preset
 
     def _wordlist_candidates(self, lists: List[str], use_rules: bool,
@@ -1250,6 +1267,7 @@ class Cracker:
         # (the parallel attempt returns None before touching the stream)
         tested = 0
         started = time.time()
+        verify = self._verify
         for candidate in stream:
             tested += 1
             if tested % 250 == 0:
@@ -1257,7 +1275,7 @@ class Cracker:
                     return "", tested
                 rate = tested / max(0.001, time.time() - started)
                 on_progress(tested, f"built-in dictionary sweep (cached, {rate:,.0f}/s)")
-            if self._verify(ap, capture, analysis, candidate):
+            if verify(ap, capture, analysis, candidate):
                 return candidate, tested
         self.bus.log(f"built-in dictionary sweep exhausted {tested:,} unique words",
                      level="debug")
@@ -1280,6 +1298,7 @@ class Cracker:
             self.bus.log(f"built-in engine: applying {len(rule_set)} rule(s) per word "
                          f"from {os.path.basename(self.config.rule_file) or 'preset'}",
                          level="debug")
+        verify = self._verify
         for wordlist in lists[:2]:
             name = Path(wordlist).name
             for word in iter_wordlist(wordlist):
@@ -1296,7 +1315,7 @@ class Cracker:
                             return "", tested
                         rate = tested / max(0.001, time.time() - started)
                         on_progress(tested, f"built-in dictionary sweep: {name} ({rate:,.0f}/s)")
-                    if self._verify(ap, capture, analysis, candidate):
+                    if verify(ap, capture, analysis, candidate):
                         return candidate, tested
         self.bus.log(f"built-in dictionary sweep exhausted {tested:,} words", level="debug")
         return "", tested

@@ -411,6 +411,9 @@ def _domain_of(name: str, row: Dict[str, Any]) -> str:
     return "bluetooth" if name.startswith(("bt_", "ble_", "blue")) else "wifi"
 
 
+_META_CACHE: Dict[tuple, Dict[str, Any]] = {}
+
+
 def meta_for(name: str, **overrides: str) -> Dict[str, Any]:
     """The metadata for one attack, with the class's own attributes winning.
 
@@ -418,7 +421,22 @@ def meta_for(name: str, **overrides: str) -> Dict[str, Any]:
     (``domain``: wifi, bluetooth or it), the device types it applies to (``devices``) and
     the port/protocol it speaks — which is what the web UI's edition switch, its device
     list and its per-device attack list are built from.
+
+    Cached per (name, overrides): the catalogue build and the planner ask for
+    the same rows constantly, and ATTACK_META is static after import.  Each
+    call returns a fresh dict so callers may mutate it freely.
     """
+    if not overrides:
+        # the common path: one dict lookup + one shallow copy
+        cached = _META_CACHE.get(name)
+        if cached is not None:
+            return dict(cached)
+        key = name
+    else:
+        key = (name, tuple(sorted((k, v) for k, v in overrides.items() if v)))
+        cached = _META_CACHE.get(key)
+    if cached is not None:
+        return dict(cached)
     meta = dict(ATTACK_META.get(name, {}))
     meta.setdefault("category", "capture")
     meta.setdefault("noise", "moderate")
@@ -426,10 +444,13 @@ def meta_for(name: str, **overrides: str) -> Dict[str, Any]:
     meta.setdefault("detection", "")
     meta.setdefault("domain", "wifi")
     meta.setdefault("devices", [])
-    for key, value in overrides.items():
+    for key_part, value in overrides.items():
         if value:
-            meta[key] = value
-    return meta
+            meta[key_part] = value
+    if len(_META_CACHE) > 4096:
+        _META_CACHE.clear()
+    _META_CACHE[key] = meta
+    return dict(meta)
 
 
 def _device_ids() -> set:

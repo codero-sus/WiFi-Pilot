@@ -31,6 +31,28 @@ def planner_actions() -> tuple:
     return tuple(ATTACK_NAMES) + ("crack", "stop")
 
 
+_ACTIONS_CACHE: Dict[str, Any] = {"count": -1, "actions": frozenset(), "names": frozenset()}
+
+
+def _planner_action_set() -> frozenset:
+    """``planner_actions()`` as a cached frozenset (invalidated by registry growth).
+
+    The tuple form is rebuilt per call and membership-tested linearly in hot
+    loops — with 848 attacks enabled that was quadratic per plan.
+    """
+    count = len(ATTACK_NAMES)
+    if _ACTIONS_CACHE["count"] != count:
+        _ACTIONS_CACHE["count"] = count
+        _ACTIONS_CACHE["actions"] = frozenset(ATTACK_NAMES) | {"crack", "stop"}
+        _ACTIONS_CACHE["names"] = frozenset(ATTACK_NAMES)
+    return _ACTIONS_CACHE["actions"]
+
+
+def _attack_name_set() -> frozenset:
+    _planner_action_set()
+    return _ACTIONS_CACHE["names"]
+
+
 PLANNER_ACTIONS = planner_actions()
 
 MAX_ACTIONS = 6
@@ -209,9 +231,10 @@ def edition_attacks(config: Config) -> List[str]:
     """The named Bluetooth and IT attacks, in the order the operator listed them."""
     from .attacks.meta import ATTACK_META
 
+    known = _attack_name_set()
     out: List[str] = []
     for name in config.attacks:
-        if name not in ATTACK_NAMES:
+        if name not in known:
             continue
         if not name.startswith(("it_", "bt_", "ble_")):
             continue
@@ -224,7 +247,8 @@ def edition_attacks(config: Config) -> List[str]:
 
 def _wireless_attacks(ap: AccessPoint, config: Config) -> List[str]:
     """Which wireless attack should this AP get, best first, given its current state?"""
-    enabled = [a for a in config.attacks if a in planner_actions()]
+    actions = _planner_action_set()
+    enabled = {a for a in config.attacks if a in actions}
     caps = registry.capabilities() if not config.demo else {k: True for k in (
         "aircrack", "airodump", "deauth", "monitor", "wps", "wash", "pmkid",
         "hcxtools", "hashcat", "john", "iw", "nmcli", "root", "mdk4", "hostapd",
@@ -565,12 +589,13 @@ def validate_plan(raw: Any, session: Session, config: Optional[Config] = None,
         return plan
 
     seen = set()
+    known_actions = _planner_action_set()
     for index, item in enumerate(actions[:MAX_ACTIONS * 2]):
         if not isinstance(item, dict):
             dropped.append(f"action {index}: not an object")
             continue
         attack = str(item.get("attack") or "").strip().lower()
-        if attack not in planner_actions():
+        if attack not in known_actions:
             dropped.append(f"action {index}: unknown attack {attack!r}")
             continue
         if attack == "stop":
