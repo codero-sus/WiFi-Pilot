@@ -1014,7 +1014,7 @@ def build_network_scene(path: str, bssid: str = "aa:bb:cc:00:00:01",
                                                                              syn=True))),
                                             0x0800))
     http = (b"GET /admin HTTP/1.1\r\nHost: 192.168.1.1\r\n"
-            b"Authorization: Basic YWRtaW46YWRtaW4=\r\n\r\n")
+            b"Authorization: Basic YWRtaW46YWRtaW4=\r\n\r\n")  # ggignore: synthetic packet fixture (base64 of the default admin:admin), not a real credential
     data(stations[5], ns.ethernet_frame("aa:bb:cc:00:00:01", stations[5],
                                         ns.ipv4_packet(hosts[stations[5]], gateway, 6,
                                                        ns.tcp_packet(hosts[stations[5]],
@@ -1105,7 +1105,7 @@ def build_network_scene(path: str, bssid: str = "aa:bb:cc:00:00:01",
                                                                          ack=True),
                                                                      payload=telnet_login)),
                                         0x0800))
-    mqtt = ns.mqtt_connect("meter-01", username="admin", password="admin")
+    mqtt = ns.mqtt_connect("meter-01", username="admin", password="admin")  # ggignore: synthetic packet fixture (default admin/admin), not a real credential
     data(stations[2], ns.ethernet_frame("aa:bb:cc:00:00:01", stations[2],
                                         ns.ipv4_packet(hosts[stations[2]], gateway, 6,
                                                        ns.tcp_packet(hosts[stations[2]],
