@@ -351,7 +351,8 @@ def test_documentation_set_is_linked_and_complete(clean_env):
     root = Path(__file__).resolve().parents[1]
     docs = sorted(p.name for p in (root / "docs").glob("*.md"))
     assert docs == ["AI-PROVIDERS.md", "ARCHITECTURE.md", "ATTACKS.md",
-                    "ETHICS-AND-LEGAL.md", "PYTHON-API.md", "TUI.md", "web-ui.md"]
+                    "ETHICS-AND-LEGAL.md", "OPTIMIZATIONS.md", "PYTHON-API.md",
+                    "TUI.md", "web-ui.md"]
     assert (root / "CHANGELOG.md").exists()
 
     readme = (root / "README.md").read_text()

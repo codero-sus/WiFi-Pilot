@@ -169,6 +169,14 @@ class ToolRegistry:
         self._info: Dict[str, ToolInfo] = {}
         self._lock = threading.RLock()
         self.resolved: Dict[str, str] = {}
+        # derived views, cached until a probe observes a different reality
+        self._caps: Optional[Dict[str, bool]] = None
+        self._summary_cache: Optional[Dict[str, object]] = None
+
+
+    def _invalidate_views(self) -> None:
+        self._caps = None
+        self._summary_cache = None
 
     def probe(self, name: str, force: bool = False) -> ToolInfo:
         with self._lock:
@@ -195,7 +203,14 @@ class ToolRegistry:
             if not result.ok and not result.text:
                 info.error = result.error or "no output from version probe"
         with self._lock:
+            previous = self._info.get(name)
             self._info[name] = info
+            if previous is None or previous.path != info.path:
+                # reality changed (first look, or a tool appeared/vanished —
+                # e.g. right after `tools install`): every derived view and
+                # the resolved-path cache must agree with the new probe
+                self.resolved[name] = info.path
+                self._invalidate_views()
         return info
 
     def path(self, name: str) -> Optional[str]:
@@ -223,8 +238,15 @@ class ToolRegistry:
         return [n for n in REQUIRED_FOR_LIVE if not self.has(n)]
 
     def capabilities(self) -> Dict[str, bool]:
-        """Feature flags the planner uses to avoid impossible plans."""
-        return {
+        """Feature flags the planner uses to avoid impossible plans (cached).
+
+        The planner and every attack's ``available()`` ask constantly; the
+        answers only change when a probe sees a tool appear or vanish.
+        """
+        with self._lock:
+            if self._caps is not None:
+                return dict(self._caps)
+        caps = {
             "aircrack": self.has("aircrack-ng"),
             "airodump": self.has("airodump-ng"),
             "deauth": self.has("aireplay-ng"),
@@ -242,23 +264,37 @@ class ToolRegistry:
             "twin": self.has("hostapd") or self.has("hostapd-mana"),
             "root": is_root(),
         }
+        with self._lock:
+            self._caps = caps
+        return dict(caps)
 
     def summary(self) -> Dict[str, object]:
-        from .util import platform_info
-        caps = self.capabilities()
-        return {
-            "tools": {info.name: info.to_dict() for info in self.all()},
-            "capabilities": caps,
-            "missing_required": self.missing_required(),
-            # plain dicts: this summary goes straight to json.dumps (the
-            # WebSocket state push, CLI --json).  Raw WirelessInterface
-            # dataclasses crashed the WS handler with "Object of type
-            # WirelessInterface is not JSON serializable" on any machine
-            # that actually has a WiFi adaptor — empty on CI, fatal live.
-            "interfaces": [info.to_dict() for info in list_interfaces()],
-            "platform": platform_info(),
-            "install_command": install_command(),
-        }
+        # the registry-derived parts are cached until the next probe(); the
+        # interface list is rebuilt every call (list_interfaces has its own
+        # short TTL) so a plugged-in adapter shows immediately — and the web
+        # state push that asks every tick costs one dict merge, not a rebuild
+        with self._lock:
+            static = self._summary_cache
+        if static is None:
+            from .util import platform_info
+            static = {
+                "tools": {info.name: info.to_dict() for info in self.all()},
+                "capabilities": self.capabilities(),
+                "missing_required": self.missing_required(),
+                "platform": platform_info(),
+                "install_command": install_command(),
+            }
+            with self._lock:
+                self._summary_cache = static
+        summary = dict(static)
+        summary["tools"] = dict(static["tools"])    # callers must not corrupt the cache
+        # plain dicts: this summary goes straight to json.dumps (the
+        # WebSocket state push, CLI --json).  Raw WirelessInterface
+        # dataclasses crashed the WS handler with "Object of type
+        # WirelessInterface is not JSON serializable" on any machine
+        # that actually has a WiFi adaptor — empty on CI, fatal live.
+        summary["interfaces"] = [info.to_dict() for info in list_interfaces()]
+        return summary
 
 
 # --------------------------------------------------------------------------- #
@@ -307,7 +343,9 @@ def list_interfaces(force: bool = False) -> List[WirelessInterface]:
     """Enumerate wireless interfaces with ``iw`` and enrich with driver info."""
     if not force:
         cached = _iface_cache.get("value")
-        if cached and (__import__("time").time() - _iface_cache.get("ts", 0)) < 5:
+        # "is not None", not truthy: an empty list (no adaptors) must cache
+        # too, or every state push re-runs the full enumeration
+        if cached is not None and (__import__("time").time() - _iface_cache.get("ts", 0)) < 5:
             return cached
     from .util import run
     interfaces: "Dict[str, WirelessInterface]" = {}

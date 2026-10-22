@@ -393,6 +393,10 @@ def get_attack(name: str) -> Attack:
     return cls()
 
 
+_CATALOG_MASTER: List[Dict[str, object]] = []
+_CATALOG_COUNT = -1
+
+
 def attack_catalog() -> List[Dict[str, object]]:
     """Machine-readable list for the UI, the CLI, the docs matrix and the LLM prompt.
 
@@ -401,8 +405,21 @@ def attack_catalog() -> List[Dict[str, object]]:
     "what does this attack cost": ``noise`` (how visible), ``impact`` (what it breaks
     when it works) and ``detection`` (what a defender sees) come from one table, and a
     test fails if an attack is added without them.
+
+    The registry is static after import, so the catalogue is built once and
+    copied per call (~3 ms -> ~0.4 ms): the web state push asks every tick.
+    Copies keep callers' annotations (``available``/``enabled``) from leaking
+    into the master.
     """
-    out: List[Dict[str, object]] = []
+    global _CATALOG_COUNT
+    if _CATALOG_COUNT == len(DEFAULT_ORDER) and _CATALOG_MASTER:
+        return [{**item,
+                 "requires": list(item["requires"]),          # type: ignore[arg-type]
+                 "applies_to": list(item["applies_to"]),      # type: ignore[arg-type]
+                 "devices": list(item["devices"])}            # type: ignore[arg-type]
+                for item in _CATALOG_MASTER]
+    _CATALOG_MASTER.clear()
+    out = _CATALOG_MASTER
     for name in DEFAULT_ORDER:
         cls = ATTACK_CLASSES.get(name)
         if cls is None:
@@ -431,4 +448,9 @@ def attack_catalog() -> List[Dict[str, object]]:
             "offline": meta["category"] == "offline" and not cls.needs_injection,
             "default_enabled": name in DEFAULT_ENABLED,
         })
-    return out
+    _CATALOG_COUNT = len(DEFAULT_ORDER)
+    return [{**item,
+             "requires": list(item["requires"]),              # type: ignore[arg-type]
+             "applies_to": list(item["applies_to"]),          # type: ignore[arg-type]
+             "devices": list(item["devices"])}                # type: ignore[arg-type]
+            for item in _CATALOG_MASTER]

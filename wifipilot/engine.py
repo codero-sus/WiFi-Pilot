@@ -118,6 +118,7 @@ class Engine:
         self.campaign_deadline = 0.0
         # speed lanes: non-radio attacks and loot cracking beside the radio
         # work (created lazily, only when a preset/config asks for them)
+        self._attackable_cache: Dict[Any, List[Any]] = {}
         self._side_pool: Optional[ThreadPoolExecutor] = None
         self._crack_pool: Optional[ThreadPoolExecutor] = None
         self._side_futures: List[Any] = []
@@ -502,8 +503,28 @@ class Engine:
         )
 
     def attackable(self, ap: AccessPoint) -> List[str]:
-        """Attacks that are enabled, usable and sensible for this AP right now."""
-        return preferred_attacks(ap, self.config)
+        """Attacks that are enabled, usable and sensible for this AP right now.
+
+        Cached on a fingerprint of everything the planner reads — attempts,
+        captures, clients, encryption/WPS/PMF state and the config's enabled
+        list — so the campaign loop's repeated asks across rounds (done
+        checks, side-lane planning, staleness checks) are dict lookups
+        instead of full re-plans.  Any planner-relevant change alters the
+        fingerprint; callers get a copy.
+        """
+        cfg = self.config
+        key = (ap.bssid, len(ap.attempts), len(ap.captures), len(ap.clients),
+               ap.cracked, ap.has_pmkid, ap.has_handshake, ap.encryption,
+               ap.essid, ap.wps, ap.wps_locked, ap.wps_open, ap.pmf,
+               ap.pmf_checked, ap.sae, ap.auth, id(cfg.attacks),
+               len(cfg.attacks), cfg.stealth, cfg.demo)
+        cached = self._attackable_cache.get(key)
+        if cached is None:
+            cached = preferred_attacks(ap, cfg)
+            if len(self._attackable_cache) > 512:
+                self._attackable_cache.clear()
+            self._attackable_cache[key] = cached
+        return list(cached)
 
     def run_attack(self, bssid: str, attack: str, reason: str = "",
                    source: str = "operator", lane: bool = False) -> Optional[Attempt]:

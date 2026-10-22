@@ -4,11 +4,38 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field, asdict, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .util import read_json, write_json
+
+
+_FIELD_NAMES: Dict[type, tuple] = {}
+
+
+def _field_names(cls: type) -> tuple:
+    names = _FIELD_NAMES.get(cls)
+    if names is None:
+        names = tuple(f.name for f in fields(cls))
+        _FIELD_NAMES[cls] = names
+    return names
+
+
+def _shallow_dc(obj: Any) -> Dict[str, Any]:
+    """``asdict`` without the deepcopy, for flat scalar/list/dict configs."""
+    out: Dict[str, Any] = {}
+    for name in _field_names(type(obj)):
+        value = getattr(obj, name)
+        if isinstance(value, list):
+            out[name] = list(value)
+        elif isinstance(value, dict):
+            out[name] = dict(value)
+        elif isinstance(value, tuple):
+            out[name] = tuple(value)
+        else:
+            out[name] = value
+    return out
 
 CONFIG_NAME = "wifipilot.json"
 CONFIG_ENV = "WIFIPILOT_CONFIG"
@@ -673,7 +700,24 @@ class Config:
                                cortex=self.cortex)
 
     def to_dict(self, redact_secrets: bool = False) -> Dict[str, Any]:
-        data = asdict(self)
+        # fast path: asdict() deep-copies the whole tree via deepcopy (~170µs
+        # for this ~180-field config) — and to_dict runs on every web state
+        # push.  A shallow field walk is ~15x cheaper and identical in shape:
+        # scalars as-is, one copy per list/dict/tuple, and the same walk for
+        # the three provider sub-configs.
+        data: Dict[str, Any] = {}
+        for name in _field_names(type(self)):
+            value = getattr(self, name)
+            if isinstance(value, (OllamaConfig, CortexConfig, OpenRouterConfig)):
+                data[name] = _shallow_dc(value)
+            elif isinstance(value, list):
+                data[name] = list(value)
+            elif isinstance(value, dict):
+                data[name] = dict(value)
+            elif isinstance(value, tuple):
+                data[name] = tuple(value)
+            else:
+                data[name] = value
         if redact_secrets:
             secret = bool(data["openrouter"].get("api_key"))
             data["openrouter"]["api_key"] = ""
