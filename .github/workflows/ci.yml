@@ -10,7 +10,9 @@ jobs:
   test:
     # wifipilot is a Linux-only tool; the suite also asserts that the CLI and the
     # web server refuse to start on other platforms.
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest now resolves to Ubuntu 26.04, which has no
+    # Python 3.9 build in the setup-python manifest.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
