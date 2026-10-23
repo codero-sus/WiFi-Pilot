@@ -585,7 +585,7 @@ class Process:
         if stream is not None:
             try:
                 for raw in stream:
-                    line = raw.rstrip("\n").rstrip("\r")
+                    line = raw.rstrip("\r\n")
                     if not line.strip():
                         continue
                     with self._lock:

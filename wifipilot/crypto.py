@@ -103,6 +103,9 @@ def _build_tables() -> None:
 _build_tables()
 
 
+_KEY_CACHE: Dict[bytes, tuple] = {}
+
+
 class AES:
     """AES-128/192/256 block cipher (encrypt + decrypt).
 
@@ -114,13 +117,23 @@ class AES:
     def __init__(self, key: bytes):
         if len(key) not in (16, 24, 32):
             raise ValueError("AES key must be 16, 24 or 32 bytes")
-        self.rounds = {16: 10, 24: 12, 32: 14}[len(key)]
         self._decrypt_words = None
+        # Key expansion costs ~4 block encryptions and its output is never
+        # mutated, so share it between instances: BLE's ah() encrypts ONE
+        # block per AES() and used to pay full expansion for it every time.
+        cached = _KEY_CACHE.get(key)
+        if cached is not None:
+            self.rounds, self.round_keys, self.words = cached
+            return
+        self.rounds = {16: 10, 24: 12, 32: 14}[len(key)]
         self.round_keys = self._expand(key)
         # 32-bit words: one per column, four columns per round
         self.words = [tuple(int.from_bytes(row[4 * column:4 * column + 4], "big")
                             for column in range(4))
                       for row in self.round_keys]
+        if len(_KEY_CACHE) >= 128:
+            _KEY_CACHE.clear()
+        _KEY_CACHE[key] = (self.rounds, self.round_keys, self.words)
         # the decryption schedule (equivalent inverse cipher) costs 16 field
         # multiplications per round key, so build it on first use: MIC checks
         # only ever encrypt

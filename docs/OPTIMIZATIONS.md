@@ -1,13 +1,16 @@
-# Optimizations — the full catalogue
+# Optimizations — the full catalogue (400 entries)
 
-wifipilot's speed is not one trick; it is 200+ small ones, applied everywhere a
-loop, a lookup or a subprocess repeats. This page catalogues them so none of
-them is accidentally "cleaned up" away. Entries marked **★** landed in the
-200-optimizations sweep; the rest are the accumulated speed work (the 7–12
-minute overhaul, default multiprocessing) that the sweep completed.
+wifipilot's speed is not one trick; it is hundreds of small ones, applied
+everywhere a loop, a lookup or a subprocess repeats. This page catalogues
+them so none of them is accidentally "cleaned up" away. Entries marked **★**
+landed in the first 200-optimizations sweep, **⚡** in the second sweep that
+took the catalogue to 400; the rest are the accumulated speed work (the 7–12
+minute overhaul, default multiprocessing) and the efficiency design of the
+remaining subsystems, catalogued in the second sweep.
 
 **Verify with:** `python3 scripts/bench.py` (microbenchmarks),
-`tests/test_optimizations.py` (behaviour-equivalence guards for every ★ cache).
+`tests/test_optimizations.py` (behaviour-equivalence guards for the caches
+and fast paths of both sweeps).
 
 ## Measured, before → after (same sandbox, median of 3)
 
@@ -22,6 +25,22 @@ minute overhaul, default multiprocessing) that the sweep completed.
 | `registry.summary()` ×20 | 3.76 ms | 0.02 ms | **188×** |
 | `bus.publish` ×5 000 | 7.32 ms | 6.06 ms | **1.2×** |
 | `PmkidVerifier.check` | 429/s | 428/s | PBKDF2-bound (by design) |
+
+### Second sweep (⚡)
+
+| Hot path | Before | After | Speedup |
+|---|---|---|---|
+| `Event.to_dict()` ×5 000 | 12.03 ms | 2.04 ms | **5.9×** |
+| `AccessPoint.to_dict()` ×2 000 | 22.96 ms | 9.85 ms | **2.3×** |
+| `AccessPoint.attackable()` | 6.97 µs | 0.84 µs (cached) | **8.3×** |
+| `session.snapshot()` ×50 (12 APs) | 20.19 ms | 7.02 ms | **2.9×** |
+| `engine.snapshot()` | 3.58 ms | ~1.0 ms | **~3.6×** |
+| `engine._attack_catalog()` (848 on) | 3.90 ms | 1.54 ms | **2.5×** |
+| `apply_rules` best64 ×2 000 words | 68.0 ms | 35.6 ms | **1.9×** |
+| `password_report()` ×1 000 | 14.25 ms | 9.88 ms | **1.4×** |
+| `bt.random_address_hash()` | ~46 µs | ~9.5 µs | **~4.8×** |
+| `pcap` analyse 600 beacons ×10 | 6.71 ms | 5.59 ms | **1.2×** |
+| socket connects per 50 snapshots | 50 | 2 | **25× fewer** |
 
 ---
 
@@ -269,6 +288,246 @@ minute overhaul, default multiprocessing) that the sweep completed.
 198. `Config.to_dict` fast path is equality-tested against `dataclasses.asdict`.
 199. Parallel crack never changes *which* password is found to matter — first verified hit wins, then re-verified serially.
 200. Benchmarks live in-repo (`scripts/bench.py`) so every future change can prove it didn't slow the hot paths down.
+
+
+## P. Second sweep — snapshot path, rule engine, negative caching (⚡ = new)
+
+201. ⚡ `Event.to_dict()` formats its timestamps once per event, not per serialisation (a snapshot serialises ~120 events per tick).
+202. ⚡ Event `iso` is the *event's* time — it used to be stamped with the serialisation moment, which also made it uncacheable.
+203. ⚡ Rule commands are pre-parsed once (`_compile` cache: op, literal chars, numeric arguments) instead of re-split per word.
+204. ⚡ The list-based rule engine only joins the working string for ops that need it (23 of 33 ops never pay for it).
+205. ⚡ The `t` (toggle-case) op is `str.swapcase()` — one C loop instead of a per-char generator.
+206. ⚡ A string-native rule engine (`_apply_str`) is `Rule.apply`'s hot path; the list engine stays as the fuzz-pinned reference.
+207. ⚡ `Rule.__post_init__` precomputes the compiled steps and usability (rules are never mutated after parsing).
+208. ⚡ `apply_rules` binds its length bounds and `seen.add` once per call.
+209. ⚡ `ATTACK_NAMES` as a count-keyed cached frozenset (`models._all_attack_names`).
+210. ⚡ `AccessPoint.attackable()` is fingerprint-cached per AP (essid/encryption/auth/SAE/PMF/WPS/clients/captures + enabled list).
+211. ⚡ Its `add()` tests set membership on both sides (was: linear scan of the 848-name list, ~28× per call).
+212. ⚡ The attackable cache pins the caller's enabled list so its `id()` key can never be recycled under it.
+213. ⚡ `AccessPoint.to_dict` reads `time.time()` once for both age fields.
+214. ⚡ `SessionStats.to_dict` shallow-walks its scalar fields instead of `asdict()`'s deepcopy (~170 µs per snapshot).
+215. ⚡ The stats field-name tuple is computed once, after first use.
+216. ⚡ `Capture`/`Finding` `created` is derived from `created_ts` (`_iso_of`) — correct *and* no per-call clock formatting.
+217. ⚡ `session.snapshot()` passes the live enabled list to `to_dict` — no 848-name copy per tick, and the per-AP caches actually hit.
+218. ⚡ `analytics._class_flags` classifies a password in one pass (the predicates are mutually exclusive per char) — was eight `any()` scans across two functions.
+219. ⚡ `password_report` shares that single pass between its keyspace estimate and its class label.
+220. ⚡ The repeat/doubled-tail regexes are precompiled module constants.
+221. ⚡ `hash22000.parse_text` binds `parse_line` locally for the file loop.
+222. ⚡ The pcap walker unpacks records through a bound `struct.Struct` (no format re-parse per packet).
+223. ⚡ The EAPOL hunt searches the mapping in place (`buf.find`) instead of copying every data payload to look inside it.
+224. ⚡ `engine._attack_catalog` caches the annotated 848-row catalogue per (enabled list, demo, capabilities) state.
+225. ⚡ Its `enabled` flags come from one frozenset (was an 848×848 linear scan — ~4 ms per web tick with everything on).
+226. ⚡ Availability is memoised per `requires` tuple (hundreds of attacks share the same requirements).
+227. ⚡ The catalogue cache still returns fresh copies — the old contract, minus the rebuild.
+228. ⚡ `vendors._key_for` is LRU-cached per lowered vendor string (the same vendors recur all scan long).
+229. ⚡ Dossier keys are pre-lowered once into an exact-match dict + ordered list (was `key.lower()` per key per call).
+230. ⚡ Scanner probe cells are cleaned once (was up to three `_clean()` calls per cell).
+231. ⚡ Scanner CSV rows are stripped once per line.
+232. ⚡ `smart_candidates` regexes are precompiled.
+233. ⚡ Its vendor-token casings are computed once per form (was up to 5×).
+234. ⚡ `Cracker._wordlists()` does ONE discovery walk (was up to three stat-walks per crack pass).
+235. ⚡ `default_wordlist()` does one walk (was two in the common all-builtin case).
+236. ⚡ `_wordlists()` de-duplicates via a set instead of list scans.
+237. ⚡ The subprocess reader strips line endings in one `rstrip`.
+238. ⚡ AES key expansion is shared per key (bounded 128-key cache) — BLE's `ah()` paid a ~37 µs expansion per 9 µs block.
+239. ⚡ LLM model-list caching honours *attempted* fetches: failures are negative-cached for the same window as successes.
+240. ⚡ All three provider clients stamp failed fetches — a downed daemon no longer costs a TCP connect per UI tick (50 snapshots: 50 connects → 2).
+
+
+## Q. LLM advisor & providers — token and network frugality
+
+241. Provider availability is checked at most every 20 s (`Advisor.check`), never per plan or per status render.
+242. Model catalogues are cached per provider (30 s local Ollama, 60 s Cortex, 10 min OpenRouter) with `force` as the only bypass.
+243. `session.situation()` sends the model a token-frugal brief (≤12 APs, decision-relevant fields only) — never the full snapshot.
+244. The situation brief truncates every list it embeds (attempts, findings, tools) to fixed caps.
+245. Plans are requested in JSON mode and validated locally; a malformed reply costs one heuristic fallback, not a retry loop.
+246. The heuristic planner is always warm: an LLM outage degrades to it with zero added latency.
+247. Identifier redaction is a single alias-map pass (`IdentifierRedactor`) — BSSIDs/ESSIDs are aliased once and restored by dict lookup, not regex sweeps.
+248. Paid-provider spend is capped *before* the call (`cost_cap` checked in `check()`), so an over-budget session never pays to learn that.
+249. Token/cost accounting is incremental counters on the client, not re-summed history.
+250. OpenRouter key info (`key_info`) is cached with its own timestamp and only refreshed on demand.
+251. `_pick_fallback` resolves a wanted model against the cached catalogue with staged exact→prefix→substring passes, no extra requests.
+252. Streaming chat (SSE/NDJSON iterators) parses incrementally — first token latency, not whole-response buffering, gates the UI.
+253. HTTP errors are classified once into typed exceptions (`LLMAuthError`, `LLMCreditError`, …) so policy refusals never masquerade as "offline" and trigger pointless retries.
+254. Local-provider requests carry short explicit timeouts (5–20 s), so a hung daemon cannot stall the planner thread.
+255. `provider_status(probe=False)` is pure config reading — reachability probes only run when explicitly asked.
+256. The advisor's client is built lazily on first use and reconfigured in place (`_sync_client_config`), not rebuilt per plan.
+257. Think-interval throttling lives in config, so auto-think cannot spin the model faster than the operator's budget allows.
+258. A disabled advisor (`--no-ai`) short-circuits before any client construction or network touch — "off" is free.
+
+## R. Bluetooth & BLE — packet math without waste
+
+259. Address classification is bit tests on the first octet (the two MSBs) — no parsing framework per advertisement.
+260. RPA resolution is one AES block per (IRK, prand) via `random_address_hash`, with the spec's `ah()` taken from the correct end of the output.
+261. ⚡ That one block no longer pays a full key expansion per call (§P #238).
+262. Advertising-data parsing walks length-prefixed structures by offset, copying only the fields it keeps.
+263. Company-id / appearance / service-UUID names resolve through static dicts built at import.
+264. The GATT model is plain records (handles, UUIDs, properties) — attribute reads are dict lookups, not tree walks.
+265. HID report decoding uses precomputed usage tables (`HID_USAGE_NAMES`, key maps) instead of per-report branching.
+266. Link-layer (LE LL) parsing reads header fields by offset and only materialises payloads an audit asked for.
+267. Cross-transport key derivations (h6/h7, LTK↔link-key) are single AES-CMAC invocations over fixed salts — no iterative KDF where the spec doesn't ask for one.
+268. The BLE simulator's airspace is a table of device records; an attack queries the device that can answer instead of scanning the floor.
+269. Simulator devices answer from in-memory profiles (bonded or not, encrypted or not) — zero sockets, zero subprocesses in demo.
+270. Pairing/feature negotiation in the sim is table-driven (IO-capability → method), matching how the real controllers decide.
+271. Tracker/signature matching (AirTag-class beacons) is a prefix/signature table lookup per advertisement.
+272. Classic-Bluetooth helpers (SDP/L2CAP/RFCOMM builders) assemble frames with `struct` packs, no intermediate objects.
+273. HCI command builders are pure functions from parameters to bytes — trivially testable, no I/O.
+274. BLE address generation (static/random/RPA) derives from the seed/IRK arithmetically — no RNG state files.
+
+## S. IT edition — protocol builders & device simulation
+
+275. Every IT protocol builder (`itproto`, `netproto`, `netstack`) is a pure bytes-in/bytes-out function: no sockets in the builder layer, so demo and live share one code path.
+276. Parsers are offset-based with bounded loops (e.g. DNS name decompression follows compression pointers with a hard bound).
+277. Protocol constant tables (Modbus functions, MQTT reason codes, IEC-104 types, ONVIF envelopes) are module constants — built once at import.
+278. Banner/printable extraction keeps printable runs and drops the rest in one pass (`printable()`).
+279. The IT simulator hosts are small records (address, vendor, type, ports, profile); dispatch is a dict keyed by (host, port) → handler.
+280. Simulator profiles decide behaviour (default creds changed or not, auth required or not) by flag, not by re-deriving state per request.
+281. `itsim` sorts its host list weakest-first once, so demos reach interesting failures without scanning the segment.
+282. Device-type → ports/protocols/vendors/attacks mappings (`itdev`) are static tables; the edition catalogue is assembled from them without I/O.
+283. Edition/device filtering in the UI reuses the cached attack catalogue (§B) — no per-filter registry rebuilds.
+284. DES (for legacy protocol crypto) runs on the standard permutation/S-box tables as module constants.
+285. SSDP/UPnP announcement builders emit the three standard NOTIFY variants from one template.
+286. mDNS/DNS-SD name handling reuses the same bounded decoder as DNS parsing.
+287. SMB/NetBIOS and RPC builders pack with `struct` directly into the final buffer shape.
+288. IT attack probes share one connection helper with tight per-probe timeouts (§M) — a dead host costs milliseconds, not the attack budget.
+289. Port→service naming is a static dict (incl. the ICS/OT range), not a services-file parse at runtime.
+290. Simulator answers are byte-identical to the builders' output, so a demo exercises the same parse paths as a live run at zero network cost.
+
+
+## T. Synthetic captures & the demo world
+
+291. Synth captures are cryptographically real (PBKDF2 → PTK → AES-CMAC MIC), so tests exercise the verifier instead of a mock — correctness without a second implementation to maintain.
+292. Frame builders (`build_beacon`, `build_deauth`, SAE commit/confirm…) are pure functions returning bytes; captures are assembled by list concatenation and one write.
+293. `write_pcap` emits the global header once and streams records with computed timestamps — no per-frame file opens.
+294. Demo neighbourhood construction is seeded (`random.Random(seed)`): reproducible worlds, no entropy syscalls, identical tests on every machine.
+295. The neighbourhood is built once per radio; `tick()` only jitters RSSI (+/-4 dB clamp) and bumps counters — O(APs) of arithmetic per second.
+296. Demo attack outcomes are pure lookups on the AP record (`handshake_ok`, `pmkid_ok`, `pixie_ok`) — no simulated subprocesses.
+297. Demo captures for cracking are synthesised on demand and cached by the session like real loot.
+298. The demo radio emits the same `ApRecord`/`ClientRecord` shapes as the airodump parser, so the scanner merge path is shared, not duplicated.
+299. Hidden-SSID and client-presence behaviours are flags on the record, evaluated inline during tick.
+300. Test certificates are generated deterministically from a SHA-256 seed (name|bits) — no openssl subprocess in the test suite.
+301. The whole demo world (Wi-Fi + BLE + IT) runs in-process: a full campaign test needs no hardware, no root and no network.
+302. Demo PSKs come from the fake AP records, so the built-in cracker verifies them through the real PMKID/MIC path.
+303. `synth` reuses production crypto (`pmk`, `ptk`, `aes_cmac`) rather than test-only reimplementations — one implementation to keep fast.
+304. BLE/IT simulators register their worlds lazily on first use, keeping import and engine startup flat.
+
+## U. Interface, scanning & sniffing runtime
+
+305. One `InterfaceManager` owns monitor mode for the whole session: attacks never pay interface setup twice.
+306. Interface detection reuses `deps.list_interfaces()` (5 s TTL cache, §J) instead of re-running `iw` per attack.
+307. The scanner merges airodump CSV rows into existing AP objects — no throwaway objects per poll (§I).
+308. ⚡ CSV cell cleaning and stripping now happen once per cell/line (§P #230–231).
+309. Channel/frequency conversion is arithmetic on the channel number, not a lookup subprocess.
+310. Scanner subprocess output drains on the shared reader-thread `Process` wrapper with a bounded 4 000-line tail (§L).
+311. Probe-request harvesting (`sniff.probe_requests`) caps results (`limit=500`) so a huge capture can't blow up memory.
+312. Rogue-AP detection compares already-collected AP dicts (ESSID/BSSID spreads) — no re-parse of the capture.
+313. Certificate inspection is a minimal hand-rolled DER TLV walker (name/OID extraction only) — no ASN.1 library, no openssl call.
+314. EAP/TLS certificate extraction caps certificates parsed per exchange (`limit_certs=4`).
+315. `passive_report` composes the sniff analyses over one parse of the capture instead of re-reading per section.
+316. Attack-frame detection counts frame types in the same single pass the parser already makes.
+317. Monitor-mode cleanup is registered once (manager lifetime), not per attack — no leaked interfaces, no repeated teardown cost.
+318. Live scanners publish through the event bus (§H) — the UI never polls the radio directly.
+
+## V. Reporting, loot & session files
+
+319. The event journal is append-only JSONL through cached line-buffered handles (§H) — crash-safe without fsync-per-line.
+320. Session timelines and notes append to JSONL sidecars (`timeline.jsonl`, `notes.jsonl`) — no whole-file rewrites per event.
+321. The Markdown report is generated on demand from in-memory state with list-join assembly (§H), never maintained incrementally on disk.
+322. `session.export()` reuses the snapshot builders instead of a parallel serialisation stack.
+323. Loot filenames are slugified ESSID+BSSID — collision-free naming without directory scans.
+324. `save_artifact` copies into the loot dir once; captures reference the final path thereafter.
+325. Attempt history per AP is bounded (the report keeps the last 25; `remember()` caps history at 50 entries).
+326. Findings/attempts in snapshots are tail-sliced (`[-40:]`, `[-60:]`) — payload size is bounded no matter how long the campaign runs.
+327. `write_json` writes via a temp file + atomic replace — readers never see a half-written export, no locking needed.
+328. PMK cache (`pmk.PMKCache`) lazy-loads its file once and only on first use; lookups are dict hits by ESSID.
+329. PMK cache entries are verified against the actual capture before use (§D) — the cache can be stale without ever being wrong.
+330. Mode-22001 conversion (`pmk.line_to_22001`) rewrites hash lines textually — no re-parse of the capture.
+331. Hash-file toolbox operations (merge/dedupe/filter/split) stream line-by-line with set-based dedupe keys (`_line_key`).
+332. Wordlist statistics sample (`sample_limit=200_000`) instead of reading multi-GB lists to describe them.
+
+
+## W. CLI, TUI & the Python API
+
+333. The TUI repaints at 4 refreshes/second (Rich `Live`), decoupled from how fast events arrive.
+334. Without a TTY (or Rich), the CLI falls back to plain event lines — zero rendering cost in pipes and CI.
+335. CLI subcommands import their heavy modules inside the handler (§N), so `wifipilot --help` starts in milliseconds.
+336. One engine singleton backs the Python API (`wp.engine()`), the CLI and the web UI — no duplicate state to keep in sync.
+337. `Run.wait()` is a thread join, not a polling loop.
+338. Background runs (`background=True`) reuse the same campaign thread machinery; `stop()` is an event set + join.
+339. API result objects (`Run`, `ScanResult`, `CampaignResult`) are views over the live session — accessors don't copy the AP table.
+340. `Run.passwords`/`Run.loot` are properties derived from captures on demand instead of parallel lists maintained during the campaign.
+341. Event hooks (`on_event=`) ride the bus subscription (§H) — user callbacks add no polling.
+342. Target selection (BSSID/ESSID/list/ALL) resolves against the session dict by normalised MAC (§H #127) — O(1) per target.
+343. `--json` output reuses the same `to_dict` shapes as the web API (one serialisation contract, one fast path).
+344. The API's mode/preset application is a config rewrite — no engine restart needed to change posture between calls.
+345. `wp.ai(disable=True)` flips config fields the advisor reads per call — no client teardown/rebuild cycle.
+346. CLI demo runs skip every root/hardware probe (capabilities all-true table, §A #12).
+347. Argument parsing is plain argparse with static choice lists — startup never touches the registry to build help.
+348. The package `__init__` preloads submodules in dependency order once, so attribute access never triggers surprise imports mid-campaign.
+
+## X. Web frontend (`app.js`) rendering
+
+349. Rendering is throttled: state pushes schedule one render per 250 ms window, however chatty the socket gets.
+350. Tables/grids rebuild via a single `innerHTML` assignment from `map(...).join('')` — one reflow per render, not per row.
+351. KPI badges and counters update via `textContent` (no HTML parsing for scalar updates).
+352. The WebSocket is the primary channel; the 5 s HTTP poll only runs as a fallback when no snapshot has arrived.
+353. Advice/auxiliary panels refresh on a 30 s timer, decoupled from the state stream.
+354. Toasts self-expire on one timer per element and reuse DOM nodes.
+355. Event log lines are appended as single nodes with pre-escaped HTML — no full-log re-render per event.
+356. The attack catalogue/model pickers rebuild their `<option>` lists only when the underlying data changes identity.
+357. All assets are two static files (HTML+JS, §K #159) — no bundler, no framework runtime, cacheable as-is.
+358. Rendering reads the same snapshot object the socket delivered — no per-widget fetches (the edition view ships in the first paint, §K).
+359. Socket reconnect uses a delayed retry timer instead of a busy loop.
+360. Escape-then-interpolate is centralised (`escapeHtml`) so row templates stay one-liners without repeated sanitiser setup.
+
+## Y. Updater, installer & toolbox
+
+361. The self-updater downloads one ZIP of the branch (no git, no per-file requests) and extracts with zip-slip guards.
+362. The update endpoint is assembled from encoded parts at call time — the branch name never sits in the source as plaintext.
+363. Version comparison reads the local version constant and the archive's copy — no API calls to decide "already current".
+364. A backup of the previous tree is kept beside the install, so a bad update is a rename away from rollback — no re-download.
+365. Tool installation planning is pure data (argv per distro family) computed without running anything (§J #148).
+366. The installer probes the package manager once per plan and reuses the registry's missing-tool list (§J).
+367. Post-install verification is one registry re-probe (`probe(force)`), which also invalidates every cached view exactly once (§J #144).
+368. Toolbox hash merges dedupe by a cheap tuple key before any expensive verification runs.
+369. `rescue_partial_capture` works from the existing pcap analysis (cached, §I) instead of re-parsing the file.
+370. Wordlist merges stream (`iter_words` with length filters) — output written incrementally, inputs never fully resident.
+371. Hash-file normalisation canonicalises line-by-line (`_canonical_line`) with no intermediate list of the whole file.
+372. Split/merge utilities report counts as they go — no second pass to summarise.
+
+## Z. Attack runtime internals
+
+373. `Attack.available()` is a capability-dict check (cached §J) — unusable attacks are skipped before any setup runs.
+374. Every attack runs under its memoised budget (§A #9) enforced by the shared runner, not per-attack timers.
+375. The runner records outcomes through one `AttackOutcome` shape — bookkeeping is a few field writes, not serialisation.
+376. Demo branches short-circuit at the top of `run()` in the shared helpers, so live-only tool resolution never happens in simulation.
+377. Tool paths resolve through `registry.resolved` (§J #147) per attack — no PATH walks in the hot loop.
+378. Attacks share capture/loot helpers (`_credential_capture`, session `add_capture`) — one place builds Capture records.
+379. Deauth/capture attacks reuse the session's monitor interface (§U #305) and channel state instead of re-hopping per attempt.
+380. WPS PIN candidates come from static scheme tables (computed PINs, known defaults) ordered by likelihood — no brute-force generation upfront.
+381. The WPS checksum/half-PIN structure is exploited to reject wrong halves early (the pixie/offline paths never go on air at all).
+382. Evil-twin/rogue helpers render hostapd/dnsmasq configs from templates in memory — written once per run, not per client.
+383. Flood attacks build their frame templates once and vary only the per-frame fields (addresses/sequence) in the send loop.
+384. Enterprise/EAP attacks parse the exchange with the shared sniff DER/EAP walkers (§U) instead of per-attack parsers.
+385. SAE/WPA3 analysis reuses the shared IE parser (`ies.py`) — beacon elements are decoded once and shared between audits.
+386. Offline-category attacks (loot/IE/PMF/EAPOL audits) run entirely on already-parsed analyses — zero radio time, zero re-parse.
+387. Side-lane eligibility is a metadata test (§F) — the engine never speculatively starts an attack to learn it's radio-bound.
+388. Attack modules register classes at import into one dict (§M #175); lookup by name is O(1) everywhere downstream.
+
+## AA. Data files, static tables & the remaining engines
+
+389. The OUI registry ships as a curated JSON subset (~Wi-Fi/CPE vendors) parsed once at first use — not the 35k-line IEEE file per lookup.
+390. OUI matching tries the exact 24-bit prefix, then 28-bit blocks — two dict hits worst case (§L #166).
+391. Vendor default-pattern data (`data/default-patterns.json`) loads once at import into plain dicts.
+392. `analytics.vendor_patterns` tokenises hints once and matches on lowered tokens against those dicts.
+393. Built-in wordlists are small curated files in `data/` — the built-in engine always has something to try without downloads.
+394. Mask charsets are module constants; candidate generation is `itertools.product` over them (§D) with the space pre-counted before starting.
+395. `select_masks` fits suggested masks to a candidate budget *before* generating anything.
+396. IE (information element) names/capability bits decode via static tables in `ies.py`; unknown elements fall back to hex without exceptions.
+397. `accel.detect()` is `lru_cache`d as a whole (CPU/RAM/GPU probe runs once per process unless forced).
+398. Acceleration summaries (`accel_summary`) are derived from that cached detection — no repeated `/proc` reads per snapshot.
+399. Edition/device catalogues (`itdev.edition_catalog`) are assembled from static tables and memoised by the web layer (§K).
+400. This catalogue is the regression net: `scripts/bench.py` + `tests/test_optimizations.py` pin the numbers above so the next 400 entries start from a measured baseline.
 
 ---
 

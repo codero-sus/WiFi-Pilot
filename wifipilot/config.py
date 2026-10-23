@@ -843,10 +843,10 @@ def find_wordlists(config: Optional[Config] = None) -> List[Dict[str, Any]]:
 
 
 def default_wordlist(config: Optional[Config] = None) -> str:
-    for item in find_wordlists(config):
+    lists = find_wordlists(config)
+    for item in lists:
         if not item["builtin"]:
             return item["path"]
-    lists = find_wordlists(config)
     return lists[0]["path"] if lists else ""
 
 

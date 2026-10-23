@@ -4,6 +4,39 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## The 400-optimizations sweep — the snapshot path, the rule engine, negative caching
+
+The second sweep (catalogue entries 201–400 in `docs/OPTIMIZATIONS.md`,
+new code marked ⚡; reproduce with `scripts/bench.py`):
+
+* **The web snapshot is ~3.6× cheaper**: `engine._attack_catalog` no longer
+  scans the 848-name enabled list once per attack (3.9 ms → 1.5 ms, cached
+  per enabled/capabilities state); `SessionStats.to_dict` dropped its
+  `asdict()` deepcopy; `Event.to_dict` formats timestamps once per event
+  (5.9×); `AccessPoint.attackable()` is fingerprint-cached (8.3× warm) and
+  `AccessPoint.to_dict` is 2.3×.
+* **No more per-tick network probes**: LLM model-list failures are
+  negative-cached by all three provider clients — with Ollama enabled but
+  not running, the UI used to open a fresh TCP+HTTP request every tick
+  (50 snapshots: 50 connects → 2).
+* **Rule engine 1.9×**: commands are pre-parsed once and applied by a
+  string-native engine whose equivalence with the list reference engine is
+  fuzz-pinned in the test suite.
+* **Bluetooth crypto ~4.8×**: AES key expansion is shared per key, so
+  one-block users (BLE `ah()` RPA hashing) stop paying 37 µs to encrypt
+  for 9 µs.
+* **Correctness fixes found by the sweep**: `Event`/`Capture`/`Finding`/
+  stats timestamps now report the record's own time instead of the moment
+  it was serialised.
+* Plus: vendor-dossier lookups LRU-cached, single-pass password class
+  analysis, in-place pcap EAPOL search, one wordlist-discovery walk per
+  crack (was up to three), and the full catalogue of the remaining
+  subsystems' efficiency design (advisor, BLE, IT, simulators, frontend,
+  updater, attack runtime).
+* Behaviour preserved — `tests/test_optimizations.py` grew to 23 guards
+  (rule-engine equivalence over ~700 cases, asdict parity, timestamp
+  truth, negative-cache behaviour, FIPS vectors through the AES cache).
+
 ## The 200-optimizations sweep — every hot path, measured
 
 A full-catalogue optimization pass (see `docs/OPTIMIZATIONS.md` for all 200

@@ -189,7 +189,8 @@ def parse_airodump_csv(text: str) -> Tuple[List[ApRecord], List[ClientRecord]]:
         mac = mac_norm(row[0])
         if not mac or mac.startswith("00:00:00"):
             continue
-        probes = [_clean(p) for p in row[6:] if _clean(p) and not _clean(p).startswith("(not associated)")]
+        probes = [cleaned for p in row[6:]
+                  if (cleaned := _clean(p)) and not cleaned.startswith("(not associated)")]
         clients.append(ClientRecord(
             mac=mac,
             bssid=mac_norm(row[5]) if len(row) > 5 else "",
@@ -204,9 +205,9 @@ def _csv_rows(block: str) -> List[List[str]]:
     rows: List[List[str]] = []
     for line in block.splitlines():
         line = line.rstrip("\r\n")
-        if not line.strip():
-            continue
         stripped = line.strip()
+        if not stripped:
+            continue
         if stripped.startswith("BSSID,") or stripped.startswith("Station MAC,"):
             continue
         if stripped.upper().startswith("BSSID ") or stripped.startswith("Station MAC"):

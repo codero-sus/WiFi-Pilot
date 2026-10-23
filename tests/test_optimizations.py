@@ -190,3 +190,140 @@ def test_preferred_attacks_wpa2_ladder_head_unchanged():
     assert order[0] == "pmkid"
     assert "handshake" in order
     assert os.environ.get("PYTEST_CURRENT_TEST")  # sanity: under pytest
+
+
+# ------------------------------------------------------------- round 2 ----
+
+def test_rule_engines_agree_everywhere():
+    """The string fast path must equal the list reference engine, always."""
+    from wifipilot import rules as rules_mod
+    commands = [":", "l", "u", "c", "C", "t", "T0", "T3", "T9", "T", "r", "d",
+                "f", "{", "}", "$1", "$xyz", "^9", "^ab", "[", "]", "D0", "D2",
+                "D9", "x02", "x13", "x", "x1", "O11", "O02", "i2X", "i0!",
+                "i1", "sa@", "so0", "s", "sa", "@a", "@", "p2", "p0", "p",
+                "'4", "'0", "z", "Z", "q", "k", "K", "*02", "*20", "*99",
+                "*11", "<5", ">3", "!a", "/z", "Q", "~"]
+    words = ["", "a", "Ab", "password", "P@ss W0rd!", "ääÖü", "a" * 30,
+             "0123456789", "ßeta", "İstanbul", "x"]
+    for command in commands:
+        step = rules_mod._compile(command)
+        for word in words:
+            want = rules_mod._step_c(step, list(word))
+            want = None if want is None else "".join(want)
+            assert rules_mod._apply_str(word, (step,)) == want, (command, word)
+    for name in ("best64", "leet", "append-digits", "case"):
+        for rule in rules_mod.preset(name):
+            for word in words:
+                letters = list(word)
+                for step in rule._steps:
+                    letters = rules_mod._step_c(step, letters)
+                    if letters is None:
+                        break
+                want = None if letters is None else "".join(letters)
+                assert rule.apply(word) == want, (name, rule.text, word)
+
+
+def test_event_to_dict_timestamps_are_the_events_own():
+    from datetime import datetime, timezone
+    bus = EventBus()
+    event = bus.publish(EK.LOG, {"message": "x"})
+    first = event.to_dict()
+    # iso is the event's time, not the moment someone serialised it
+    parsed = datetime.fromisoformat(first["iso"]).astimezone(timezone.utc)
+    assert abs(parsed.timestamp() - event.ts) < 1.0
+    assert event.to_dict()["time"] == first["time"]
+    assert event.to_dict()["iso"] == first["iso"]
+
+
+def test_session_stats_fast_to_dict_matches_asdict():
+    from wifipilot.models import SessionStats
+    stats = SessionStats()
+    stats.handshakes, stats.pmkids, stats.llm_cost = 3, 2, 0.37
+    fast = stats.to_dict()
+    ref = asdict(stats)
+    assert {k: fast[k] for k in ref if k != "started"} == \
+        {k: v for k, v in ref.items() if k != "started"}
+    assert fast["loot"] == 5
+    assert abs(fast["uptime"] - round(stats.uptime, 1)) < 0.2
+
+
+def test_capture_and_finding_created_matches_created_ts():
+    from datetime import datetime, timezone
+    from wifipilot.models import Capture, Finding
+    cap = Capture(kind="pmkid", bssid="aa:bb:cc:11:22:33")
+    data = cap.to_dict()
+    parsed = datetime.fromisoformat(data["created"]).astimezone(timezone.utc)
+    assert abs(parsed.timestamp() - data["created_ts"]) < 1.0
+    finding = Finding(kind="note", title="t")
+    fdata = finding.to_dict()
+    parsed = datetime.fromisoformat(fdata["created"]).astimezone(timezone.utc)
+    assert abs(parsed.timestamp() - fdata["created_ts"]) < 1.0
+
+
+def test_ap_attackable_cache_and_invalidation():
+    from wifipilot.models import Capture, Client
+    ap = AccessPoint(bssid="aa:bb:cc:11:22:33", essid="CafeWifi",
+                     encryption="WPA2")
+    first = ap.attackable()
+    assert "pmkid" in first and "pmkid_flood" not in first   # no clients yet
+    assert ap.attackable() == first                          # cached copy
+    ap.clients["02:00:00:00:00:01"] = Client(mac="02:00:00:00:00:01",
+                                             bssid=ap.bssid)
+    assert "pmkid_flood" in ap.attackable()                  # fingerprint moved
+    ap.captures.append(Capture(kind="pmkid", bssid=ap.bssid, valid=True))
+    assert "pmkid" not in ap.attackable()                    # already have one
+    subset = ap.attackable(["handshake", "ie_audit"])
+    assert subset == ["ie_audit", "handshake"]
+
+
+def test_aes_cached_key_expansion_still_fips_exact():
+    from wifipilot.crypto import AES
+    key = bytes.fromhex("000102030405060708090a0b0c0d0e0f")
+    plain = bytes.fromhex("00112233445566778899aabbccddeeff")
+    cipher = bytes.fromhex("69c4e0d86a7b0430d8cdb78070b4c55a")
+    assert AES(key).encrypt_block(plain) == cipher
+    assert AES(key).encrypt_block(plain) == cipher   # shared expansion
+    assert AES(key).decrypt_block(cipher) == plain
+
+
+def test_vendor_key_resolution_unchanged():
+    from wifipilot.vendors import _key_for
+    assert _key_for("AVM GmbH") == "AVM"
+    assert _key_for("TP-Link") == "TP-Link"
+    assert _key_for("linksys") == "Linksys"      # exact key beats stale alias
+    assert _key_for("NETGEAR Inc.") == "Netgear"
+    assert _key_for("No Such Vendor") == ""
+    assert _key_for("") == ""
+
+
+def test_password_classes_single_pass_matches_reference():
+    from wifipilot.analytics import _charset_size, _class_flags, password_report
+    for pw in ["password", "Str0ng!Pass", "12345678", "ALLCAPS", "ßetaÜber1",
+               "中文密码abc1", "", "a", "!!!!!!!!", "ǅtitle1", "mix3d!Case9"]:
+        ref = (any(c.islower() for c in pw), any(c.isupper() for c in pw),
+               any(c.isdigit() for c in pw), any(not c.isalnum() for c in pw))
+        assert _class_flags(pw) == ref, pw
+        size = (26 if ref[0] else 0) + (26 if ref[1] else 0) \
+            + (10 if ref[2] else 0) + (33 if ref[3] else 0)
+        assert _charset_size(pw) == (size or 1), pw
+    assert password_report("Str0ng!Pass").classes == "luds"
+    assert password_report("").classes == "?"
+
+
+def test_model_listing_failures_are_negative_cached(monkeypatch):
+    """A downed daemon must not be re-polled on every status() call."""
+    from wifipilot.config import OllamaConfig
+    from wifipilot.llm import LLMError, OllamaClient
+    client = OllamaClient(OllamaConfig())
+    calls = {"n": 0}
+
+    def boom(*args, **kwargs):
+        calls["n"] += 1
+        raise LLMError("connection refused")
+
+    monkeypatch.setattr(client, "_request", boom)
+    assert client.list_models() == []
+    assert client.list_models() == []
+    assert calls["n"] == 1                       # second call served by cache
+    assert client.list_models(force=True) == []
+    assert calls["n"] == 2                       # force still retries

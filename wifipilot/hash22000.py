@@ -237,8 +237,9 @@ def parse_text(text: str) -> Tuple[List[HashLine], List[str]]:
     """``(lines, problems)`` for a whole hash file."""
     lines: List[HashLine] = []
     problems: List[str] = []
+    parse = parse_line
     for number, raw in enumerate(text.splitlines(), start=1):
-        line, problem = parse_line(raw)
+        line, problem = parse(raw)
         if line is not None:
             lines.append(line)
         elif problem:
