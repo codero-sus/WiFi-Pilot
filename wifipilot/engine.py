@@ -1096,13 +1096,36 @@ class Engine:
         return data
 
     def _attack_catalog(self) -> List[Dict[str, Any]]:
-        from .attacks import attack_catalog
-        catalog = attack_catalog()
+        # Annotated once per (enabled-list, demo, capabilities) state and
+        # copied per call: the naive version rebuilt 848 rows and scanned
+        # the enabled list linearly for every one of them (~4 ms per web
+        # state push when everything is enabled).
         caps = registry.capabilities()
-        for item in catalog:
-            item["available"] = all(caps.get(flag, False) for flag in item["requires"]) or self.demo
-            item["enabled"] = item["name"] in self.config.attacks
-        return catalog
+        attacks = self.config.attacks
+        key = (id(attacks), len(attacks), self.demo, frozenset(caps.items()))
+        cached = self.__dict__.get("_catalogue_cache")
+        if cached is None or cached[0] != key:
+            from .attacks import attack_catalog
+            catalog = attack_catalog()
+            enabled_set = frozenset(attacks)
+            demo = self.demo
+            availability: Dict[Any, bool] = {}
+            for item in catalog:
+                requires = tuple(item["requires"])      # type: ignore[arg-type]
+                available = availability.get(requires)
+                if available is None:
+                    available = availability[requires] = (
+                        all(caps.get(flag, False) for flag in requires) or demo)
+                item["available"] = available
+                item["enabled"] = item["name"] in enabled_set
+            # pin `attacks`: its id() is part of the key and must stay unique
+            cached = (key, catalog, attacks)
+            self.__dict__["_catalogue_cache"] = cached
+        return [{**item,
+                 "requires": list(item["requires"]),    # type: ignore[arg-type]
+                 "applies_to": list(item["applies_to"]),  # type: ignore[arg-type]
+                 "devices": list(item["devices"])}       # type: ignore[arg-type]
+                for item in cached[1]]
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<Engine demo={self.demo} phase={self.status.phase} aps={len(self.session.aps)}>"

@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
-from .config import Config, default_wordlist, find_wordlists
+from .config import Config, find_wordlists
 from .crypto import (HandshakeVerifier, PmkidVerifier, pmk, verify_handshake,
                      verify_pmkid)
 from . import analytics, hash22000, masks, rules as rules_module
@@ -81,6 +81,8 @@ DIGITS = "0123456789"
 COMMON_SUFFIXES = ("", "1", "12", "123", "1234", "12345", "123456", "2023", "2024",
                    "2025", "!", "!!", "1!", "@123", "#1", "0", "01", "007")
 YEARS = tuple(str(y) for y in range(1990, 2031))
+_NONALNUM_RE = re.compile(r"[^A-Za-z0-9]")
+_ESSID_SPLIT_RE = re.compile(r"[\s\-_.]+")
 
 
 def _leetify(word: str) -> Iterator[str]:
@@ -283,9 +285,9 @@ def smart_candidates(ap: AccessPoint, analysis: Optional[CaptureAnalysis] = None
     essid = ap.essid or ""
     words: List[str] = []
     if essid:
-        cleaned = re.sub(r"[^A-Za-z0-9]", "", essid)
+        cleaned = _NONALNUM_RE.sub("", essid)
         words += [essid.strip(), essid.replace(" ", ""), cleaned]
-        parts = [p for p in re.split(r"[\s\-_.]+", essid) if len(p) > 1]
+        parts = [p for p in _ESSID_SPLIT_RE.split(essid) if len(p) > 1]
         words += parts
         for part in parts:
             if part and part[0].isdigit():
@@ -293,10 +295,12 @@ def smart_candidates(ap: AccessPoint, analysis: Optional[CaptureAnalysis] = None
     vendor_token = (ap.vendor or "").split()[0] if ap.vendor else ""
     if vendor_token:
         compact = vendor_token.replace("-", "").replace("_", "")
-        words += [vendor_token, vendor_token.lower(), vendor_token.lower() + "123",
-                  vendor_token.lower() + "1234", compact, compact.lower(),
-                  compact.lower() + "123", compact.lower() + "1234",
-                  compact.lower() + "12345"]
+        token_lower = vendor_token.lower()
+        compact_lower = compact.lower()
+        words += [vendor_token, token_lower, token_lower + "123",
+                  token_lower + "1234", compact, compact_lower,
+                  compact_lower + "123", compact_lower + "1234",
+                  compact_lower + "12345"]
     bssid_bits = ap.bssid.replace(":", "")
     words += [bssid_bits[-4:], bssid_bits[-6:], bssid_bits[-8:], bssid_bits[-4:].upper()]
     words += ["admin", "password", "wifi", "internet", "guest", "default", "changeme"]  # ggignore: cracker candidate seed words it tries, not credentials it uses
@@ -1488,11 +1492,19 @@ class Cracker:
         # (wordlist_limit is applied in _crack_real so an explicit --wordlist wins)
         lists = [os.path.abspath(os.path.expanduser(p)) for p in self.config.wordlists if p]
         lists = [p for p in lists if os.path.exists(p)]
+        # one discovery walk serves both the default and the builtin top-up
+        # (this used to stat every candidate path two or three times over)
+        discovered = find_wordlists(self.config)
         if not lists:
-            primary = default_wordlist(self.config)
+            primary = next((item["path"] for item in discovered
+                            if not item["builtin"]), "")
+            if not primary and discovered:
+                primary = discovered[0]["path"]
             lists = [primary] if primary else []
-        for item in find_wordlists(self.config):
-            if item["builtin"] and item["path"] not in lists:
+        known = set(lists)
+        for item in discovered:
+            if item["builtin"] and item["path"] not in known:
+                known.add(item["path"])
                 lists.append(item["path"])
         return [p for p in lists if p]
 

@@ -88,7 +88,7 @@ wp.ai(disable=True)                     # deterministic planner only, nothing se
 | [docs/PYTHON-API.md](docs/PYTHON-API.md) | the pipeline and the library surface: `import wifipilot as wp`, run objects, hooks, the advisor switch |
 | [docs/AI-PROVIDERS.md](docs/AI-PROVIDERS.md) | the model providers (Ollama, Cortex LLMHoster, OpenRouter), key handling, costs, the privacy model — and how to turn all of it off |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | modules, data flow, the three front ends, the safety model, performance work |
-| [docs/OPTIMIZATIONS.md](docs/OPTIMIZATIONS.md) | the 200-optimization catalogue: every cache, fast path and parallel lane, with before/after benchmarks (`scripts/bench.py`) |
+| [docs/OPTIMIZATIONS.md](docs/OPTIMIZATIONS.md) | the 400-optimization catalogue: every cache, fast path and parallel lane, with before/after benchmarks (`scripts/bench.py`) |
 | [docs/ETHICS-AND-LEGAL.md](docs/ETHICS-AND-LEGAL.md) | the authorisation gate and the law, before you point this at anything |
 | [CHANGELOG.md](CHANGELOG.md) | what changed, batch by batch |
 

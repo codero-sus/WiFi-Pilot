@@ -5,16 +5,23 @@ from __future__ import annotations
 
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, field, fields
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
-from .util import clamp, mac_norm, now_iso, oui_vendor, slugify
+from .util import clamp, mac_norm, oui_vendor, slugify
 
 # --------------------------------------------------------------------------- #
 # enums (plain strings keep the JSON contract with the LLM trivial)
 # --------------------------------------------------------------------------- #
 
 ENCRYPTIONS = ("OPEN", "WEP", "WPA", "WPA2", "WPA3", "WPA2/WPA3", "OWE", "ENTERPRISE")
+_STATS_FIELD_NAMES: Optional[Tuple[str, ...]] = None
+
+
+def _iso_of(ts: float) -> str:
+    """Epoch seconds -> ISO-8601 UTC (seconds precision), now_iso()'s format."""
+    return datetime.fromtimestamp(ts, timezone.utc).replace(microsecond=0).isoformat()
 WPS_STATES = ("", "unlocked", "locked", "configured", "unknown")
 CAPTURE_KINDS = ("handshake", "pmkid", "wep_ivs")
 
@@ -137,6 +144,17 @@ ATTACK_NAMES = [
     "pmk_check",      # loot that needs no cracking
     "loot_manifest",  # chain of custody (SHA-256 manifest)
 ]
+
+
+_ATTACK_SET_CACHE: Dict[str, Any] = {"count": -1, "set": frozenset()}
+
+
+def _all_attack_names() -> frozenset:
+    """ATTACK_NAMES as a frozenset, rebuilt only when the registry grows."""
+    if _ATTACK_SET_CACHE["count"] != len(ATTACK_NAMES):
+        _ATTACK_SET_CACHE["count"] = len(ATTACK_NAMES)
+        _ATTACK_SET_CACHE["set"] = frozenset(ATTACK_NAMES)
+    return _ATTACK_SET_CACHE["set"]
 
 STATUS_IDLE = "idle"
 STATUS_QUEUED = "queued"
@@ -309,12 +327,34 @@ class AccessPoint:
         ordered the way the planner would run them: read-only surveys first, the
         attacks that need no client before the ones that do, and the disruptive
         ones last.
+
+        Cached on a fingerprint of everything the list depends on: it is
+        serialised into every snapshot (once per AP per UI tick), and the
+        naive build scanned the 848-name enabled list for every candidate.
         """
-        enabled = enabled or list(ATTACK_NAMES)
+        has_pmkid = self.has_pmkid
+        has_handshake = self.has_handshake
+        if not enabled:
+            enabled_set = _all_attack_names()
+            enabled_ref = None
+            enabled_key = (0, len(enabled_set))
+        else:
+            enabled_set = frozenset(enabled)
+            enabled_ref = enabled          # pin it: its id() must stay unique
+            enabled_key = (id(enabled), len(enabled))
+        key = (enabled_key, self.essid, self.encryption, self.auth, self.sae,
+               self.pmf, self.wps, self.wps_open, bool(self.clients),
+               has_pmkid, has_handshake)
+        cached = self.__dict__.get("_atk_cache")
+        if cached is not None and cached[0] == key:
+            return list(cached[1])
+
         out: List[str] = []
+        seen = set()
 
         def add(name: str, when: bool = True) -> None:
-            if when and name in enabled and name not in out:
+            if when and name in enabled_set and name not in seen:
+                seen.add(name)
                 out.append(name)
 
         # read-only: these change what we know and transmit nothing
@@ -332,9 +372,9 @@ class AccessPoint:
         add("saewolf", bool(self.sae or "WPA3" in (self.encryption or "")))
         # capture
         if self.encryption in ("WPA", "WPA2", "WPA2/WPA3", "WPA3"):
-            add("pmkid", not self.has_pmkid)
-            add("pmkid_flood", bool(self.clients) and not self.has_pmkid)
-            add("handshake", not self.sae and not self.has_handshake)
+            add("pmkid", not has_pmkid)
+            add("pmkid_flood", bool(self.clients) and not has_pmkid)
+            add("handshake", not self.sae and not has_handshake)
             add("eapol_logoff", bool(self.clients) and not self.pmf)
         if self.wps and self.wps_open:
             add("wps_pixie")
@@ -353,7 +393,8 @@ class AccessPoint:
         add("probe_flood")
         add("beacon_flood")
         add("passive")
-        return out
+        self.__dict__["_atk_cache"] = (key, out, enabled_ref)
+        return list(out)
 
     def add_client(self, client: Client) -> bool:
         key = client.mac
@@ -435,6 +476,7 @@ class AccessPoint:
 
     def to_dict(self, detail: bool = False,
                 enabled: Optional[List[str]] = None) -> Dict[str, Any]:
+        now = time.time()
         data: Dict[str, Any] = {
             "bssid": self.bssid,
             "essid": self.essid,
@@ -470,8 +512,8 @@ class AccessPoint:
             "picked_by": self.picked_by,
             "pick_reason": self.pick_reason,
             "deauths_sent": self.deauths_sent,
-            "age": round(time.time() - self.last_seen, 1),
-            "age_first": round(time.time() - self.first_seen, 1),
+            "age": round(now - self.last_seen, 1),
+            "age_first": round(now - self.first_seen, 1),
             "attacks": self.attackable(enabled),
             "captures": [c.to_dict() for c in self.captures],
             "notes": self.notes,
@@ -550,7 +592,7 @@ class Capture:
             "kind": self.kind, "bssid": self.bssid, "essid": self.essid,
             "found_in": self.found_in, "note": self.note,
             "path": self.path, "hash_path": self.hash_path, "valid": self.valid,
-            "tool": self.tool, "created": now_iso(),
+            "tool": self.tool, "created": _iso_of(self.created),
             "created_ts": self.created, "eapol": self.eapol, "size": self.size,
             "password": self.password, "crack_tool": self.crack_tool,
             "crack_seconds": round(self.crack_seconds, 2),
@@ -614,7 +656,7 @@ class Finding:
         return {
             "kind": self.kind, "title": self.title, "detail": self.detail,
             "severity": self.severity, "bssid": self.bssid,
-            "source": self.source, "created": now_iso(), "created_ts": self.created,
+            "source": self.source, "created": _iso_of(self.created), "created_ts": self.created,
         }
 
 
@@ -669,10 +711,17 @@ class SessionStats:
         return self.handshakes + self.pmkids + self.wps_cracks + self.wep_cracks
 
     def to_dict(self) -> Dict[str, Any]:
-        data = asdict(self)
+        # shallow field walk, not asdict(): asdict deep-copies the whole
+        # object (~170µs) and this runs on every snapshot tick, while every
+        # field here is a scalar.  "started" is the session's real start —
+        # it used to be stamped with the serialisation moment.
+        global _STATS_FIELD_NAMES
+        if _STATS_FIELD_NAMES is None:
+            _STATS_FIELD_NAMES = tuple(f.name for f in fields(self))
+        data = {name: getattr(self, name) for name in _STATS_FIELD_NAMES}
         data["uptime"] = round(self.uptime, 1)
         data["loot"] = self.loot
-        data["started"] = now_iso()
+        data["started"] = _iso_of(self.started)
         return data
 
 

@@ -61,6 +61,13 @@ class Rule:
     commands: List[str] = field(default_factory=list)
     unsupported: List[str] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        # Rules are applied to *every* candidate word, so everything that
+        # only depends on the rule text is worked out once, here: usability
+        # and the pre-parsed command tuples (op, args, numeric indices).
+        self._usable = bool(self.commands) and not self.unsupported
+        self._steps = tuple(_compile(command) for command in self.commands)
+
     @property
     def usable(self) -> bool:
         """False when any part of the rule could not be modelled.
@@ -68,17 +75,15 @@ class Rule:
         A partially-applied rule would produce different candidates than
         hashcat does, which is worse than skipping the rule and saying so.
         """
-        return bool(self.commands) and not self.unsupported
+        return getattr(self, "_usable",
+                       bool(self.commands) and not self.unsupported)
 
     def apply(self, word: str) -> Optional[str]:
         """Apply the rule to ``word``; ``None`` means the rule rejected it."""
-        letters = list(word)
-        for command in self.commands:
-            letters = _step(command, letters)
-            if letters is None:
-                return None
-        result = "".join(letters)
-        return result
+        steps = getattr(self, "_steps", None)
+        if steps is None:
+            steps = tuple(_compile(command) for command in self.commands)
+        return _apply_str(word, steps)
 
     def to_dict(self) -> Dict[str, object]:
         return {"rule": self.text, "commands": self.commands,
@@ -93,31 +98,60 @@ def _index(token: str) -> Optional[int]:
     return int(digits) if digits else None
 
 
-def _step(command: str, letters: Optional[List[str]]) -> Optional[List[str]]:
-    """One rule command.  ``None`` in = rejected; ``None`` out = rejected."""
+_COMPILED: Dict[str, tuple] = {}
+
+
+def _compile(command: str) -> tuple:
+    """Pre-parse one rule command (cached).
+
+    Rules run against every candidate word, so splitting the op off, listing
+    its literal characters and reading its numeric arguments happens once per
+    command string — not once per word.
+    """
+    compiled = _COMPILED.get(command)
+    if compiled is None:
+        op, rest = command[0], command[1:]
+        compiled = (
+            op, rest, list(rest),
+            _index(rest),
+            _index(rest[0]) if rest else None,
+            _index(rest[1]) if len(rest) > 1 else None,
+            (rest[0], rest[1]) if len(rest) >= 2 else None,
+        )
+        if len(_COMPILED) >= 8192:
+            _COMPILED.clear()
+        _COMPILED[command] = compiled
+    return compiled
+
+
+def _step_c(step: tuple, letters: Optional[List[str]]) -> Optional[List[str]]:
+    """One pre-parsed rule command.  ``None`` in = rejected; out = rejected.
+
+    The joined string is only built by the ops that actually need it (case
+    folds, substitution, contains-checks); the list-only ops never pay for it.
+    """
     if letters is None:
         return None
-    op, rest = command[0], command[1:]
-    text = "".join(letters)
+    op, rest, rest_list, idx, idx0, idx1, pair = step
 
     if op == ":":
         return letters
     if op == "l":
-        return list(text.lower())
+        return list("".join(letters).lower())
     if op == "u":
-        return list(text.upper())
+        return list("".join(letters).upper())
     if op == "c":                                    # capitalise
-        return list(text.capitalize())
+        return list("".join(letters).capitalize())
     if op == "C":                                    # lower the first, upper the rest
+        text = "".join(letters)
         return list(text[:1].lower() + text[1:].upper())
     if op == "t":                                    # toggle case of everything
-        return list("".join(c.swapcase() for c in text))
+        return list("".join(letters).swapcase())
     if op == "T":                                    # toggle case at one position
-        position = _index(rest)
-        if position is None or position >= len(letters):
+        if idx is None or idx >= len(letters):
             return None
         letters = list(letters)
-        letters[position] = letters[position].swapcase()
+        letters[idx] = letters[idx].swapcase()
         return letters
     if op == "r":
         return list(reversed(letters))
@@ -130,55 +164,43 @@ def _step(command: str, letters: Optional[List[str]]) -> Optional[List[str]]:
     if op == "}":                                    # rotate right
         return letters[-1:] + letters[:-1] if letters else letters
     if op == "$":
-        return letters + list(rest)
+        return letters + rest_list
     if op == "^":
-        return list(rest) + letters
+        return rest_list + letters
     if op == "[":
         return letters[1:].copy() if letters else letters
     if op == "]":
         return letters[:-1].copy() if letters else letters
     if op == "D":                                    # delete at position
-        position = _index(rest)
-        if position is None or position >= len(letters):
+        if idx is None or idx >= len(letters):
             return None
-        return letters[:position] + letters[position + 1:]
+        return letters[:idx] + letters[idx + 1:]
     if op == "x":                                    # extract
-        if len(rest) < 2:
+        if pair is None or idx0 is None or idx1 is None:
             return None
-        start, count = _index(rest[0]), _index(rest[1])
-        if start is None or count is None:
-            return None
-        return letters[start:start + count]
+        return letters[idx0:idx0 + idx1]
     if op == "O":                                    # omit
-        if len(rest) < 2:
+        if pair is None or idx0 is None or idx1 is None:
             return None
-        start, count = _index(rest[0]), _index(rest[1])
-        if start is None or count is None:
-            return None
-        return letters[:start] + letters[start + count:]
+        return letters[:idx0] + letters[idx0 + idx1:]
     if op == "i":                                    # insert char at position
-        if len(rest) < 2:
+        if pair is None or idx0 is None:
             return None
-        position, char = _index(rest[0]), rest[1]
-        if position is None:
-            return None
-        return letters[:position] + [char] + letters[position:]
+        return letters[:idx0] + [pair[1]] + letters[idx0:]
     if op == "s":                                    # substitute
-        if len(rest) < 2:
+        if pair is None:
             return None
-        return list(text.replace(rest[0], rest[1]))
+        return list("".join(letters).replace(pair[0], pair[1]))
     if op == "@":                                    # purge
-        return list(text.replace(rest[0], "")) if rest else letters
+        return list("".join(letters).replace(rest[0], "")) if rest else letters
     if op == "p":                                    # repeat N times
-        times = _index(rest)
-        if times is None:
+        if idx is None:
             return None
-        return list(text * times)
+        return list("".join(letters) * idx)
     if op == "'":                                    # truncate
-        size = _index(rest)
-        if size is None:
+        if idx is None:
             return None
-        return letters[:size]
+        return letters[:idx]
     if op == "z":
         return [letters[0]] + letters if letters else letters
     if op == "Z":
@@ -190,31 +212,141 @@ def _step(command: str, letters: Optional[List[str]]) -> Optional[List[str]]:
     if op == "K":                                    # swap the last two
         return letters[:-2] + letters[-1:] + letters[-2:-1] if len(letters) >= 2 else letters
     if op == "*":
-        if len(rest) < 2:
+        if pair is None or idx0 is None or idx1 is None:
             return None
-        first, second = _index(rest[0]), _index(rest[1])
-        if first is None or second is None:
-            return None
-        if max(first, second) >= len(letters):
+        if max(idx0, idx1) >= len(letters):
             return None
         letters = list(letters)
-        letters[first], letters[second] = letters[second], letters[first]
+        letters[idx0], letters[idx1] = letters[idx1], letters[idx0]
         return letters
     if op == "<":                                    # reject unless shorter
-        size = _index(rest)
-        if size is None:
+        if idx is None:
             return None
-        return None if len(letters) >= size else letters
+        return None if len(letters) >= idx else letters
     if op == ">":                                    # reject unless longer
-        size = _index(rest)
-        if size is None:
+        if idx is None:
             return None
-        return None if len(letters) <= size else letters
+        return None if len(letters) <= idx else letters
     if op == "!":
-        return None if rest and rest[0] in text else letters
+        return None if rest and rest[0] in "".join(letters) else letters
     if op == "/":
-        return None if rest and rest[0] not in text else letters
+        return None if rest and rest[0] not in "".join(letters) else letters
     return letters
+
+
+def _step(command: str, letters: Optional[List[str]]) -> Optional[List[str]]:
+    """One rule command by source text (``_step_c`` is the pre-parsed path)."""
+    return _step_c(_compile(command), letters)
+
+
+def _apply_str(word: str, steps: tuple) -> Optional[str]:
+    """Apply pre-parsed steps to ``word`` as a string (the hot path).
+
+    Semantically identical to feeding ``list(word)`` through ``_step_c`` —
+    a fuzz/equivalence test pins the two engines together — but string
+    slicing in C beats building a fresh list of one-char strings per step.
+    """
+    text = word
+    for op, rest, _rest_list, idx, idx0, idx1, pair in steps:
+        if op == ":":
+            continue
+        if op == "l":
+            text = text.lower()
+        elif op == "u":
+            text = text.upper()
+        elif op == "c":                              # capitalise
+            text = text.capitalize()
+        elif op == "C":                              # lower first, upper rest
+            text = text[:1].lower() + text[1:].upper()
+        elif op == "t":
+            text = text.swapcase()
+        elif op == "T":
+            if idx is None or idx >= len(text):
+                return None
+            text = text[:idx] + text[idx].swapcase() + text[idx + 1:]
+        elif op == "r":
+            text = text[::-1]
+        elif op == "d":
+            text = text + text
+        elif op == "f":
+            text = text + text[::-1]
+        elif op == "{":                              # rotate left
+            text = text[1:] + text[:1]
+        elif op == "}":                              # rotate right
+            text = text[-1:] + text[:-1]
+        elif op == "$":
+            text = text + rest
+        elif op == "^":
+            text = rest + text
+        elif op == "[":
+            text = text[1:]
+        elif op == "]":
+            text = text[:-1]
+        elif op == "D":                              # delete at position
+            if idx is None or idx >= len(text):
+                return None
+            text = text[:idx] + text[idx + 1:]
+        elif op == "x":                              # extract
+            if pair is None or idx0 is None or idx1 is None:
+                return None
+            text = text[idx0:idx0 + idx1]
+        elif op == "O":                              # omit
+            if pair is None or idx0 is None or idx1 is None:
+                return None
+            text = text[:idx0] + text[idx0 + idx1:]
+        elif op == "i":                              # insert char at position
+            if pair is None or idx0 is None:
+                return None
+            text = text[:idx0] + pair[1] + text[idx0:]
+        elif op == "s":                              # substitute
+            if pair is None:
+                return None
+            text = text.replace(pair[0], pair[1])
+        elif op == "@":                              # purge
+            if rest:
+                text = text.replace(rest[0], "")
+        elif op == "p":                              # repeat N times
+            if idx is None:
+                return None
+            text = text * idx
+        elif op == "'":                              # truncate
+            if idx is None:
+                return None
+            text = text[:idx]
+        elif op == "z":
+            text = text[:1] + text
+        elif op == "Z":
+            text = text + text[-1:]
+        elif op == "q":                              # duplicate every character
+            text = "".join(char * 2 for char in text)
+        elif op == "k":
+            if len(text) >= 2:
+                text = text[1::-1] + text[2:]
+        elif op == "K":                              # swap the last two
+            if len(text) >= 2:
+                text = text[:-2] + text[-1:] + text[-2:-1]
+        elif op == "*":
+            if pair is None or idx0 is None or idx1 is None:
+                return None
+            if max(idx0, idx1) >= len(text):
+                return None
+            letters = list(text)
+            letters[idx0], letters[idx1] = letters[idx1], letters[idx0]
+            text = "".join(letters)
+        elif op == "<":                              # reject unless shorter
+            if idx is None or len(text) >= idx:
+                return None
+        elif op == ">":                              # reject unless longer
+            if idx is None or len(text) <= idx:
+                return None
+        elif op == "!":
+            if rest and rest[0] in text:
+                return None
+        elif op == "/":
+            if rest and rest[0] not in text:
+                return None
+        # unknown ops leave the word unchanged (as the list engine does)
+    return text
 
 
 def _take_digits(text: str, index: int) -> Tuple[str, int]:
@@ -354,6 +486,8 @@ def apply_rules(word: str, rules: Sequence[Rule], limit: int = 0,
                 dedupe: bool = True) -> Iterator[str]:
     """Yield ``word`` mutated by every rule (bounded by ``limit`` if given)."""
     seen = set()
+    seen_add = seen.add
+    lo, hi = MIN_LENGTH, MAX_LENGTH
     produced = 0
     for rule in rules:
         if not rule.usable:
@@ -361,12 +495,12 @@ def apply_rules(word: str, rules: Sequence[Rule], limit: int = 0,
         candidate = rule.apply(word)
         if candidate is None:
             continue
-        if not (MIN_LENGTH <= len(candidate) <= MAX_LENGTH):
+        if not (lo <= len(candidate) <= hi):
             continue
         if dedupe:
             if candidate in seen:
                 continue
-            seen.add(candidate)
+            seen_add(candidate)
         produced += 1
         yield candidate
         if limit and produced >= limit:

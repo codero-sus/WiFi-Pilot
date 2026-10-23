@@ -343,10 +343,12 @@ def _iter_pcap(data, start_offset: int = 0, endian: str = "",
     """
     if not endian:
         endian, divisor = PCAP_MAGIC[data[:4]]
+    # a bound Struct: struct.unpack_from re-parses the format string per packet
+    unpack_from = struct.Struct(endian + "IIII").unpack_from
     total = len(data)
     offset = start_offset or 24          # 24 byte global header
     while offset + 16 <= total:
-        ts_sec, ts_frac, incl_len, orig_len = struct.unpack_from(endian + "IIII", data, offset)
+        ts_sec, ts_frac, incl_len, orig_len = unpack_from(data, offset)
         offset += 16
         if incl_len > 262144 or offset + incl_len > total:
             break
@@ -846,7 +848,9 @@ def _analyze_buffer(buf, state: _AnalysisState, max_packets: int,
         if payload_start + 8 <= payload_end:
             if buf[payload_start:payload_start + 8] == EAPOL_PREFIX:
                 eapol = _parse_eapol_body(buf[payload_start + 6:payload_end])
-            elif LLC_SNAP in buf[payload_start:payload_end]:
+            elif buf.find(LLC_SNAP, payload_start, payload_end) != -1:
+                # find() searches the mapping in place; slicing first would
+                # copy every data payload in the capture just to look at it
                 eapol = _parse_eapol(buf[payload_start:payload_end])
             else:
                 eapol = None

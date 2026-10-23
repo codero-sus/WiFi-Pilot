@@ -24,8 +24,9 @@ from __future__ import annotations
 import json
 import os
 import re
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .util import mac_norm
 
@@ -313,25 +314,50 @@ def import_oui_file(path: str, out: str = "") -> Dict[str, object]:
             "exact": len(exact)}
 
 
+_DOSSIER_LOOKUP: Optional[Tuple[Dict[str, str], List[Tuple[str, str]],
+                                List[Tuple[str, str]]]] = None
+
+
+def _dossier_lookup() -> Tuple[Dict[str, str], List[Tuple[str, str]],
+                               List[Tuple[str, str]]]:
+    """Pre-lowered dossier keys, built once (the tables are static)."""
+    global _DOSSIER_LOOKUP
+    if _DOSSIER_LOOKUP is None:
+        exact: Dict[str, str] = {}
+        lowered_keys: List[Tuple[str, str]] = []
+        for key in VENDOR_DOSSIERS:
+            lowered = key.lower()
+            exact.setdefault(lowered, key)      # first wins, as the scan did
+            lowered_keys.append((lowered, key))
+        _DOSSIER_LOOKUP = (exact, lowered_keys, list(_ALIASES.items()))
+    return _DOSSIER_LOOKUP
+
+
+@lru_cache(maxsize=1024)
+def _key_for_lowered(lowered: str) -> str:
+    exact, lowered_keys, aliases = _dossier_lookup()
+    # an exact dossier key always wins: a stale alias must never shadow the
+    # vendor's own entry (``linksys`` used to point at its one-time parent)
+    hit = exact.get(lowered)
+    if hit is not None:
+        return hit
+    if lowered in _ALIASES:
+        return _ALIASES[lowered]
+    for low, key in lowered_keys:
+        if lowered.startswith(low) or low in lowered:
+            return key
+    for alias, key in aliases:
+        if alias in lowered:
+            return key
+    return ""
+
+
 def _key_for(vendor: str) -> str:
     text = (vendor or "").strip()
     if not text:
         return ""
-    lowered = text.lower()
-    # an exact dossier key always wins: a stale alias must never shadow the
-    # vendor's own entry (``linksys`` used to point at its one-time parent)
-    for key in VENDOR_DOSSIERS:
-        if key.lower() == lowered:
-            return key
-    if lowered in _ALIASES:
-        return _ALIASES[lowered]
-    for key in VENDOR_DOSSIERS:
-        if lowered.startswith(key.lower()) or key.lower() in lowered:
-            return key
-    for alias, key in _ALIASES.items():
-        if alias in lowered:
-            return key
-    return ""
+    # vendor strings repeat constantly during a scan: resolve each once
+    return _key_for_lowered(text.lower())
 
 
 def vendor_dossier(vendor_or_mac: str, mac: str = "") -> Dict[str, Any]:

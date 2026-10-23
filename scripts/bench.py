@@ -77,6 +77,63 @@ def main() -> int:
     elapsed = time.perf_counter() - started
     print(f"{'PmkidVerifier.check x300':44s} {elapsed * 1000:9.2f} ms  "
           f"({300 / elapsed:,.0f}/s, PBKDF2-bound)")
+
+    # -- round 2: rules, events, models, session, crypto, parsing -------- #
+    from wifipilot import hash22000, rules as rules_mod
+    from wifipilot.analytics import password_report
+    from wifipilot.bt import random_address_hash
+    from wifipilot.models import Client
+    from wifipilot.session import Session
+
+    words = [f"baseword{i}" for i in range(2000)]
+    rule_set = rules_mod.preset("best64")
+    bench("apply_rules best64 x2000 words",
+          lambda: [list(rules_mod.apply_rules(w, rule_set, limit=24))
+                   for w in words], 2000)
+    bench("Event.to_dict x5000",
+          lambda: [e.to_dict() for _ in range(50) for e in bus.recent(100)],
+          5000)
+    rich_ap = AccessPoint(bssid="aa:bb:cc:11:22:33", essid="TestNet",
+                          encryption="WPA2", signal=-42)
+    for i in range(8):
+        mac = f"02:00:00:00:00:{i:02x}"
+        rich_ap.clients[mac] = Client(mac=mac, bssid=rich_ap.bssid)
+    bench("AccessPoint.to_dict x2000",
+          lambda: [rich_ap.to_dict() for _ in range(2000)], 2000)
+    bench("AccessPoint.attackable x2000",
+          lambda: [rich_ap.attackable() for _ in range(2000)], 2000)
+    sess_bus = EventBus()
+    for i in range(150):
+        sess_bus.publish(EK.LOG, {"message": f"line {i}"})
+    session = Session(cfg, sess_bus, demo=True)
+    for i in range(12):
+        other = AccessPoint(bssid=f"aa:bb:cc:11:22:{i:02x}", essid=f"Net{i}",
+                            encryption="WPA2", signal=-40 - i)
+        session.aps[other.bssid] = other
+    session.snapshot()          # warm the caches the UI would have warm
+    bench("session.snapshot x50 (12 APs)",
+          lambda: [session.snapshot() for _ in range(50)], 50)
+    hash_text = "\n".join(
+        "WPA*01*%034x*%012x*%012x*%s***" % (i, 0xaabbcc112233,
+                                            0xffffffffffff, "aa" * 4)
+        for i in range(50))
+    bench("hash22000.parse_text 50 lines x50",
+          lambda: [hash22000.parse_text(hash_text) for _ in range(50)], 50)
+    bench("password_report x1000",
+          lambda: [password_report(f"Str0ng!Pass{i}") for i in range(1000)],
+          1000)
+    irk = bytes.fromhex("ec0234a357c8ad05341010a60a397d9b")
+    bench("bt.random_address_hash x2000",
+          lambda: [random_address_hash(irk, 0x708194) for _ in range(2000)],
+          2000)
+    from wifipilot import synth
+    from wifipilot.pcap import analyze_file
+    frames = [synth.build_beacon(f"Net{i % 20}", f"aa:bb:cc:00:00:{i % 20:02x}")
+              for i in range(600)]
+    pcap_path = synth.write_pcap("/tmp/wifipilot-bench.pcap", frames)
+    bench("pcap analyze 600 beacons x10",
+          lambda: [analyze_file(pcap_path, use_cache=False)
+                   for _ in range(10)], 10)
     return 0
 
 

@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
-from .util import append_jsonl, now_iso
+from .util import append_jsonl
 
 # --------------------------------------------------------------------------- #
 # event kinds (single source of truth for the front-end)
@@ -83,10 +83,23 @@ class Event:
     seq: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
+        # "time"/"iso" depend only on ts: format them once, not on every
+        # serialisation (a snapshot serialises ~120 events per UI tick, and
+        # localtime+strftime+isoformat was most of the cost).  "iso" is the
+        # *event's* timestamp — it used to be stamped with the serialisation
+        # moment, which made old events look brand new.
+        cached = self.__dict__.get("_td")
+        if cached is None or cached[0] != self.ts:
+            from datetime import datetime, timezone
+            cached = (self.ts,
+                      time.strftime("%H:%M:%S", time.localtime(self.ts)),
+                      datetime.fromtimestamp(self.ts, timezone.utc)
+                      .replace(microsecond=0).isoformat())
+            self.__dict__["_td"] = cached
         return {
             "seq": self.seq, "kind": self.kind, "data": self.data,
-            "ts": self.ts, "time": time.strftime("%H:%M:%S", time.localtime(self.ts)),
-            "iso": now_iso(), "source": self.source,
+            "ts": self.ts, "time": cached[1],
+            "iso": cached[2], "source": self.source,
         }
 
 

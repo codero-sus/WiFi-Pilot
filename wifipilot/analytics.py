@@ -41,18 +41,37 @@ _KEYBOARD_WALKS = {row[index:index + 8] for row in _KEYBOARD_ROWS
 
 _DATE_RE = re.compile(r"(19|20)\d{2}")
 _ALNUM = re.compile(r"^[A-Za-z0-9]+$")
+_REPEAT_RE = re.compile(r"(.)\1{2,}")
+_TAIL_RE = re.compile(r"(.)\1$")
+
+
+def _class_flags(password: str) -> Tuple[bool, bool, bool, bool]:
+    """(has lower, has upper, has digit, has symbol) in ONE pass.
+
+    The predicates are mutually exclusive per character (a char cannot be
+    both cased-lower and a digit, digits are alnum), so the elif chain is
+    exact — and it replaces the eight any() scans that _charset_size and
+    password_report used to make between them.
+    """
+    lower = upper = digit = symbol = False
+    for char in password:
+        if char.islower():
+            lower = True
+        elif char.isupper():
+            upper = True
+        elif char.isdigit():
+            digit = True
+        elif not char.isalnum():
+            symbol = True
+        if lower and upper and digit and symbol:
+            break
+    return lower, upper, digit, symbol
 
 
 def _charset_size(password: str) -> int:
-    size = 0
-    if any(c.islower() for c in password):
-        size += 26
-    if any(c.isupper() for c in password):
-        size += 26
-    if any(c.isdigit() for c in password):
-        size += 10
-    if any(not c.isalnum() for c in password):
-        size += 33
+    lower, upper, digit, symbol = _class_flags(password)
+    size = (26 if lower else 0) + (26 if upper else 0) \
+        + (10 if digit else 0) + (33 if symbol else 0)
     return size or 1
 
 
@@ -90,11 +109,11 @@ def _patterns(password: str) -> List[str]:
         families.append("keyboard walk")
     if _looks_like_leet(password):
         families.append("leet substitutions")
-    if re.search(r"(.)\1{2,}", password):
+    if _REPEAT_RE.search(password):
         families.append("repeated characters")
     if lowered.startswith(("password", "admin", "welcome", "wifi", "internet", "guest")):
         families.append("dictionary default")
-    if re.search(r"(.)\1$", password):
+    if _TAIL_RE.search(password):
         families.append("doubled tail")
     if password[-1:].isdigit():
         families.append("trailing digits")
@@ -168,7 +187,10 @@ def password_report(password: str) -> PasswordReport:
     # 8-digit ISP default is 10^8, even though its entropy looks like 10^8 too —
     # the difference shows up for "sunshine2024", which is ~7.5 million
     # word+year combinations, not 62^12.
-    space = float(_charset_size(password)) ** max(1, len(password))
+    lower, upper, digit, symbol = _class_flags(password)
+    charset = (26 if lower else 0) + (26 if upper else 0) \
+        + (10 if digit else 0) + (33 if symbol else 0)
+    space = float(charset or 1) ** max(1, len(password))
     if "all digits (ISP default numbering)" in patterns:
         space = float(10 ** min(len(password), 18))
     elif "dictionary default" in patterns:
@@ -181,10 +203,8 @@ def password_report(password: str) -> PasswordReport:
     theoretical = math.log2(space)
     return PasswordReport(
         password=password, length=len(password),
-        classes="".join(("l" if any(c.islower() for c in password) else "",
-                         "u" if any(c.isupper() for c in password) else "",
-                         "d" if any(c.isdigit() for c in password) else "",
-                         "s" if any(not c.isalnum() for c in password) else "")) or "?",
+        classes="".join(("l" if lower else "", "u" if upper else "",
+                         "d" if digit else "", "s" if symbol else "")) or "?",
         entropy_bits=theoretical, space=space, patterns=patterns,
         score=score, verdict=verdict,
         times={name: crack_time(space, speed) for name, speed in SPEEDS.items()},

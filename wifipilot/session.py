@@ -587,7 +587,10 @@ class Session:
     # ------------------------------------------------------------------ #
     def snapshot(self, detail_bssid: str = "", event_limit: int = 120,
                  max_aps: int = 200) -> Dict[str, Any]:
-        enabled = list(self.config.attacks)
+        # the live list, not a copy: AccessPoint.attackable() caches on its
+        # identity (+length), and a fresh copy each tick would bust that
+        # cache for every AP as well as copying up to 848 names pointlessly
+        enabled = self.config.attacks
         aps = [ap.to_dict(detail=ap.bssid == detail_bssid, enabled=enabled)
                for ap in self.sorted_aps()[:max_aps]]
         return {

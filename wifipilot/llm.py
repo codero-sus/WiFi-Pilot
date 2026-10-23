@@ -268,7 +268,10 @@ class LLMClient:
         raise NotImplementedError
 
     def _cached_models(self, cache_seconds: float, force: bool) -> bool:
-        return bool(self._models) and not force and time.time() - self._models_at < cache_seconds
+        # an *attempted* fetch counts, success or failure: without negative
+        # caching, a downed daemon means status() opens a fresh TCP+HTTP
+        # request on every single UI tick, forever
+        return bool(self._models_at) and not force and time.time() - self._models_at < cache_seconds
 
     def _pick_fallback(self, wanted: str, names: List[str]) -> Optional[str]:
         """Match a wanted name against a catalogue (exact, then prefix/partial)."""
@@ -377,6 +380,7 @@ class OllamaClient(LLMClient):
             data = json.loads(body)
         except (LLMError, ValueError) as exc:
             self.models_error = str(exc)
+            self._models_at = time.time()     # negative-cache the failure
             return self._models
         models: List[ModelInfo] = []
         for entry in data.get("models", []):
@@ -659,6 +663,7 @@ class CortexClient(LLMClient):
                 self.models_error = ""
             except (LLMError, ValueError) as exc:
                 self.models_error = str(exc)
+                self._models_at = time.time()     # negative-cache the failure
                 return self._models
         return self._models
 
@@ -944,6 +949,7 @@ class OpenRouterClient(LLMClient):
                 self.models_error = ""
             except (LLMError, ValueError) as exc:
                 self.models_error = str(exc)
+                self._models_at = time.time()     # negative-cache the failure
                 return self._models
         return self._filter_models(query=query, limit=limit, free_only=free_only)
 
