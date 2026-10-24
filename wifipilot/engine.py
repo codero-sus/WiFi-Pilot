@@ -296,10 +296,10 @@ class Engine:
             time.sleep(0.3)
             now = time.time()
             count = len(self.session.aps)
-            if count != seen:
-                seen = count
-                last_new = now
-            elif seen:
+            if count > seen:            # a genuinely new AP resets the quiet clock;
+                last_new = now          # an expiring one must not stall the settle
+            seen = count
+            if seen:
                 elapsed = now - started
                 quiet = now - last_new
                 if (elapsed >= 0.7 * seconds and quiet >= max(3.0, 0.25 * seconds)) or \

@@ -468,11 +468,22 @@ def test_cracker_stamps_budget_on_failure(tmp_path, session):
     assert "crack_tried_timeout" not in nofile.extra            # no run happened
 
 
-def test_scan_for_exits_early_when_neighbourhood_settles(config):
+def test_scan_for_exits_early_when_neighbourhood_settles(config, monkeypatch):
     import time as _time
 
+    from wifipilot.demo import DemoRadio
     from wifipilot.engine import Engine
 
+    # Seed the demo world (same trick as scripts/bench_campaign.py): with a
+    # random neighbourhood the last AP can legitimately arrive late and the
+    # wall-clock bound below turns into a coin flip on loaded CI runners.
+    # NB: importlib, not a dotted path — ``wifipilot.engine`` the package
+    # attribute is the public ``wp.engine()`` *function*, not the module.
+    import importlib
+
+    engine_module = importlib.import_module("wifipilot.engine")
+    monkeypatch.setattr(engine_module, "DemoRadio",
+                        lambda verbose=False: DemoRadio(seed=42, verbose=verbose))
     engine = Engine(config, demo=True)
     started = _time.time()
     engine.scan_for(20.0)
