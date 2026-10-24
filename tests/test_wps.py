@@ -147,8 +147,12 @@ def test_order_without_a_first_half_sweeps_first_half_major():
 
 
 def test_a_bad_first_half_is_ignored_rather_than_swept():
-    order = list(wps.pin_attempt_order([], first_half="12"))     # not four digits
-    assert order[:4] == ["00000000", "00000017", "00000024", "00000031"]
+    import itertools
+
+    # islice: the fallback is the whole 10^7 sweep; only its head is pinned
+    # here (listing it all cost this test ~30 s).
+    order = list(itertools.islice(wps.pin_attempt_order([], first_half="12"), 4))
+    assert order == ["00000000", "00000017", "00000024", "00000031"]
 
 
 def test_attempt_plan_states_the_real_cost():

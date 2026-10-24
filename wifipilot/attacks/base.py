@@ -65,6 +65,16 @@ class AttackOutcome:
         return cls(STATUS_SKIPPED, result, detail)
 
 
+#: Demo simulations report the *simulated* duration but must not burn it in
+#: wall-clock.  They used to sleep 0.25-0.4 s per progress tick for the
+#: whole simulated window (a real 8-12 s per flood), which cost the test
+#: suite minutes and made demo campaigns crawl.  Demo loops now run
+#: DEMO_TICKS progress ticks of DEMO_TICK_SECONDS each (~0.25 s wall) and
+#: report the simulated window as the duration.  One place to tune.
+DEMO_TICKS = 8
+DEMO_TICK_SECONDS = 0.03
+
+
 @dataclass
 class AttackContext:
     """Everything an attack module is allowed to touch."""

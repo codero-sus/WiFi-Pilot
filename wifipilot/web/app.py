@@ -1067,11 +1067,16 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
             raise HTTPException(status_code=400, detail="not a MAC address")
         vendor = vendor or (oui_vendor(mac) if mac else "")
         candidates = wps_module.candidate_pins(bssid=mac, essid=essid, vendor=vendor)
-        order = list(wps_module.pin_attempt_order(
-            [item.pin for item in candidates if item.pin], first_half=first_half))
+        import itertools
+
+        # islice: the full order is a 10^7 sweep; listing it took ~30 s.
+        order = list(itertools.islice(
+            wps_module.pin_attempt_order(
+                [item.pin for item in candidates if item.pin],
+                first_half=first_half), max(1, min(200, limit))))
         return {"ok": True, "bssid": mac, "essid": essid, "vendor": vendor,
                 "candidates": [item.to_dict() for item in candidates],
-                "order": order[:max(1, min(200, limit))],
+                "order": order,
                 "plan": wps_module.attempt_plan(bssid=mac, essid=essid, vendor=vendor)}
 
     @app.get("/api/pmk/cache")

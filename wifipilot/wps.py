@@ -266,9 +266,20 @@ def pin_attempt_order(prefer: Sequence[str] = (), first_half: str = ""
                 seen.add(pin)
                 yield pin
         return
+    # Arithmetic check digits for the 10^7 sweep: calling complete_pin()
+    # per value (string building + checksum()) took ~30 s to walk the
+    # space; splitting the weighted digit sum into a per-prefix part and a
+    # per-middle part yields the identical sequence in ~2 s.  Weights for
+    # digits d1..d7 are 3,1,3,1,3,1,3 (see checksum()).
+    middle_sums = [3 * (m // 100) + (m // 10) % 10 + 3 * (m % 10)
+                   for m in range(1_000)]
     for prefix in range(10_000):                    # first-half-major sweep
+        head_sum = (3 * (prefix // 1000) + (prefix // 100) % 10
+                    + 3 * ((prefix // 10) % 10) + prefix % 10)
+        base = prefix * 1_000
         for middle in range(1_000):
-            pin = complete_pin(f"{prefix:04d}{middle:03d}")
+            seven = base + middle
+            pin = f"{seven:07d}{(10 - (head_sum + middle_sums[middle]) % 10) % 10}"
             if pin not in seen:
                 seen.add(pin)
                 yield pin

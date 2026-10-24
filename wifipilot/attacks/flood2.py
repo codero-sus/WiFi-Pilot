@@ -35,7 +35,7 @@ from ..rawtx import (EAPOL_LOGOFF, RawInjector, build_assoc_request, build_deaut
                      build_eapol_start, build_null_data, build_qos_eapol,
                      build_reassoc_request, injection_available, spoofed_mac)
 from ..util import human_duration
-from .base import Attack, AttackContext, AttackOutcome
+from .base import DEMO_TICK_SECONDS, DEMO_TICKS, Attack, AttackContext, AttackOutcome
 
 
 class _FrameFlood(Attack):
@@ -168,18 +168,22 @@ class _FrameFlood(Attack):
     # ---------------------------------------------------------------- #
     def _demo(self, ctx: AttackContext, ap: AccessPoint, attempt: Attempt,
               seconds: float) -> AttackOutcome:
+        # Simulated duration is reported, not slept: DEMO_TICKS short
+        # ticks carry the progress story (see base.DEMO_TICKS).
         sent = failed = 0
-        started = time.time()
-        step = 0
         window = min(seconds, 8.0)
-        while time.time() - started < window and not ctx.want_stop():
-            step += 1
-            sent += self.demo_rate // 8 + step * 11
+        steps = 0
+        for step in range(1, DEMO_TICKS + 1):
+            if ctx.want_stop():
+                break
+            steps = step
+            sent += (self.demo_rate // 8) * 3 + step * 33
             ctx.progress(f"{self.label} on {ap.display_name}", kind="capture",
-                         bssid=ap.bssid, percent=min(95, step * 20),
+                         bssid=ap.bssid, percent=min(95, round(step / DEMO_TICKS * 100)),
                          detail=f"{sent:,} frame(s) sent (simulated)")
-            time.sleep(0.25)
-        return self._finish(ctx, ap, attempt, sent, failed, time.time() - started, True)
+            time.sleep(DEMO_TICK_SECONDS)
+        return self._finish(ctx, ap, attempt, sent, failed,
+                            window * steps / DEMO_TICKS, True)
 
 
 class AssocFloodAttack(_FrameFlood):

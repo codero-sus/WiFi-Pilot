@@ -26,7 +26,7 @@ from typing import List
 from ..deps import registry
 from ..models import STATUS_SUCCESS, AccessPoint, Attempt, Finding
 from ..util import Process, human_duration
-from .base import Attack, AttackContext, AttackOutcome
+from .base import DEMO_TICK_SECONDS, DEMO_TICKS, Attack, AttackContext, AttackOutcome
 
 
 class _FloodAttack(Attack):
@@ -120,18 +120,22 @@ class _FloodAttack(Attack):
 
     def _demo(self, ctx: AttackContext, ap: AccessPoint, attempt: Attempt,
               seconds: float) -> AttackOutcome:
+        # Simulated duration is reported, not slept (see base.DEMO_TICKS):
+        # this was up to 12 real seconds per flood in demo mode.
         sent = 0
-        started = time.time()
-        step = 0
+        window = min(seconds, 12.0)
+        steps = 0
         rate = self.demo_rate.get(self.mode, 800)
-        while time.time() - started < min(seconds, 12) and not ctx.want_stop():
-            step += 1
-            sent += rate + int(time.time() * 13) % 300
+        for step in range(1, DEMO_TICKS + 1):
+            if ctx.want_stop():
+                break
+            steps = step
+            sent += (rate + int(time.time() * 13) % 300) * 3
             ctx.progress(f"{self.label} on {ap.display_name}", kind="capture",
-                         bssid=ap.bssid, percent=min(95, step * 20),
+                         bssid=ap.bssid, percent=min(95, round(step / DEMO_TICKS * 100)),
                          detail=f"{sent:,} frame(s) sent (simulated)")
-            time.sleep(0.4)
-        return self._finish(ctx, ap, attempt, sent, time.time() - started, True)
+            time.sleep(DEMO_TICK_SECONDS)
+        return self._finish(ctx, ap, attempt, sent, window * steps / DEMO_TICKS, True)
 
     def _live(self, ctx: AttackContext, ap: AccessPoint, attempt: Attempt,
               seconds: float) -> AttackOutcome:
