@@ -49,6 +49,24 @@ def test_public_names_are_importable_from_the_package_root():
         assert callable(getattr(wp, name)), name
 
 
+def test_api_functions_survive_same_named_submodule_imports():
+    """Importing wifipilot.<name> must never flip wp.<name> into a module.
+
+    Six API functions share their name with a submodule; Python sets the
+    package attribute to the submodule when it first loads.  With the
+    registry imports deferred, that flip broke wp.crack/wp.demo — the
+    package module class now resolves those names to the functions, and
+    this test loads every collider late to prove it.
+    """
+    import importlib
+    import sys
+
+    for name in ("config", "crack", "demo", "engine", "presets", "session"):
+        module = importlib.import_module(f"wifipilot.{name}")
+        assert callable(getattr(wp, name)), f"wp.{name} flipped to a module"
+        assert sys.modules[f"wifipilot.{name}"] is module   # still reachable
+
+
 def test_import_does_not_require_a_radio_or_the_web_extras():
     """``import wifipilot`` must be safe on a machine with nothing installed."""
     code = ("import sys; sys.modules['fastapi'] = None; import wifipilot as wp; "
