@@ -950,10 +950,15 @@ def attack(target: Any = ALL, mode: str = "force", duration: Union[float, str] =
                 pump.close()
             raise
         engine.session.selected_bssids = selected
+        # A wildcard means "everything the radio finds, whenever it finds
+        # it": pass no filter.  Freezing the list at whatever was visible
+        # when discovery ended silently exempts late arrivals (the
+        # scanner keeps running during the campaign) for the whole run.
+        campaign_targets = [] if _is_wildcard(target) else selected
 
         def campaign() -> None:
             try:
-                engine.run_campaign(targets=selected, duration=seconds, scan_first=False)
+                engine.run_campaign(targets=campaign_targets, duration=seconds, scan_first=False)
             except Exception as exc:                     # surfaced through the result
                 engine.bus.error(f"campaign failed: {exc}")
                 result.error = f"{type(exc).__name__}: {exc}"

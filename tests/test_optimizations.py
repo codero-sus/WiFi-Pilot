@@ -327,3 +327,166 @@ def test_model_listing_failures_are_negative_cached(monkeypatch):
     assert calls["n"] == 1                       # second call served by cache
     assert client.list_models(force=True) == []
     assert calls["n"] == 2                       # force still retries
+
+
+# ----------------------------------------------------- wall-clock round ----
+# The "seconds, not microseconds" sweep: dead air in the campaign loop
+# (echo rounds, scan-window sleeps, re-cracked captures, snapshot target
+# filters).  End-to-end numbers: scripts/bench_campaign.py.
+
+def _wc_ap(session, bssid="aa:bb:cc:dd:ee:01", essid="HardNet"):
+    ap, _ = session.upsert_ap(bssid, essid, publish=False)
+    ap.encryption = "WPA2"
+    ap.privacy = "WPA2"
+    ap.cipher = "CCMP"
+    ap.auth = "PSK"
+    ap.signal = -50
+    ap.channel = 6
+    return ap
+
+
+def test_plan_completed_tracks_attempt_outcomes(session):
+    from wifipilot.models import Attempt
+    from wifipilot.planner import Action, Plan, plan_completed
+
+    ap = _wc_ap(session)
+    action = Action(attack="handshake", bssid=ap.bssid)
+    plan = Plan(actions=[action])
+    assert not plan_completed(session, plan)            # never attempted
+    assert not plan_completed(session, None)
+    assert not plan_completed(session, Plan(actions=[]))
+    assert not plan_completed(session, Plan(actions=[Action(attack="stop", bssid=ap.bssid)]))
+
+    attempt = Attempt(attack="handshake", bssid=ap.bssid)
+    ap.attempts.append(attempt)
+    assert not plan_completed(session, plan)            # still running
+    attempt.status = "success"
+    assert plan_completed(session, plan)                # finished -> exhausted
+
+
+def test_crack_worth_trying_budget_semantics():
+    from wifipilot.models import Capture
+    from wifipilot.planner import crack_worth_trying
+
+    def cap(**kw):
+        base = dict(kind="handshake", bssid="aa:bb:cc:dd:ee:01", path="/tmp/x.cap")
+        base.update(kw)
+        return Capture(**base)
+
+    assert crack_worth_trying(cap(), 600)                       # fresh loot
+    assert not crack_worth_trying(cap(password="hunter2"), 600)
+    assert not crack_worth_trying(cap(kind="wep_ivs"), 600)
+    assert not crack_worth_trying(cap(path=""), 600)            # nothing on disk
+    assert not crack_worth_trying(cap(extra={"crack_queued": True}), 600)
+    tried = cap(extra={"crack_tried_timeout": 180.0})
+    assert crack_worth_trying(tried, 600)                       # quick pass only
+    assert not crack_worth_trying(tried, 180)                   # budget spent
+    assert not crack_worth_trying(cap(extra={"crack_tried_timeout": 600.0}), 600)
+    assert crack_worth_trying(cap(extra={"crack_tried_timeout": 600.0}), 3600)
+
+
+def test_prune_excludes_running_succeeded_and_twice_failed(session):
+    from wifipilot.models import Attempt
+    from wifipilot.planner import _prune
+
+    ap = _wc_ap(session)
+    ap.attempts.append(Attempt(attack="ie_audit", bssid=ap.bssid))          # running
+    done = Attempt(attack="pmf_audit", bssid=ap.bssid)
+    done.status = "success"
+    ap.attempts.append(done)
+    for _ in range(2):
+        failed = Attempt(attack="deauth", bssid=ap.bssid)
+        failed.status = "failed"
+        ap.attempts.append(failed)
+    once = Attempt(attack="handshake", bssid=ap.bssid)
+    once.status = "failed"
+    ap.attempts.append(once)
+
+    kept = _prune(["ie_audit", "pmf_audit", "deauth", "handshake", "pmkid"], ap)
+    assert kept == ["handshake", "pmkid"]
+
+
+def test_planner_respects_campaign_scope(session, config):
+    from wifipilot.models import Capture
+    from wifipilot.planner import heuristic_plan, rank_targets
+
+    wanted_ap = _wc_ap(session, "aa:bb:cc:dd:ee:02", "InScope")
+    other_ap = _wc_ap(session, "aa:bb:cc:dd:ee:03", "OutOfScope")
+    for ap in (wanted_ap, other_ap):
+        ap.captures.append(Capture(kind="handshake", bssid=ap.bssid,
+                                   valid=True, path="/tmp/x.cap"))
+    ranked = rank_targets(session, config, wanted={wanted_ap.bssid})
+    assert [ap.bssid for ap, _, _ in ranked] == [wanted_ap.bssid]
+    plan = heuristic_plan(session, config, wanted={wanted_ap.bssid})
+    assert plan.actions
+    assert {a.bssid for a in plan.actions} == {wanted_ap.bssid}
+
+
+def test_failed_crack_is_not_renominated_at_same_budget(session, config):
+    from wifipilot.models import Capture
+    from wifipilot.planner import preferred_attacks
+
+    config.crack_timeout = 600
+    ap = _wc_ap(session)
+    capture = Capture(kind="handshake", bssid=ap.bssid, valid=True, path="/tmp/x.cap")
+    ap.captures.append(capture)
+    assert "crack" in preferred_attacks(ap, config)             # fresh loot
+
+    capture.extra["crack_tried_timeout"] = 180.0                # quick pass ran
+    assert "crack" in preferred_attacks(ap, config)             # full run still due
+
+    capture.extra["crack_tried_timeout"] = 600.0                # full budget spent
+    assert "crack" not in preferred_attacks(ap, config)         # no re-crack loop
+
+    ap.captures.append(Capture(kind="pmkid", bssid=ap.bssid,    # fresh loot reopens
+                               valid=True, path="/tmp/y.cap"))
+    assert "crack" in preferred_attacks(ap, config)
+
+
+def test_cracker_stamps_budget_on_failure(tmp_path, session):
+    from wifipilot.crack import Cracker
+    from wifipilot.models import Capture
+    from wifipilot.synth import build_capture
+    from tests.conftest import AP_MAC, SSID, STA_MAC
+
+    path = str(tmp_path / "hard.pcap")
+    build_capture(path, SSID, AP_MAC, STA_MAC, "xQ9zvL2mR8kW")  # underivable PSK
+    junk = tmp_path / "junk.txt"
+    junk.write_text("password123\nletmein2024\nqwertyuiop\n")
+    ap = _wc_ap(session, AP_MAC, SSID)
+    capture = Capture(kind="handshake", bssid=AP_MAC, essid=SSID, path=path, valid=True)
+    ap.captures.append(capture)
+
+    cracker = Cracker(session, session.config, session.bus, demo=False)
+    result = cracker.crack_capture(ap, capture, wordlists=[str(junk)], timeout=25)
+    assert not result.cracked
+    assert capture.extra.get("crack_tried_timeout") == 25.0     # failure is remembered
+
+    nofile = Capture(kind="handshake", bssid=AP_MAC, essid=SSID)
+    result = cracker.crack_capture(ap, nofile, wordlists=[str(junk)], timeout=25)
+    assert not result.cracked
+    assert "crack_tried_timeout" not in nofile.extra            # no run happened
+
+
+def test_scan_for_exits_early_when_neighbourhood_settles(config):
+    import time as _time
+
+    from wifipilot.engine import Engine
+
+    engine = Engine(config, demo=True)
+    started = _time.time()
+    engine.scan_for(20.0)
+    elapsed = _time.time() - started
+    assert engine.session.aps                                   # found the demo world
+    assert elapsed < 16.0, f"discovery took {elapsed:.1f}s of a 20s window"
+
+
+def test_run_attack_refuses_concurrent_duplicate(config):
+    from wifipilot.engine import Engine
+
+    engine = Engine(config, demo=True)
+    ap, _ = engine.session.upsert_ap("aa:bb:cc:dd:ee:09", "BusyNet", publish=False)
+    engine._inflight.add((ap.bssid, "ie_audit"))
+    assert engine.run_attack(ap.bssid, "ie_audit") is None      # already running
+    assert not engine.session.attempts                          # nothing started
+    assert (ap.bssid, "ie_audit") in engine._inflight           # foreign key kept

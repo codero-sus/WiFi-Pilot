@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Container, Dict, List, Optional, Tuple
 
 from .config import Config
 from .deps import registry
 from .attacks import DOS_ATTACKS, MDK4_FLOODS, OFFLINE_ATTACKS
-from .models import ATTACK_NAMES, STATUS_FAILED, STATUS_SUCCESS, AccessPoint
+from .models import ATTACK_NAMES, STATUS_FAILED, STATUS_RUNNING, STATUS_SUCCESS, AccessPoint
 from .session import Session
 from .util import clamp, mac_norm
 
@@ -195,7 +195,7 @@ def score_ap(ap: AccessPoint, config: Config) -> Tuple[float, List[str]]:
 
 
 def rank_targets(session: Session, config: Optional[Config] = None,
-                 limit: int = 5) -> List[Tuple[AccessPoint, float, List[str]]]:
+                 limit: int = 5, wanted: Optional[Container[str]] = None) -> List[Tuple[AccessPoint, float, List[str]]]:
     config = config or session.config
     ranked: List[Tuple[AccessPoint, float, List[str]]] = []
     for ap in session.aps.values():
@@ -203,6 +203,10 @@ def rank_targets(session: Session, config: Optional[Config] = None,
         ap.score = score
         if reasons:
             ap.pick_reason = "; ".join(reasons[:4])
+        if wanted and ap.bssid not in wanted:
+            # scored for the UI, but outside the campaign scope: never
+            # spend a nomination slot on a target the loop will reject
+            continue
         ranked.append((ap, score, reasons))
     ranked.sort(key=lambda item: item[1], reverse=True)
     return ranked[:limit]
@@ -243,6 +247,26 @@ def edition_attacks(config: Config) -> List[str]:
             continue
         out.append(name)
     return out
+
+
+def crack_worth_trying(capture: Any, budget: float) -> bool:
+    """Is another crack run against this capture worth *automatic* nomination?
+
+    A completed run stamps the budget it spent on the capture
+    (``extra["crack_tried_timeout"]`` — see ``Cracker.crack_capture``).
+    Re-running the same material at the same or a smaller budget cannot
+    succeed where it already failed; a larger budget, a fresh capture, or
+    an operator explicitly asking (which never consults this) may retry.
+    """
+    if capture.kind not in ("handshake", "pmkid") or capture.password:
+        return False
+    if capture.extra.get("crack_queued"):
+        return False            # a crack lane already has this one
+    if not (capture.path or capture.hash_path):
+        return False
+    tried = float(capture.extra.get("crack_tried_timeout") or 0)
+    allowed = float(budget) if budget else 1e9
+    return tried < allowed
 
 
 def _wireless_attacks(ap: AccessPoint, config: Config) -> List[str]:
@@ -356,9 +380,12 @@ def _wireless_attacks(ap: AccessPoint, config: Config) -> List[str]:
 
     if ap.cracked:
         return []
-    # already have loot -> crack it
+    # already have loot -> crack it (unless every crackable capture has
+    # already had a full-budget run: re-nominating `crack` then would
+    # re-run the same wordlists for the same guaranteed failure)
     if (ap.has_handshake or ap.has_pmkid) and not config.skip_crack:
-        out.append("crack")
+        if any(crack_worth_trying(c, config.crack_timeout) for c in ap.captures):
+            out.append("crack")
     # offline analyses come before anything that touches the radio: they cost no
     # airtime, they change what we know (a revealed name, an unusable capture), and a
     # capture that turns out to be incomplete should be known before it is trusted
@@ -516,17 +543,20 @@ def _wireless_attacks(ap: AccessPoint, config: Config) -> List[str]:
 
 
 def _prune(out: List[str], ap: AccessPoint) -> List[str]:
-    """Never repeat an attack that succeeded, or failed twice, on one target."""
+    """Never repeat an attack that succeeded, failed twice, or is running."""
     failures: Dict[str, int] = {}
     succeeded: set = set()
+    running: set = set()
     for attempt in ap.attempts:
         if attempt.status == STATUS_FAILED:
             failures[attempt.attack] = failures.get(attempt.attack, 0) + 1
         elif attempt.status == STATUS_SUCCESS:
             succeeded.add(attempt.attack)
+        elif attempt.status == STATUS_RUNNING:
+            running.add(attempt.attack)
     result = []
     for name in dict.fromkeys(out):
-        if name in succeeded:
+        if name in succeeded or name in running:
             continue
         if failures.get(name, 0) >= 2:
             continue
@@ -535,10 +565,10 @@ def _prune(out: List[str], ap: AccessPoint) -> List[str]:
 
 
 def heuristic_plan(session: Session, config: Optional[Config] = None,
-                   limit: int = 3) -> Plan:
+                   limit: int = 3, wanted: Optional[Container[str]] = None) -> Plan:
     """Deterministic plan used when no LLM is available (or agreed with it)."""
     config = config or session.config
-    ranked = rank_targets(session, config, limit=limit)
+    ranked = rank_targets(session, config, limit=limit, wanted=wanted)
     actions: List[Action] = []
     for ap, score, reasons in ranked:
         if score <= -50:
@@ -724,16 +754,36 @@ def should_replan(session: Session, last_plan: Optional[Plan],
         return True, f"{int(age)}s since the last plan"
     # every planned action finished -> re-evaluate
     remaining = [a for a in last_plan.actions if a.attack != "stop"]
-    done = all(_action_done(session, a) for a in remaining) if remaining else True
+    done = plan_completed(session, last_plan) if remaining else True
     if done and age > 5:
         return True, "planned actions completed"
     return False, ""
+
+
+def plan_completed(session: Session, plan: Optional[Plan]) -> bool:
+    """True when every (non-stop) action in ``plan`` has a finished attempt.
+
+    The campaign loop uses this to spot a plan that has already been fully
+    executed: handing such a plan back for another round guarantees a wasted
+    round in which every action is skipped as stale.
+    """
+    if plan is None:
+        return False
+    remaining = [a for a in plan.actions if a.attack != "stop"]
+    return bool(remaining) and all(_action_done(session, a) for a in remaining)
 
 
 def _action_done(session: Session, action: Action) -> bool:
     ap = session.ap(action.bssid)
     if ap is None:
         return True
+    if action.attack == "crack":
+        # cracking leaves no Attempt row; it is done when the AP is solved
+        # or no capture is worth another automatic run at this budget
+        if ap.cracked:
+            return True
+        budget = getattr(session.config, "crack_timeout", 0)
+        return not any(crack_worth_trying(c, budget) for c in ap.captures)
     for attempt in reversed(ap.attempts):
         if attempt.attack == action.attack:
             return attempt.status != "running"
