@@ -102,11 +102,14 @@ maintenance window and a named authorising party.
 # --------------------------------------------------------------------------- #
 # eager: pure stdlib, no side effects, and the whole point of the package is
 # that `import wifipilot as wp` gives you something to call.
-# (`wp.presets` the function and `wifipilot.presets` the submodule lead the
-# usual dual life; this used to need the submodule preloaded here so its
-# first lazy import could not flip the package attribute — the
-# _PackageModule guard at the end of this file makes that preload, and
-# its ~17 ms, unnecessary.)
+# `wp.presets` is the API function and `wifipilot.presets` is also a submodule
+# (the same dual life `wp.config` leads): loading the submodule first keeps
+# the package attribute from flipping to the module on first lazy import.
+# (Removing this preload — the _PackageModule guard below should have made
+# it unnecessary — deterministically failed the 3.13 CI job while 3.9-3.12
+# stayed green; 13 ms is cheap insurance until that is understood on a
+# local 3.13, which this project currently cannot run.)
+from . import presets as _presets_module  # noqa: E402,F401
 from .api import (  # noqa: E402  (import at the end: api.py imports config/models)
     # ALL_ATTACKS and MODES are deliberately absent here: both need the
     # attack registry (~0.5 s of imports), so they materialise on first
