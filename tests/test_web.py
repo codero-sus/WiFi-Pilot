@@ -298,3 +298,34 @@ def test_state_and_health_report_the_platform(client):
     health = client.get("/healthz").json()
     assert health["platform"] in ("linux", sys.platform)
     assert "provider" in health
+
+
+def test_docs_index_lists_the_bundled_documents(client):
+    payload = client.get("/api/docs").json()
+    names = [doc["name"] for doc in payload["docs"]]
+    assert "OPTIMIZATIONS.md" in names
+    entry = next(doc for doc in payload["docs"] if doc["name"] == "OPTIMIZATIONS.md")
+    assert "414" in entry["title"] and entry["bytes"] > 1000
+
+
+def test_doc_fetch_serves_markdown(client):
+    doc = client.get("/api/docs/OPTIMIZATIONS.md").json()
+    assert doc["name"] == "OPTIMIZATIONS.md"
+    assert doc["markdown"].startswith("# ")
+    assert "414" in doc["markdown"]
+
+
+def test_docs_reject_bad_names_and_traversal(client):
+    for path in ("/api/docs/nope.md", "/api/docs/OPTIMIZATIONS.txt",
+                 "/api/docs/.hidden.md", "/api/docs/..%2F..%2FREADME.md",
+                 "/api/docs/..%2Fapp.py"):
+        assert client.get(path).status_code == 404, path
+
+
+def test_index_has_sidebar_and_the_new_views(client):
+    page = client.get("/").text
+    assert 'id="sidebar"' in page and 'class="tab sidenav' in page
+    for tab in ("targets", "tasks", "devices", "loot", "ai", "log",
+                "setup", "settings", "docs", "about"):
+        assert f'data-tab="{tab}"' in page, tab
+        assert f'id="tab-{tab}"' in page, tab

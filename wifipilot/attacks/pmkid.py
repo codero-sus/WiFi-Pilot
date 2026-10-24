@@ -169,25 +169,36 @@ class PmkidAttack(Attack):
             return self._fail(ctx, attempt, "capture tool failed", proc.error)
         started = time.time()
         found = ""
+        last_size = -1
+        last_progress = 0.0
         try:
             while not ctx.want_stop() and time.time() - started < timeout:
-                time.sleep(1.0)
                 candidate = cap_path if os.path.exists(cap_path) else ""
                 if not candidate:
                     for name in os.listdir(os.path.dirname(dump) or "."):
                         if name.startswith(os.path.basename(dump)[:-4]) and name.endswith(".cap"):
                             candidate = os.path.join(os.path.dirname(dump), name)
                             break
-                if candidate and os.path.getsize(candidate) > 0:
-                    analysis = analyze_file(candidate, max_packets=80000)
-                    if analysis.pmkids:
-                        found = analysis.pmkids[0].pmkid
-                        cap_path = candidate
-                        break
-                ctx.progress(f"sniffing for PMKID · {ap.display_name}", kind="capture",
-                             bssid=ap.bssid,
-                             percent=min(95, (time.time() - started) / max(1, timeout) * 100),
-                             detail="waiting for an association/EAPOL with PMKID KDE")
+                # check first, sleep after (the old loop slept a full
+                # second before even its first look), and re-analyse only
+                # when the capture grew
+                if candidate:
+                    with contextlib.suppress(OSError):
+                        size = os.path.getsize(candidate)
+                        if size > 0 and size != last_size:
+                            last_size = size
+                            analysis = analyze_file(candidate, max_packets=80000)
+                            if analysis.pmkids:
+                                found = analysis.pmkids[0].pmkid
+                                cap_path = candidate
+                                break
+                if time.time() - last_progress >= 1.0:
+                    last_progress = time.time()
+                    ctx.progress(f"sniffing for PMKID · {ap.display_name}", kind="capture",
+                                 bssid=ap.bssid,
+                                 percent=min(95, (time.time() - started) / max(1, timeout) * 100),
+                                 detail="waiting for an association/EAPOL with PMKID KDE")
+                time.sleep(0.25)
         finally:
             with contextlib.suppress(Exception):
                 proc.stop()

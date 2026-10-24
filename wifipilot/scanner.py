@@ -420,11 +420,17 @@ class Scanner:
         self.bus.log(f"discovery running on {monitor} (band {self.config.band})", level="success")
         self._maybe_start_wash(monitor)
 
+        # _parse_csv is mtime-gated, so polling at 0.25s costs a stat when
+        # nothing changed but registers each airodump write up to ~0.75s
+        # sooner than the old 1s cadence; WPS/stats keep their 1s rhythm
+        tick = 0
         while not self._stop.is_set() and self._proc.running:
             self._parse_csv()
-            self._refresh_wps()
-            self._publish_stats()
-            self._stop.wait(1.0)
+            tick += 1
+            if tick % 4 == 0:
+                self._refresh_wps()
+                self._publish_stats()
+            self._stop.wait(0.25)
         if self._proc and not self._proc.running and not self._stop.is_set():
             tail = self._proc.tail
             if tail:

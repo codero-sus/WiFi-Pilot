@@ -27,6 +27,8 @@ Endpoints
 ``POST /api/ai/pull``          pull a model through Ollama
 ``GET  /api/report``           markdown engagement report
 ``GET  /api/export``           JSON export of the whole session
+``GET  /api/docs``             bundled documentation index (repo ``docs/*.md``)
+``GET  /api/docs/{name}``      one bundled document as markdown
 ``WS   /ws``                   live events + state
 """
 
@@ -37,6 +39,7 @@ import contextlib
 import dataclasses
 import json
 import os
+import re
 import threading
 import time
 from datetime import date, datetime
@@ -140,6 +143,40 @@ class WebState:
             self.engine = None
             self.bus.clear()
             return self.get_engine()
+
+
+# --------------------------------------------------------------------------- #
+# bundled documentation (the Docs view)
+# --------------------------------------------------------------------------- #
+
+_DOC_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.md$")
+
+
+def _docs_dir() -> Optional[Path]:
+    """Where the bundled ``docs/*.md`` live (repo checkout layout first)."""
+    candidates = []
+    env = os.environ.get("WIFIPILOT_DOCS_DIR")
+    if env:
+        candidates.append(Path(env))
+    candidates.append(Path(__file__).resolve().parents[2] / "docs")
+    candidates.append(Path.cwd() / "docs")
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _doc_title(path: Path) -> str:
+    """The document's first ``#`` heading, or a prettified file name."""
+    with contextlib.suppress(OSError):
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for _ in range(40):
+                line = handle.readline()
+                if not line:
+                    break
+                if line.startswith("# "):
+                    return line[2:].strip() or path.stem
+    return path.stem.replace("_", " ").replace("-", " ").title()
 
 
 def create_app(config: Optional[Config] = None, demo: bool = False,
@@ -713,6 +750,31 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
     async def api_export():
         engine = engine_or_404()
         return JSONResponse(engine.session.export())
+
+    @app.get("/api/docs")
+    async def api_docs():
+        """Index of the bundled documentation, for the Docs view."""
+        root = _docs_dir()
+        if root is None:
+            return {"docs": [], "available": False}
+        docs = [{"name": path.name, "title": _doc_title(path),
+                 "bytes": path.stat().st_size}
+                for path in sorted(root.glob("*.md"))]
+        return {"docs": docs, "available": True}
+
+    @app.get("/api/docs/{name}")
+    async def api_doc(name: str):
+        """One bundled document as markdown.  Names are whitelisted to a
+        single ``*.md`` file directly inside the docs directory — no
+        traversal, no other file types."""
+        root = _docs_dir()
+        if root is None or not _DOC_NAME_RE.match(name):
+            raise HTTPException(status_code=404, detail="document not found")
+        path = (root / name).resolve()
+        if path.parent != root.resolve() or not path.is_file():
+            raise HTTPException(status_code=404, detail="document not found")
+        return {"name": name, "title": _doc_title(path),
+                "markdown": path.read_text(encoding="utf-8", errors="replace")}
 
     @app.get("/api/file")
     async def api_file(path: str = Query(..., description="absolute path inside the loot/session dirs")):

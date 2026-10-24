@@ -1,4 +1,4 @@
-# Optimizations — the full catalogue (411 entries)
+# Optimizations — the full catalogue (414 entries)
 
 wifipilot's speed is not one trick; it is hundreds of small ones, applied
 everywhere a loop, a lookup or a subprocess repeats. This page catalogues
@@ -557,6 +557,17 @@ the caches and fast paths of all sweeps).
 409. ⏱ One (target, attack) at a time: an engine in-flight guard at the `run_attack` funnel refuses concurrent duplicates from any lane, the planner prunes attacks with a running attempt, and the per-round answer cache is refreshed before the side sweep (it used to re-submit instant audits the plan had just run).
 410. ⏱ The engine's `attackable` fingerprint is outcome- and crack-state-aware (success/failed/running counters, crack stamps, `crack_timeout`, `skip_crack`) — a status flip changes no list length, so the old count-only key served stale ladders.
 411. ⏱ The measurement harness for all of the above: `scripts/bench_campaign.py` runs seeded demo campaigns (`blitz` 79.8 s → 39.4 s, `success` 107.9 s → 42.2 s, with *more* passwords — the saved time is spent attacking, and previously skipped targets are no longer skipped). Guards: the wall-clock section of `tests/test_optimizations.py`.
+
+
+## AC. Live-radio detection latency (⏱ = newest)
+
+These three are live-path only — demo benchmarks cannot see them, because the
+simulated radio delivers captures instantly. On real hardware each one removes
+dead wait between "the packet exists" and "wifipilot knows about it".
+
+412. ⏱ The live scanner polls the airodump CSV every 0.25 s instead of 1.0 s, gated on the file's mtime so an unchanged file costs one stat per slice; the expensive bits (per-AP stats, WPS correlation) still run at a 1 s cadence. A new AP or a newly associated client is noticed up to ~0.75 s sooner — and the settled-discovery detector (§AB) converges on fresher data.
+413. ⏱ Handshake hunting re-analyzes the capture every 0.25 s but only when its size actually changed (bounded at 60 000 packets so a late-campaign capture cannot stall the poll), and the fixed 1.5 s "let airodump flush" nap is now a settle-wait: it proceeds as soon as the file size is stable across two 0.15 s checks (1.5 s cap). A good handshake is typically confirmed ~1.3 s earlier per successful capture, and cracking starts that much sooner.
+414. ⏱ The PMKID hunt checks the hcxdumptool output *before* its first sleep and then every 0.25 s with the same size gate (progress reported at 1/s so the event bus stays quiet). PMKIDs arrive in the first seconds of a burst; the old 1 s loop paid up to a second of pure latency on every one of them.
 
 ---
 

