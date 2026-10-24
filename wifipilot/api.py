@@ -41,13 +41,19 @@ import os
 import threading
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import (TYPE_CHECKING, Any, Callable, Dict, Iterable, List,
+                    Optional, Sequence, Tuple, Union)
 
-from .attacks import DEFAULT_ORDER as registry_order
-from .attacks import OFFLINE_ATTACKS
+if TYPE_CHECKING:                              # annotations only; runtime stays lazy
+    from .engine import Engine
+
 from .config import Config
-from .engine import Engine
 from .events import Event
+# NOTE: .attacks and .engine are deliberately NOT imported at module level.
+# Importing the attack registry executes 46 attack modules (~0.5 s); that
+# cost belongs to the first call that actually runs an attack, not to
+# ``import wifipilot`` or ``wifipilot --json config``.  The names that used
+# to come from there (ALL_ATTACKS, MODES, Engine) materialise lazily below.
 from .models import AccessPoint, Capture
 from .util import (PLATFORM_OVERRIDE_ENV, is_linux, mac_norm, oui_vendor,
                    parse_duration)
@@ -76,36 +82,71 @@ ALL = "all"
 
 #: every attack this build ships, best first.  The order comes from the attack
 #: registry itself, so a new attack is never silently missing from ``"force"``.
-ALL_ATTACKS: List[str] = list(registry_order)
+#: Materialised on first access (see __getattr__ below): building it needs the
+#: registry, and the registry is the expensive import this module defers.
+ALL_ATTACKS: List[str]
 
-#: how much a run is allowed to disturb the neighbourhood
-MODES: Dict[str, Dict[str, Any]] = {
-    # name        loud, disruptive, everything that is off by default is turned on
-    "force": {"stealth": False, "wps_pin": True, "attacks": list(ALL_ATTACKS)},
-    # the tool's own defaults: handsake/PMKID/WPS-pixie/WEP, no online PIN attack
-    "default": {"stealth": False, "wps_pin": False, "attacks": None},
-    # listen-only: passive capture + offline cracking, no deauth, no online PIN
-    "stealth": {"stealth": True, "wps_pin": False, "attacks": None},
-    # strictly passive: capture what the neighbourhood volunteers, never transmit
-    "passive": {"stealth": True, "wps_pin": False,
-                # the read-only decoders belong here: they transmit nothing, and what
-                # they learn (WPS unlocked, PMF absent, which names clients want) is
-                # exactly what a passive engagement should come away with
-                "attacks": ["passive", "ie_audit", "pmf_audit", "pnl_harvest",
-                            "saewolf", "sae_group_audit", "hidden_ssid", "tracker",
-                            "rogue_ap", "enterprise", "pmkid", "handshake", "crack"]},
-    # no radio at all: analyse (and crack) what a previous run already collected
-    "offline": {"stealth": True, "wps_pin": False,
-                # derived from the metadata rather than written out: a new offline
-                # attack is covered by offline mode the moment it registers, instead of
-                # the day somebody remembers to add its name to this literal
-                "attacks": ["crack"] + list(OFFLINE_ATTACKS)},
-    # grab a handshake/PMKID as fast as possible and crack it offline
-    "quick": {"stealth": False, "wps_pin": False,
-              "attacks": ["pmkid", "handshake", "crack"]},
-}
-#: "recall" is easy to type and means the same as a normal engagement
-MODES["recall"] = MODES["default"]
+#: how much a run is allowed to disturb the neighbourhood (also lazy, same reason)
+MODES: Dict[str, Dict[str, Any]]
+
+
+def _build_modes() -> Dict[str, Dict[str, Any]]:
+    from .attacks import DEFAULT_ORDER, OFFLINE_ATTACKS
+
+    modes: Dict[str, Dict[str, Any]] = {
+        # name        loud, disruptive, everything that is off by default is turned on
+        "force": {"stealth": False, "wps_pin": True, "attacks": list(DEFAULT_ORDER)},
+        # the tool's own defaults: handsake/PMKID/WPS-pixie/WEP, no online PIN attack
+        "default": {"stealth": False, "wps_pin": False, "attacks": None},
+        # listen-only: passive capture + offline cracking, no deauth, no online PIN
+        "stealth": {"stealth": True, "wps_pin": False, "attacks": None},
+        # strictly passive: capture what the neighbourhood volunteers, never transmit
+        "passive": {"stealth": True, "wps_pin": False,
+                    # the read-only decoders belong here: they transmit nothing, and what
+                    # they learn (WPS unlocked, PMF absent, which names clients want) is
+                    # exactly what a passive engagement should come away with
+                    "attacks": ["passive", "ie_audit", "pmf_audit", "pnl_harvest",
+                                "saewolf", "sae_group_audit", "hidden_ssid", "tracker",
+                                "rogue_ap", "enterprise", "pmkid", "handshake", "crack"]},
+        # no radio at all: analyse (and crack) what a previous run already collected
+        "offline": {"stealth": True, "wps_pin": False,
+                    # derived from the metadata rather than written out: a new offline
+                    # attack is covered by offline mode the moment it registers, instead of
+                    # the day somebody remembers to add its name to this literal
+                    "attacks": ["crack"] + list(OFFLINE_ATTACKS)},
+        # grab a handshake/PMKID as fast as possible and crack it offline
+        "quick": {"stealth": False, "wps_pin": False,
+                  "attacks": ["pmkid", "handshake", "crack"]},
+    }
+    # "recall" is easy to type and means the same as a normal engagement
+    modes["recall"] = modes["default"]
+    return modes
+
+
+def _modes() -> Dict[str, Dict[str, Any]]:
+    """MODES, building (and caching) it on first use."""
+    cached = globals().get("MODES")
+    if cached is None:
+        cached = _build_modes()
+        globals()["MODES"] = cached
+    return cached
+
+
+def __getattr__(name: str):  # PEP 562: lazy module attributes
+    if name == "ALL_ATTACKS":
+        from .attacks import DEFAULT_ORDER
+
+        value = list(DEFAULT_ORDER)
+        globals()[name] = value
+        return value
+    if name == "MODES":
+        return _modes()
+    if name == "Engine":                       # was importable from here before
+        from .engine import Engine
+
+        globals()[name] = Engine
+        return Engine
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # --------------------------------------------------------------------------- #
@@ -735,10 +776,11 @@ def _select(session: Any, target: Any) -> List[str]:
 
 
 def _apply_mode(mode: str, config: Config, **overrides: Any) -> Dict[str, Any]:
+    modes = _modes()
     key = (mode or "default").strip().lower()
-    if key not in MODES:
-        raise ValueError(f"unknown mode {mode!r} — pick one of: {', '.join(sorted(MODES))}")
-    preset = dict(MODES[key])
+    if key not in modes:
+        raise ValueError(f"unknown mode {mode!r} — pick one of: {', '.join(sorted(modes))}")
+    preset = dict(modes[key])
     for name, value in overrides.items():
         if value is not None:
             preset[name] = value
@@ -756,6 +798,8 @@ def _apply_mode(mode: str, config: Config, **overrides: Any) -> Dict[str, Any]:
 
 def _new_engine(config: Config, verbose: bool = False,
                 authorized: bool = False) -> Tuple[Engine, List["_Pump"]]:
+    from .engine import Engine                # deferred: see the note up top
+
     if _CTX.engine is not None and _CTX.run is not None and _CTX.run.running:
         raise BusyError("a campaign is already running — stop it first (wifipilot.stop()) "
                         "or pass background=False and wait for the previous call")
@@ -1570,11 +1614,17 @@ def pins(bssid: str = "", essid: str = "", vendor: str = "", first_half: str = "
     vendor = vendor or oui_vendor(mac)
     candidates = wps_module.candidate_pins(bssid=mac, essid=str(essid),
                                            vendor=str(vendor))
-    order = list(wps_module.pin_attempt_order(
-        [item.pin for item in candidates if item.pin], first_half=str(first_half)))
+    import itertools
+
+    # islice, not list(): the un-sliced order is the whole 10^7 sweep, and
+    # materialising it to return the first `limit` PINs took ~30 s.
+    order = list(itertools.islice(
+        wps_module.pin_attempt_order(
+            [item.pin for item in candidates if item.pin],
+            first_half=str(first_half)), max(1, int(limit))))
     return {"bssid": mac, "essid": str(essid), "vendor": vendor,
             "candidates": [item.to_dict() for item in candidates],
-            "order": order[:max(1, int(limit))],
+            "order": order,
             "plan": wps_module.attempt_plan(bssid=mac, essid=str(essid),
                                             vendor=str(vendor))}
 

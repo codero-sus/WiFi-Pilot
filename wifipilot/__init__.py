@@ -107,7 +107,11 @@ maintenance window and a named authorising party.
 # the package attribute from flipping to the module on first lazy import.
 from . import presets as _presets_module  # noqa: E402,F401
 from .api import (  # noqa: E402  (import at the end: api.py imports config/models)
-    ALL, ALL_ATTACKS, MODES, AuthorizationError, BusyError, CampaignResult, PlatformError, Run,
+    # ALL_ATTACKS and MODES are deliberately absent here: both need the
+    # attack registry (~0.5 s of imports), so they materialise on first
+    # access through the module __getattr__ below instead of taxing every
+    # ``import wifipilot``.
+    ALL, AuthorizationError, BusyError, CampaignResult, PlatformError, Run,
     ScanResult, TargetError, WifiPilotError, advisor_status, analyze, attack, authorize,
     config, configure, crack, current_run, demo, engine, export, is_running, loot,
     suggest_masks, strategies, presets, accel_info, install_tools, update,
@@ -128,3 +132,54 @@ from .llm import (  # noqa: E402
 )
 from .config import Config, OllamaConfig, OpenRouterConfig  # noqa: E402
 from .models import AccessPoint, Capture  # noqa: E402
+
+
+def __getattr__(name: str):  # PEP 562: registry-derived data, on first touch
+    if name in ("ALL_ATTACKS", "MODES"):
+        import importlib
+
+        # NB: importlib, not ``from . import api`` — this package's
+        # attributes lead dual lives (``wp.presets``/``wp.config`` are
+        # functions), and the module must come from sys.modules either way.
+        api = importlib.import_module("wifipilot.api")
+        value = getattr(api, name)          # api.__getattr__ builds + caches it
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | {"ALL_ATTACKS", "MODES"})
+
+
+# Six public names lead dual lives: ``wp.crack`` is a function and
+# ``wifipilot.crack`` is also a submodule (likewise config/demo/engine/
+# presets/session).  Python sets the package attribute to the *module*
+# whenever a submodule is first loaded, so a single lazy
+# ``import wifipilot.demo`` anywhere used to flip ``wp.demo`` into a module
+# and break the documented API.  The old defence was import-order luck
+# (everything loaded eagerly, functions bound last); with the lazy imports
+# above that luck ran out.  This module subclass makes the functions win
+# deterministically, whatever gets imported in whatever order — the
+# submodules stay reachable through ``sys.modules``/``importlib``, which is
+# how this codebase already reaches shadowed modules.
+import sys as _sys
+import types as _types
+
+_API_FUNCTIONS = {
+    "config": config, "crack": crack, "demo": demo,
+    "engine": engine, "presets": presets, "session": session,
+}
+
+
+class _PackageModule(_types.ModuleType):
+    """Package module whose API functions outrank same-named submodules."""
+
+    def __getattribute__(self, name: str):
+        fn = _API_FUNCTIONS.get(name)
+        if fn is not None:
+            return fn
+        return super().__getattribute__(name)
+
+
+_sys.modules[__name__].__class__ = _PackageModule

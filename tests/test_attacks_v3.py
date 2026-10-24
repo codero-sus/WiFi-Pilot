@@ -99,6 +99,30 @@ def test_the_registry_matches_the_order_and_the_names():
     assert len(NEW_ATTACKS) == 27
 
 
+def test_the_static_name_list_is_complete_without_importing_attacks():
+    """models.ATTACK_NAMES as written in the source must already be all 848.
+
+    The list is read by CLI validation/``--help`` and the planner whitelist
+    before (or without) importing the attack classes — that is what keeps
+    ``import wifipilot`` fast.  attacks/__init__ still appends stragglers at
+    import time, so only an AST-level check can catch this block drifting.
+    """
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(Path("wifipilot/models.py").read_text(encoding="utf-8"))
+    names = []
+    for node in tree.body:
+        target = getattr(node, "targets", [None])[0] if isinstance(node, ast.Assign) \
+            else getattr(node, "target", None)
+        if getattr(target, "id", "") == "ATTACK_NAMES" and isinstance(
+                node, (ast.Assign, ast.AugAssign)):
+            names = list(ast.literal_eval(node.value)) if isinstance(
+                node, ast.Assign) else names + list(ast.literal_eval(node.value))
+    assert set(names) == set(DEFAULT_ORDER)
+    assert len(names) == len(DEFAULT_ORDER)               # and no duplicates
+
+
 def test_every_attack_has_metadata_and_the_metadata_has_no_orphans():
     assert validate() == []
     assert set(ATTACK_META) == set(ATTACK_CLASSES)
