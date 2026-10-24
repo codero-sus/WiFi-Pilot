@@ -1,4 +1,4 @@
-# Optimizations — the full catalogue (419 entries)
+# Optimizations — the full catalogue (420 entries)
 
 wifipilot's speed is not one trick; it is hundreds of small ones, applied
 everywhere a loop, a lookup or a subprocess repeats. This page catalogues
@@ -576,6 +576,7 @@ dead wait between "the packet exists" and "wifipilot knows about it".
 417. ⏱ The public package surface is shadow-proof. Six API functions share a name with a submodule (`wp.crack` vs `wifipilot/crack.py`, likewise config/demo/engine/presets/session); Python rebinds the package attribute to the submodule when it first loads, so a deferred import flipped `wp.demo` into a module object. The package module now resolves those six names to the functions deterministically (submodules stay reachable via `sys.modules`/`importlib`), with a regression test that imports every collider late on purpose.
 418. ⏱ Demo simulations report simulated seconds without sleeping them. The flood/tracker demo loops ticked real `time.sleep` calls for the whole simulated window — a real 8–12 s per demo flood. They now run a shared short cadence (`base.DEMO_TICKS` × `DEMO_TICK_SECONDS` ≈ 0.25 s wall) while reporting the simulated duration, so demo campaigns and the progress stream stay honest but stop wasting wall-clock; the single slowest test in the suite fell from 170 s to 5 s.
 419. ⏱ The WPS PIN attempt order got arithmetic check digits, and its callers stopped materialising 10⁷ PINs. Walking the full checksum-valid space through `complete_pin()` cost ~30 s of CPU; splitting the weighted digit sum into per-prefix/per-middle parts yields the identical sequence in ~6 s. Bigger still: the CLI/API/web `pins` endpoints built the whole 10,000,000-entry list to return the first page — they now `itertools.islice` the generator, taking `wifipilot --json pins …` from 30.3 s to 0.18 s.
+420. ⏱ The presets submodule preload is gone. It existed only so the submodule's first lazy import could not flip `wp.presets` the function into a module; the package-module guard (417) makes flips impossible regardless of import order, so `import wifipilot` drops the other foot too: 78 ms → 66 ms, with presets loading once on first use instead. (The same profiling round measured the built-in cracker's verify path at the raw-PBKDF2 floor — 408–418 candidates/s against 413/s for `pbkdf2_hmac` alone — and rejected a campaign-loop "wake on lane completion" change that was 6 s faster on the seeded bench but recovered 9 passwords instead of 12: the loop's round counters treat cadence as behaviour, so that one stays out.)
 
 ---
 

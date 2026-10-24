@@ -4,6 +4,24 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## Follow-through: the last preload, and CI in parallel (catalogue 420)
+
+* **Startup, finished** — the presets submodule preload (kept last round
+  only as shadow-flip insurance) is removed now that the package-module
+  guard covers it: `import wifipilot` 78 ms → 66 ms. The same round
+  profiled the built-in cracker at the raw-PBKDF2 floor (408–418 vs
+  413 candidates/s for `pbkdf2_hmac` alone — nothing left to shave) and
+  tested-and-rejected waking the campaign loop on lane completions:
+  6 s faster on the seeded bench but 9 passwords instead of 12, because
+  the loop's give-up counters count rounds, and instantaneous rounds
+  outrun in-flight work and late discovery. Speed that costs loot is
+  not speed.
+* **CI runs the full suite in parallel** — `pytest-xdist` joins the dev
+  extra; the full-suite step uses `-n auto --dist loadfile` (each test
+  file stays on one worker, so module fixtures remain coherent). The
+  suite is wait-heavy, so waits overlap: locally 4m05s serial → 1m23s
+  on 2 cores. Targeted steps stay serial for per-area signal.
+
 ## Startup & simulation wall-clock: lazy registry, honest demo clocks (catalogue 415–419)
 
 * **Instant startup** — `import wifipilot` no longer loads the 848-attack
