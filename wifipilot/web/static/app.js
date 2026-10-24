@@ -246,7 +246,7 @@ function renderTargets(state) {
       ? `<span class="tag tag-wps">WPS ${escapeHtml(ap.wps_locked || '?')}</span>`
       : '<span class="dim">no</span>';
     return `<tr data-bssid="${ap.bssid}">
-      <td><button class="chip" data-detail="${ap.bssid}" title="full detail"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg></button></td>
+      <td><button class="chip" data-detail="${ap.bssid}" title="full detail"><svg class="ic" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-info"/></svg></button></td>
       <td class="essid">${escapeHtml(ap.display_name)}${ap.hidden ? ' <span class="dim">(hidden)</span>' : ''}</td>
       <td class="mono">${ap.bssid}</td>
       <td>${ap.channel || '?'}</td>
@@ -262,11 +262,11 @@ function renderTargets(state) {
       <td>${decided}</td>
       <td>
         <select data-attack-select="${ap.bssid}">${options}</select>
-        <button class="chip" data-attack="${ap.bssid}"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg>run</button>
-        <button class="chip" data-crack="${ap.bssid}"><svg class="ic" aria-hidden="true"><use href="#i-key"/></svg>crack</button>
+        <button class="chip" data-attack="${ap.bssid}"><svg class="ic" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-play"/></svg>run</button>
+        <button class="chip" data-crack="${ap.bssid}"><svg class="ic" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-key"/></svg>crack</button>
         <button class="chip" data-crack-mask="${ap.bssid}"
-          title="mask attack: type a pattern such as Telekom-?d?d?d?d"><svg class="ic" aria-hidden="true"><use href="#i-hash"/></svg>mask</button>
-        <button class="chip" data-tag="${ap.bssid}" title="tag this AP for scoping"><svg class="ic" aria-hidden="true"><use href="#i-tag"/></svg>tag</button>
+          title="mask attack: type a pattern such as Telekom-?d?d?d?d"><svg class="ic" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-hash"/></svg>mask</button>
+        <button class="chip" data-tag="${ap.bssid}" title="tag this AP for scoping"><svg class="ic" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-tag"/></svg>tag</button>
       </td>
     </tr>`;
   }).join('') || '<tr><td colspan="13" class="dim">No access points yet — start a campaign or a rescan.</td></tr>';
@@ -287,10 +287,10 @@ function renderLoot(state) {
         ${cap.password ? `<b>PSK</b><span class="pw">${escapeHtml(cap.password)}</span>` : ''}
       </div>
       <div class="row">
-        ${cap.password ? '' : `<button class="chip" data-crack="${cap.bssid}"><svg class="ic" aria-hidden="true"><use href="#i-key"/></svg>crack now</button>
+        ${cap.password ? '' : `<button class="chip" data-crack="${cap.bssid}"><svg class="ic" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-key"/></svg>crack now</button>
         <button class="chip" data-crack-mask="${cap.bssid}"
-          title="mask attack: type a pattern such as Telekom-?d?d?d?d"><svg class="ic" aria-hidden="true"><use href="#i-hash"/></svg>mask</button>`}
-        ${cap.path ? `<a class="chip" href="/api/file?path=${encodeURIComponent(cap.path)}" target="_blank" rel="noopener"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>download</a>` : ''}
+          title="mask attack: type a pattern such as Telekom-?d?d?d?d"><svg class="ic" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-hash"/></svg>mask</button>`}
+        ${cap.path ? `<a class="chip" href="/api/file?path=${encodeURIComponent(cap.path)}" target="_blank" rel="noopener"><svg class="ic" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-download"/></svg>download</a>` : ''}
       </div>
     </div>`).join('') || '<div class="card dim">Nothing captured yet. Handshakes, PMKIDs and cracked PSKs appear here as soon as they land.</div>';
 }
@@ -775,7 +775,7 @@ function attackRow(row) {
     <td class="noise-${row.noise}">${escapeHtml(row.noise || '')}</td>
     <td class="mono dim">${row.port || '—'}</td>
     <td>
-      <button class="chip" data-run-attack="${escapeHtml(row.name)}" title="run it through the engine"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg></button>
+      <button class="chip" data-run-attack="${escapeHtml(row.name)}" title="run it through the engine"><svg class="ic" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-play"/></svg></button>
       <button class="chip" data-explain="${escapeHtml(row.name)}" title="what it does, what the defender sees">?</button>
     </td>
   </tr>`;
@@ -1143,7 +1143,7 @@ function parseDuration(text) {
 
 /* ------------------------------------------- sidebar views & navigation */
 function iconSvg(name) {
-  return `<svg class="ic" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+  return `<svg class="ic" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 }
 
 function gotoTab(name) {
