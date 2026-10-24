@@ -85,14 +85,17 @@ jobs:
         run: python -m pytest tests/test_platform.py -q
 
       - name: Full test suite
-        # Parallel across the runner's cores (--dist loadfile keeps each
-        # test file on one worker, so module-scoped fixtures stay
-        # coherent).  The suite is wait-heavy (demo campaigns, PBKDF2),
-        # so this overlaps waits instead of stacking them: locally
-        # 4m05s serial -> 1m23s on 2 cores (-n 4), verified flake-free
-        # across repeated runs before landing.  The targeted steps above
-        # stay serial: they are fast and give per-area signal first.
-        run: python -m pytest -q -n auto --dist loadfile
+        # Two xdist workers (--dist loadfile keeps each test file on one
+        # worker, so module-scoped fixtures stay coherent).  The suite
+        # is wait-heavy (demo campaigns, PBKDF2), so this overlaps waits
+        # instead of stacking them: locally 4m05s serial -> 2m18s with
+        # -n 2.  Deliberately not -n auto: 4 workers on the 4-core
+        # runner (each spawning its own crack process pools) starved
+        # wall-clock-sensitive tests and failed the 3.13 job, while 3.9/
+        # 3.11/3.12 passed — two workers keep most of the overlap win
+        # with headroom to spare.  The targeted steps above stay
+        # serial: they are fast and give per-area signal first.
+        run: python -m pytest -q -n 2 --dist loadfile
 
       - name: CLI smoke test (simulation, no radio)
         run: |
