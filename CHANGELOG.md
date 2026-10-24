@@ -4,6 +4,38 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## Sidebar navigation + modern console redesign (and live detection latency)
+
+The web UI graduates from a top tab bar to a proper console:
+
+* **Sidebar navigation** with grouped sections (Engage / Think / Machine),
+  count pills, a collapse toggle (persisted) and keyboard shortcuts
+  (`1`–`0` switch views, `/` focuses the target filter, `b` folds the
+  sidebar). Four new views:
+  * **Tasks** — campaign state, live progress, the running attack, a
+    filterable attempt history and the findings feed, all off the
+    existing snapshot (no new backend).
+  * **Setup** — a readiness checklist (platform, radio, tools,
+    wordlists, mode, advisor) plus one-click tool-install planning /
+    execution, radio inventory, demo↔live switching, acceleration and
+    wordlist summaries.
+  * **Docs** — the bundled `docs/*.md` manuals rendered in-app via two
+    read-only, traversal-guarded endpoints (`GET /api/docs[/{name}]`)
+    with search and internal cross-links.
+  * **About** — registry counts (848 = 288 Wi-Fi / 143 Bluetooth /
+    417 IT), session/platform facts and credits.
+* **Full visual redesign** — a professional dark console theme built on
+  design tokens (layered surfaces, hairline borders, soft-tint status
+  tags, tabular-numeral KPIs, sticky blurred topbar) and a stroke-style
+  **SVG icon system** that replaces every emoji in the UI chrome,
+  including the logo mark and favicon. All previous element IDs and the
+  SPA's rendering pipeline are unchanged.
+* **Live-radio detection latency** (catalogue 412–414): scanner CSV
+  polling at 0.25 s mtime-gated slices, size-gated 0.25 s handshake
+  analysis with a file-settle wait instead of the flat 1.5 s flush nap,
+  and a check-first 0.25 s PMKID poll. Sightings and captures are
+  noticed up to ~1 s sooner per event on real hardware.
+
 ## The wall-clock round — killing campaign dead air (and three real bugs)
 
 Microseconds were never the campaign's problem; *waiting* was.

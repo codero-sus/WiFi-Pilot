@@ -66,7 +66,7 @@ function api(path, body, method) {
     let data = {};
     try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { detail: text }; }
     if (!response.ok) {
-      toast(`⚠ ${data.detail || response.statusText}`, true);
+      toast(`${data.detail || response.statusText}`, true);
       throw new Error(data.detail || response.statusText);
     }
     if (data.message) toast(data.message);
@@ -144,6 +144,9 @@ function render() {
   renderPlatform(SNAPSHOT);
   renderEditions(SNAPSHOT);
   renderPresets(SNAPSHOT);
+  renderTasks(SNAPSHOT);
+  renderSetup(SNAPSHOT);
+  renderAbout(SNAPSHOT);
 }
 
 function renderHeader(state) {
@@ -243,7 +246,7 @@ function renderTargets(state) {
       ? `<span class="tag tag-wps">WPS ${escapeHtml(ap.wps_locked || '?')}</span>`
       : '<span class="dim">no</span>';
     return `<tr data-bssid="${ap.bssid}">
-      <td><button class="chip" data-detail="${ap.bssid}">＋</button></td>
+      <td><button class="chip" data-detail="${ap.bssid}" title="full detail"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg></button></td>
       <td class="essid">${escapeHtml(ap.display_name)}${ap.hidden ? ' <span class="dim">(hidden)</span>' : ''}</td>
       <td class="mono">${ap.bssid}</td>
       <td>${ap.channel || '?'}</td>
@@ -259,11 +262,11 @@ function renderTargets(state) {
       <td>${decided}</td>
       <td>
         <select data-attack-select="${ap.bssid}">${options}</select>
-        <button class="chip" data-attack="${ap.bssid}">▶ run</button>
-        <button class="chip" data-crack="${ap.bssid}">🔓 crack</button>
+        <button class="chip" data-attack="${ap.bssid}"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg>run</button>
+        <button class="chip" data-crack="${ap.bssid}"><svg class="ic" aria-hidden="true"><use href="#i-key"/></svg>crack</button>
         <button class="chip" data-crack-mask="${ap.bssid}"
-          title="mask attack: type a pattern such as Telekom-?d?d?d?d">🎭 mask</button>
-        <button class="chip" data-tag="${ap.bssid}" title="tag this AP for scoping">🏷 tag</button>
+          title="mask attack: type a pattern such as Telekom-?d?d?d?d"><svg class="ic" aria-hidden="true"><use href="#i-hash"/></svg>mask</button>
+        <button class="chip" data-tag="${ap.bssid}" title="tag this AP for scoping"><svg class="ic" aria-hidden="true"><use href="#i-tag"/></svg>tag</button>
       </td>
     </tr>`;
   }).join('') || '<tr><td colspan="13" class="dim">No access points yet — start a campaign or a rescan.</td></tr>';
@@ -284,10 +287,10 @@ function renderLoot(state) {
         ${cap.password ? `<b>PSK</b><span class="pw">${escapeHtml(cap.password)}</span>` : ''}
       </div>
       <div class="row">
-        ${cap.password ? '' : `<button class="chip" data-crack="${cap.bssid}">🔓 crack now</button>
+        ${cap.password ? '' : `<button class="chip" data-crack="${cap.bssid}"><svg class="ic" aria-hidden="true"><use href="#i-key"/></svg>crack now</button>
         <button class="chip" data-crack-mask="${cap.bssid}"
-          title="mask attack: type a pattern such as Telekom-?d?d?d?d">🎭 mask</button>`}
-        ${cap.path ? `<a class="chip" href="/api/file?path=${encodeURIComponent(cap.path)}" target="_blank" rel="noopener">⤓ download</a>` : ''}
+          title="mask attack: type a pattern such as Telekom-?d?d?d?d"><svg class="ic" aria-hidden="true"><use href="#i-hash"/></svg>mask</button>`}
+        ${cap.path ? `<a class="chip" href="/api/file?path=${encodeURIComponent(cap.path)}" target="_blank" rel="noopener"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>download</a>` : ''}
       </div>
     </div>`).join('') || '<div class="card dim">Nothing captured yet. Handshakes, PMKIDs and cracked PSKs appear here as soon as they land.</div>';
 }
@@ -449,7 +452,7 @@ function renderPlan(plan) {
     || '<li class="dim">no actions proposed</li>';
   const dropped = plan.dropped || [];
   $('#plan-dropped').innerHTML = dropped.length
-    ? `⚠ rejected by the safety validator: ${dropped.map(escapeHtml).join('; ')}`
+    ? `rejected by the safety validator: ${dropped.map(escapeHtml).join('; ')}`
     : '';
 }
 
@@ -482,7 +485,7 @@ function renderSettings(state) {
   $('#iface-list').innerHTML = (tools.interfaces || []).map((i) => `
     <b>${escapeHtml(i.name)}</b>
     <span>${escapeHtml(i.driver || '?')} · ${(i.bands || []).join('/') || '?'} ·
-      monitor ${i.monitor ? '✅' : '❌'} · injection ${i.injection ? '✅' : '❔'}</span>`).join('')
+      monitor ${i.monitor ? '<b class="ok">yes</b>' : '<b class="bad">no</b>'} · injection ${i.injection ? '<b class="ok">yes</b>' : '<span class="dim">unknown</span>'}</span>`).join('')
     || '<b>none</b><span class="dim">no wireless interfaces detected (simulation mode still works)</span>';
 
   const config = (state.config || {});
@@ -547,7 +550,7 @@ function appendChat(role, message, triage) {
   const log = $('#chat-log');
   const div = document.createElement('div');
   div.className = 'msg ' + (role === 'user' ? 'user' : (triage ? 'sys' : 'assistant'));
-  div.textContent = (triage ? '⚕ ' : '') + (message || '');
+  div.textContent = (message || '');
   if (chatStreaming && role === 'assistant') {
     chatStreaming.replaceWith(div);
     chatStreaming = null;
@@ -772,7 +775,7 @@ function attackRow(row) {
     <td class="noise-${row.noise}">${escapeHtml(row.noise || '')}</td>
     <td class="mono dim">${row.port || '—'}</td>
     <td>
-      <button class="chip" data-run-attack="${escapeHtml(row.name)}" title="run it through the engine">▶</button>
+      <button class="chip" data-run-attack="${escapeHtml(row.name)}" title="run it through the engine"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg></button>
       <button class="chip" data-explain="${escapeHtml(row.name)}" title="what it does, what the defender sees">?</button>
     </td>
   </tr>`;
@@ -897,6 +900,7 @@ function wire() {
     tab.classList.add('active');
     $('#tab-' + tab.dataset.tab).classList.add('active');
     if (tab.dataset.tab === 'devices' && !DEVICES.length) loadDevices();
+    if (tab.dataset.tab === 'docs' && !DOCS.loaded) loadDocs();
   });
 
   $('#btn-campaign').onclick = () => api('/api/campaign', {
@@ -1135,5 +1139,429 @@ function parseDuration(text) {
   const value = parseFloat(match[1]);
   return value * ({ s: 1, m: 60, h: 3600, d: 86400 }[(match[2] || 's').toLowerCase()] || 1);
 }
+
+
+/* ------------------------------------------- sidebar views & navigation */
+function iconSvg(name) {
+  return `<svg class="ic" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+}
+
+function gotoTab(name) {
+  const btn = $$('.tab').filter((t) => t.dataset.tab === name)[0];
+  if (btn) btn.click();
+}
+
+function fmtWhen(value) {
+  if (!value && value !== 0) return '—';
+  if (typeof value === 'number') {
+    return new Date(value * 1000).toLocaleTimeString([], { hour12: false });
+  }
+  return String(value);
+}
+
+const ATTEMPT_TAG = { running: 'tag-running', success: 'tag-ok', failed: 'tag-failed', skipped: 'tag-skipped' };
+
+function renderTasks(state) {
+  const attempts = state.attempts || [];
+  const findings = state.findings || [];
+  const engine = state.engine || {};
+  const progress = state.progress || {};
+  const stats = state.stats || {};
+  const session = state.session || {};
+  const last = attempts[attempts.length - 1] || {};
+  const statusSel = $('#sel-attempt-status');
+  const filterInp = $('#inp-attempt-filter');
+  const sig = [attempts.length, findings.length, progress.percent || 0, progress.active,
+    last.status || '', last.result || '', engine.detail || '', engine.campaign_running,
+    statusSel ? statusSel.value : '', filterInp ? filterInp.value : ''].join('|');
+  if (renderTasks._sig === sig) return;
+  renderTasks._sig = sig;
+
+  const pill = $('#tab-count-tasks');
+  if (pill) pill.textContent = stats.attacks_run != null ? stats.attacks_run : attempts.length;
+
+  $('#tasks-campaign').innerHTML = `
+    <b>campaign</b><span>${engine.campaign_running
+      ? '<span class="tag tag-running">running</span>' : '<span class="tag">idle</span>'}</span>
+    <b>phase</b><span>${escapeHtml(engine.phase || '—')}</span>
+    <b>detail</b><span>${escapeHtml(engine.detail || '—')}</span>
+    <b>current job</b><span class="mono">${escapeHtml(engine.current_job || '—')}</span>
+    <b>queued</b><span>${engine.queue_depth || 0}</span>
+    <b>uptime</b><span>${escapeHtml(session.uptime_h || '—')}</span>`;
+
+  const percent = progress.active ? Math.max(2, Math.min(100, progress.percent || 0)) : 0;
+  $('#tasks-progress-bar').style.width = `${percent}%`;
+  $('#tasks-progress-label').textContent = progress.active
+    ? `${progress.label || 'working'} · ${percent.toFixed(0)}% · ${progress.speed || ''} ${progress.detail || ''}`
+    : 'nothing in flight';
+
+  const by = { running: 0, success: 0, failed: 0, skipped: 0 };
+  attempts.forEach((a) => { if (by[a.status] != null) by[a.status] += 1; });
+  $('#tasks-stats').innerHTML = `
+    <b>attacks run</b><span>${stats.attacks_run != null ? stats.attacks_run : attempts.length}</span>
+    <b>recent</b><span>${attempts.length} tracked · ${by.success} ok · ${by.failed} failed · ${by.running} running · ${by.skipped} skipped</span>
+    <b>handshakes</b><span>${stats.handshakes || 0}</span>
+    <b>loot</b><span>${stats.loot || 0} capture(s) · ${stats.passwords || 0} password(s)</span>
+    <b>findings</b><span>${findings.length}</span>`;
+
+  const act = state.active_attempt;
+  const activeBox = $('#tasks-active');
+  activeBox.className = act ? '' : 'dim';
+  activeBox.innerHTML = act
+    ? `<b>${escapeHtml(act.attack || 'attack')}</b> → <span class="mono">${escapeHtml(act.bssid || '')}</span>
+       <span class="dim">via ${escapeHtml(act.tool || '—')} · since ${fmtWhen(act.started)}${act.detail ? ' · ' + escapeHtml(act.detail) : ''}</span>`
+    : 'nothing running right now';
+
+  const status = statusSel ? statusSel.value : '';
+  const needle = filterInp ? filterInp.value.trim().toLowerCase() : '';
+  const rows = attempts.slice().reverse().filter((a) => {
+    if (status && a.status !== status) return false;
+    if (needle && !(`${a.attack || ''} ${a.bssid || ''} ${a.tool || ''} ${a.result || ''}`).toLowerCase().includes(needle)) return false;
+    return true;
+  });
+  $('#tbl-attempts tbody').innerHTML = rows.map((a) => `
+    <tr>
+      <td class="mono dim">${escapeHtml(fmtWhen(a.started))}</td>
+      <td>${escapeHtml(a.attack || '—')}</td>
+      <td class="mono">${escapeHtml(a.bssid || '—')}</td>
+      <td><span class="tag ${ATTEMPT_TAG[a.status] || ''}">${escapeHtml(a.status || '—')}</span></td>
+      <td class="dim">${typeof a.duration === 'number' && a.duration ? a.duration.toFixed(1) : '—'}</td>
+      <td class="dim">${escapeHtml(a.tool || '—')}</td>
+      <td class="dim" title="${escapeHtml(a.result || a.detail || '')}">${escapeHtml(String(a.result || a.detail || '').slice(0, 90))}</td>
+      <td>${a.chosen_by === 'ai' ? '<span class="tag tag-ai">AI</span>' : `<span class="dim">${escapeHtml(a.chosen_by || 'planner')}</span>`}</td>
+    </tr>`).join('')
+    || '<tr><td colspan="8" class="dim">no attempts match yet — start a campaign or run one attack from Targets.</td></tr>';
+
+  const findingsBox = $('#findings-list');
+  findingsBox.className = findings.length ? '' : 'dim';
+  findingsBox.innerHTML = findings.slice().reverse().map((f) => {
+    const sev = String(f.severity || 'info').toLowerCase();
+    return `<div class="finding sev-${escapeHtml(sev)}">
+      <div class="f-head"><b>${escapeHtml(f.title || f.kind || 'finding')}</b>
+        <span class="tag">${escapeHtml(f.kind || '')}</span>
+        <span class="dim">${escapeHtml(sev)} · ${escapeHtml(fmtWhen(f.created))}${f.bssid ? ' · ' + escapeHtml(f.bssid) : ''}${f.source ? ' · ' + escapeHtml(f.source) : ''}</span></div>
+      ${f.detail ? `<div class="f-detail">${escapeHtml(f.detail)}</div>` : ''}
+    </div>`;
+  }).join('') || 'no findings yet';
+}
+
+function setupCheckItems(state) {
+  const tools = state.tools || {};
+  const platform = state.platform || {};
+  const session = state.session || {};
+  const items = [];
+  items.push(platform.supported === false
+    ? ['bad', `unsupported platform — ${escapeHtml(platform.platform || '?')}; wifipilot is Linux-only`]
+    : ['ok', `Linux host — ${escapeHtml(platform.distro || platform.os || 'posix')} (kernel ${escapeHtml(platform.kernel || '?')})`]);
+  const ifaces = tools.interfaces || [];
+  const monitorIface = ifaces.filter((i) => i.monitor)[0];
+  if (monitorIface) items.push(['ok', `monitor-mode radio ready — ${escapeHtml(monitorIface.name)} (${escapeHtml(monitorIface.driver || 'driver ?')})`]);
+  else if (ifaces.length) items.push(['warn', `wireless interface present (${escapeHtml(ifaces[0].name)}) but no confirmed monitor mode — several attacks need it`]);
+  else items.push(['warn', session.demo ? 'no wireless radio detected — demo mode simulates one' : 'no wireless radio detected — plug in a monitor-capable adapter']);
+  const missing = tools.missing_required || [];
+  items.push(missing.length
+    ? ['warn', `required tools missing: ${missing.map(escapeHtml).join(', ')} — install below or via <code>wifipilot tools install</code>`]
+    : ['ok', 'aircrack-ng toolchain complete — every required tool is on PATH']);
+  const wordlists = state.wordlists || (state.config || {}).wordlists || [];
+  items.push(wordlists.length
+    ? ['ok', `${wordlists.length} wordlist(s) ready for cracking`]
+    : ['warn', 'no wordlist configured — cracking falls back to smart candidates (SSID rules + defaults)']);
+  items.push(session.demo
+    ? ['warn', 'demo mode — all traffic is simulated; flip to live below once the radio is in']
+    : ['ok', 'live mode — talking to the real radio']);
+  const adv = state.advisor || {};
+  items.push(adv.available
+    ? ['ok', `advisor model reachable (${escapeHtml(adv.provider || 'llm')})`]
+    : ['warn', 'no advisor model — the deterministic planner decides on its own (fully supported)']);
+  return items;
+}
+
+function renderSetup(state) {
+  const tools = state.tools || {};
+  const config = state.config || {};
+  const session = state.session || {};
+  const items = setupCheckItems(state);
+  const list = Object.values(tools.tools || {});
+  const sig = JSON.stringify(items) + '|' + list.filter((t) => t.available).length + '|' + session.demo;
+  if (renderSetup._sig === sig) return;
+  renderSetup._sig = sig;
+
+  const icons = { ok: 'check-c', warn: 'alert', bad: 'x-c' };
+  $('#setup-checklist').innerHTML = items.map(([level, text]) =>
+    `<li class="${level}">${iconSvg(icons[level])}<span>${text}</span></li>`).join('');
+
+  const ready = list.filter((t) => t.available).length;
+  const missing = tools.missing_required || [];
+  $('#setup-tools').innerHTML = `
+    <b>installed</b><span>${ready} / ${list.length} tools on PATH</span>
+    <b>missing required</b><span>${missing.length ? missing.map(escapeHtml).join(', ') : '<span class="ok">none</span>'}</span>
+    <b>capabilities</b><span>${escapeHtml(Object.entries(tools.capabilities || {}).filter(([, v]) => v).map(([k]) => k).join(', ') || '—')}</span>`;
+
+  $('#setup-radio').innerHTML = (tools.interfaces || []).map((i) => `
+    <b>${escapeHtml(i.name)}</b><span>${escapeHtml(i.driver || '?')} · ${(i.bands || []).map(escapeHtml).join('/') || '?'} ·
+      monitor ${i.monitor ? '<b class="ok">yes</b>' : '<b class="bad">no</b>'} · injection ${i.injection ? '<b class="ok">yes</b>' : '<span class="dim">unknown</span>'}</span>`).join('')
+    || '<b>none</b><span class="dim">no wireless interfaces detected</span>';
+
+  $('#setup-mode').innerHTML = `
+    <b>mode</b><span>${session.demo ? '<span class="tag">demo (simulated)</span>' : '<span class="tag tag-ok">live radio</span>'}</span>
+    <b>authorized</b><span>${session.authorized ? 'yes' : 'no — tick “authorized” in the control bar before going live'}</span>
+    <b>scanner</b><span>${session.scanning ? 'running' : 'stopped'}</span>`;
+
+  $('#setup-accel').innerHTML = `
+    <b>acceleration</b><span>${escapeHtml(config.accel || 'auto')}</span>
+    <b>jobs</b><span>${config.jobs || 'auto (all cores)'}</span>
+    <b>parallel crack</b><span>${config.parallel_crack === false ? 'off' : 'on'}</span>
+    <b>workers</b><span>${config.accel_workers || 'auto'}</span>`;
+
+  const wordlists = state.wordlists || config.wordlists || [];
+  $('#setup-wordlists').innerHTML = wordlists.length
+    ? wordlists.map((w) => {
+      const name = typeof w === 'string' ? w.split('/').pop() : (w.name || (w.path || '').split('/').pop() || 'wordlist');
+      const size = w && w.size ? ` · ${(w.size / 1024).toFixed(0)} KB` : '';
+      const full = typeof w === 'string' ? w : (w.path || '');
+      return `<span class="chip" title="${escapeHtml(full)}">${escapeHtml(name)}${size}</span>`;
+    }).join('')
+    : '<span class="dim">none configured — cracking uses smart candidates only</span>';
+}
+
+function renderAbout(state) {
+  const edition = state.edition || {};
+  const counts = edition.attacks || {};
+  const total = edition.total || Object.values(counts).reduce((a, b) => a + b, 0);
+  const platform = state.platform || {};
+  const session = state.session || {};
+  const sig = total + '|' + session.demo + '|' + (edition.active || '');
+  if (renderAbout._sig === sig) return;
+  renderAbout._sig = sig;
+  $('#about-attacks').textContent = total
+    ? `${total} attacks — ${counts.wifi || 0} Wi-Fi · ${counts.bluetooth || 0} Bluetooth · ${counts.it || 0} IT`
+    : 'attack registry';
+  $('#about-kv').innerHTML = `
+    <b>mode</b><span>${session.demo ? 'demo (simulated radio)' : 'live'}</span>
+    <b>edition</b><span>${escapeHtml(edition.active || 'all')}</span>
+    <b>session</b><span class="mono">${escapeHtml(session.id || '—')}</span>
+    <b>output</b><span class="mono">${escapeHtml(session.output_dir || '—')}</span>
+    <b>platform</b><span>${escapeHtml(platform.distro || platform.os || '—')} · kernel ${escapeHtml(platform.kernel || '?')}${platform.package_manager ? ' · ' + escapeHtml(platform.package_manager) : ''}</span>
+    <b>uptime</b><span>${escapeHtml(session.uptime_h || '—')}</span>`;
+}
+
+/* ------------------------------------------------------------------ docs */
+const DOCS = { loaded: false, list: [], current: null, filter: '' };
+
+function loadDocs() {
+  api('/api/docs', null, 'GET').then((data) => {
+    DOCS.list = (data && data.docs) || [];
+    DOCS.loaded = true;
+    renderDocsList();
+    if (DOCS.current) return;
+    const preferred = ['GETTING-STARTED.md', 'README.md', 'USAGE.md', 'MANUAL.md'];
+    const first = DOCS.list.filter((d) => preferred.includes(d.name))[0] || DOCS.list[0];
+    if (first) openDoc(first.name);
+  });
+}
+
+function renderDocsList() {
+  const box = $('#docs-list');
+  if (!box) return;
+  const needle = DOCS.filter;
+  const rows = DOCS.list.filter((d) => !needle || `${d.name} ${d.title || ''}`.toLowerCase().includes(needle));
+  box.innerHTML = rows.map((d) => `
+    <button class="doc-item ${d.name === DOCS.current ? 'active' : ''}" data-doc="${escapeHtml(d.name)}">
+      <span>${escapeHtml(d.title || d.name)}</span>
+      <span class="doc-name">${escapeHtml(d.name)}</span>
+    </button>`).join('') || '<div class="dim">no documents match</div>';
+}
+
+function openDoc(name) {
+  if (!name) return;
+  DOCS.current = name;
+  renderDocsList();
+  const body = $('#docs-content');
+  body.innerHTML = '<p class="dim">loading…</p>';
+  api(`/api/docs/${encodeURIComponent(name)}`, null, 'GET').then((data) => {
+    body.innerHTML = data && data.markdown != null
+      ? mdToHtml(data.markdown)
+      : '<p class="dim">could not load this document.</p>';
+    body.scrollTop = 0;
+  });
+}
+
+function mdInline(text) {
+  const codes = [];
+  text = text.replace(/`([^`]+)`/g, (m, c) => { codes.push(c); return `\u0001${codes.length - 1}\u0002`; });
+  text = text.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, url) => {
+    const ext = /^https?:/i.test(url) ? ' target="_blank" rel="noopener"' : '';
+    return `<a href="${url}"${ext}>${label}</a>`;
+  });
+  text = text.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+  text = text.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<i>$2</i>');
+  text = text.replace(/\u0001(\d+)\u0002/g, (m, i) => `<code>${codes[Number(i)]}</code>`);
+  return text;
+}
+
+/* Minimal, safe-enough markdown: the source is HTML-escaped first, then a
+ * line-based pass builds headings, code fences, tables, lists, quotes and
+ * paragraphs. Internal .md links are routed by the docs click handler. */
+function mdToHtml(source) {
+  const lines = escapeHtml(source || '').split('\n');
+  const out = [];
+  let inCode = false;
+  let listTag = null;
+  let tableHead = false;
+  let para = [];
+  const flushPara = () => { if (para.length) { out.push(`<p>${mdInline(para.join(' '))}</p>`); para = []; } };
+  const closeList = () => { if (listTag) { out.push(`</${listTag}>`); listTag = null; } };
+  const closeTable = () => { if (tableHead) { out.push('</tbody></table>'); tableHead = false; } };
+  lines.forEach((rawLine) => {
+    const line = rawLine.replace(/\s+$/, '');
+    if (/^```/.test(line)) {
+      flushPara(); closeList(); closeTable();
+      out.push(inCode ? '</code></pre>' : '<pre><code>');
+      inCode = !inCode;
+      return;
+    }
+    if (inCode) { out.push(line); return; }
+    const heading = line.match(/^(#{1,4})\s+(.*)$/);
+    if (heading) {
+      flushPara(); closeList(); closeTable();
+      const level = heading[1].length;
+      out.push(`<h${level}>${mdInline(heading[2])}</h${level}>`);
+      return;
+    }
+    if (/^\s*(-{3,}|\*{3,})\s*$/.test(line)) { flushPara(); closeList(); closeTable(); out.push('<hr>'); return; }
+    if (/^(?:>|&gt;)\s?/.test(line)) {
+      flushPara(); closeList(); closeTable();
+      out.push(`<blockquote>${mdInline(line.replace(/^(?:>|&gt;)\s?/, ''))}</blockquote>`);
+      return;
+    }
+    if (/^\s*\|/.test(line)) {
+      flushPara(); closeList();
+      if (/^[\s|:-]+$/.test(line)) return;           // separator row
+      const cells = line.split('|').slice(1, -1).map((c) => c.trim());
+      if (!tableHead) {
+        out.push('<table><thead><tr>' + cells.map((c) => `<th>${mdInline(c)}</th>`).join('') + '</tr></thead><tbody>');
+        tableHead = true;
+      } else {
+        out.push('<tr>' + cells.map((c) => `<td>${mdInline(c)}</td>`).join('') + '</tr>');
+      }
+      return;
+    }
+    closeTable();
+    const ul = line.match(/^\s*[-*]\s+(.*)$/);
+    const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (ul || ol) {
+      flushPara();
+      const tag = ul ? 'ul' : 'ol';
+      if (listTag !== tag) { closeList(); out.push(`<${tag}>`); listTag = tag; }
+      out.push(`<li>${mdInline((ul || ol)[1])}</li>`);
+      return;
+    }
+    if (!line.trim()) { flushPara(); closeList(); return; }
+    closeList();
+    para.push(line.trim());
+  });
+  flushPara(); closeList(); closeTable();
+  if (inCode) out.push('</code></pre>');
+  return out.join('\n');
+}
+
+/* ------------------------------------------------------- sidebar wiring */
+function showInstallPlan(result) {
+  const box = $('#setup-plan');
+  if (!box) return;
+  if (!result) { box.textContent = 'install request failed — see the event log'; box.classList.remove('hidden'); return; }
+  const plan = result.plan || {};
+  const commands = (plan.commands || []).map((cmd) => Array.isArray(cmd) ? cmd.join(' ') : String((cmd && cmd.command) || cmd));
+  const lines = [
+    `manager: ${plan.manager || '—'}${plan.supported === false ? ' (unsupported — install manually)' : ''}`,
+    `missing: ${(plan.missing_tools || []).join(', ') || 'nothing'}`,
+  ];
+  if (commands.length) lines.push('', ...commands);
+  if (result.after_missing) lines.push('', `still missing after run: ${result.after_missing.join(', ') || 'nothing'}`);
+  box.textContent = lines.join('\n');
+  box.classList.remove('hidden');
+}
+
+function wireNav() {
+  try {
+    if (localStorage.getItem('wp-side-collapsed') === '1') document.body.classList.add('side-collapsed');
+  } catch (e) { /* storage unavailable */ }
+  const toggleSide = () => {
+    const on = document.body.classList.toggle('side-collapsed');
+    try { localStorage.setItem('wp-side-collapsed', on ? '1' : '0'); } catch (e) { /* storage unavailable */ }
+  };
+  const collapseBtn = $('#btn-collapse');
+  if (collapseBtn) collapseBtn.onclick = toggleSide;
+
+  document.addEventListener('click', (event) => {
+    const go = event.target.closest('[data-goto]');
+    if (go) { gotoTab(go.dataset.goto); return; }
+    const doc = event.target.closest('[data-doc]');
+    if (doc) openDoc(doc.dataset.doc);
+  });
+
+  const rerenderTasks = () => { renderTasks._sig = null; if (SNAPSHOT) renderTasks(SNAPSHOT); };
+  const statusSel = $('#sel-attempt-status');
+  if (statusSel) statusSel.onchange = rerenderTasks;
+  const attemptFilter = $('#inp-attempt-filter');
+  if (attemptFilter) attemptFilter.oninput = rerenderTasks;
+
+  const docSearch = $('#inp-doc-search');
+  if (docSearch) docSearch.oninput = () => { DOCS.filter = docSearch.value.trim().toLowerCase(); renderDocsList(); };
+  const docBody = $('#docs-content');
+  if (docBody) docBody.addEventListener('click', (event) => {
+    const link = event.target.closest('a');
+    if (!link) return;
+    const href = link.getAttribute('href') || '';
+    if (/\.md(#.*)?$/i.test(href) && !/^https?:/i.test(href)) {
+      event.preventDefault();
+      openDoc(href.split('/').pop().split('#')[0]);
+    }
+  });
+
+  const planBtn = $('#btn-setup-plan');
+  if (planBtn) planBtn.onclick = () => api('/api/tools/install', { dry_run: true, yes: false }).then(showInstallPlan);
+  const installBtn = $('#btn-setup-install');
+  if (installBtn) installBtn.onclick = () => {
+    if (!window.confirm('Install the missing tools on this machine now?')) return;
+    installBtn.disabled = true;
+    api('/api/tools/install', { dry_run: false, yes: true })
+      .then(showInstallPlan)
+      .then(() => { installBtn.disabled = false; });
+  };
+  const recheckBtn = $('#btn-setup-recheck');
+  if (recheckBtn) recheckBtn.onclick = () => fetch('/api/tools?force=true').then((r) => r.json())
+    .then(() => api('/api/state', null, 'GET').then((s) => {
+      if (s && s.session) { SNAPSHOT = s; renderSetup._sig = null; render(); }
+    }));
+  const toDemo = $('#btn-setup-demo');
+  if (toDemo) toDemo.onclick = () => { $('#chk-demo').checked = true; switchMode(true); };
+  const toLive = $('#btn-setup-live');
+  if (toLive) toLive.onclick = () => {
+    if (!$('#chk-authorized').checked) { toast('tick “authorized” in the control bar first', true); return; }
+    $('#chk-demo').checked = false;
+    switchMode(false);
+  };
+
+  const ORDER = ['targets', 'tasks', 'devices', 'loot', 'ai', 'log', 'setup', 'settings', 'docs', 'about'];
+  document.addEventListener('keydown', (event) => {
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    const tag = (event.target.tagName || '').toUpperCase();
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || event.target.isContentEditable) return;
+    if (event.key >= '0' && event.key <= '9') {
+      const idx = event.key === '0' ? 9 : Number(event.key) - 1;
+      if (ORDER[idx]) gotoTab(ORDER[idx]);
+    } else if (event.key === '/') {
+      event.preventDefault();
+      gotoTab('targets');
+      const filter = $('#inp-filter');
+      if (filter) filter.focus();
+    } else if (event.key === 'b' || event.key === 'B') {
+      toggleSide();
+    }
+  });
+}
+
+wireNav();
 
 wire();
