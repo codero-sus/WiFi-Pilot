@@ -85,7 +85,14 @@ jobs:
         run: python -m pytest tests/test_platform.py -q
 
       - name: Full test suite
-        run: python -m pytest -q
+        # Parallel across the runner's cores (--dist loadfile keeps each
+        # test file on one worker, so module-scoped fixtures stay
+        # coherent).  The suite is wait-heavy (demo campaigns, PBKDF2),
+        # so this overlaps waits instead of stacking them: locally
+        # 4m05s serial -> 1m23s on 2 cores (-n 4), verified flake-free
+        # across repeated runs before landing.  The targeted steps above
+        # stay serial: they are fast and give per-area signal first.
+        run: python -m pytest -q -n auto --dist loadfile
 
       - name: CLI smoke test (simulation, no radio)
         run: |
