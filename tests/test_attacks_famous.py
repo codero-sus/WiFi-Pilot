@@ -443,6 +443,50 @@ def test_airgeddon_workspace_holds_the_pipeline(config, session, tmp_path):
     assert "password" in portal                                 # a form that asks for it
 
 
+def _hostile_workspace(tmp_path, essid):
+    ap = AccessPoint(bssid=AP_MAC, essid=essid, channel=6)
+    context = _FakeContext()
+    context.session.state_dir = str(tmp_path)
+    attack = ATTACK_CLASSES["airgeddon_portal"]()
+    return attack, context, ap, attack.workspace(context, ap)
+
+
+def test_airgeddon_workspace_neutralises_a_hostile_ssid(tmp_path):
+    """An ESSID is attacker-controlled bytes: it must not inject config or HTML."""
+    _, _, _, workspace = _hostile_workspace(
+        tmp_path, "Evil\nssid=Pwned\nwpa=2\r\ninterface=eth9")
+    with open(workspace["hostapd"], encoding="utf-8") as handle:
+        lines = handle.read().splitlines()
+    directives = [line for line in lines if line and not line.startswith("#")]
+    assert sum(d.startswith("ssid=") for d in directives) == 1   # exactly one ssid line
+    assert not any(d.startswith("wpa=2") for d in directives)
+    assert not any(d.startswith("interface=eth9") for d in directives)
+
+    _, _, _, workspace = _hostile_workspace(tmp_path, "<script>alert(1)</script>")
+    with open(os.path.join(workspace["portal"], "index.html"), encoding="utf-8") as handle:
+        portal = handle.read()
+    assert "<script>alert" not in portal
+    assert "&lt;script&gt;" in portal
+
+
+def test_airgeddon_launch_command_shell_quotes_the_ssid(tmp_path):
+    """The tmux command is a shell string: the ESSID in it must stay one word."""
+    import shlex
+
+    script = tmp_path / "airgeddon.sh"
+    script.write_text("#!/bin/bash\n")
+    (tmp_path / "airgeddon_cli.sh").write_text("# plugin\n")
+    hostile = 'x";$(touch /tmp/pwn);"'
+    attack, context, ap, workspace = _hostile_workspace(tmp_path, hostile)
+    attack.airgeddon = lambda: str(script)                     # type: ignore[method-assign]
+    attack.tmux = lambda: ""                                    # type: ignore[method-assign]
+    launch = attack.launch_airgeddon(context, ap, workspace)
+    assert launch["launched"] is False                          # no tmux: report only
+    tokens = shlex.split(launch["command"])
+    assert tokens[tokens.index("--essid") + 1] == hostile       # one inert argument
+    assert "/tmp/pwn" not in {t for t in tokens if t.startswith("/tmp/")}
+
+
 def test_airgeddon_attack_reports_which_path_ran(config, session):
     outcome = _attack("airgeddon_portal", config, session)
     assert outcome.status == "success"

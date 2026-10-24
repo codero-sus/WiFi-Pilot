@@ -288,6 +288,21 @@ def slugify(text: str, maxlen: int = 48) -> str:
     return (text or "unnamed")[:maxlen]
 
 
+def config_safe(value: Optional[str], maxlen: int = 0, fallback: str = "") -> str:
+    """Make an over-the-air string safe for a line-based config file.
+
+    SSIDs and friends are attacker-controlled arbitrary bytes.  Written raw
+    into ``hostapd.conf``, a value containing a newline stops being a value
+    and becomes extra directives of the broadcaster's choosing.  Strip every
+    control character (CR/LF first of all), collapse to a single line and
+    optionally truncate; printable Unicode survives (SSIDs are often UTF-8).
+    """
+    cleaned = "".join(ch for ch in str(value or "") if ch >= " " and ch != "\x7f").strip()
+    if maxlen:
+        cleaned = cleaned[:maxlen]
+    return cleaned or fallback
+
+
 class Rate:
     """Simple exponentially weighted moving average rate counter (per second)."""
 

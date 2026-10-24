@@ -39,7 +39,7 @@ from ..models import STATUS_SUCCESS, AccessPoint, Attempt, Finding
 from ..netproto import (md4, mschapv2_challenge_hash, mschapv2_verify, nt_hash, radius_access_request,
                         radius_verify_response)
 from ..pcap import analyze_file, iter_frames
-from ..util import human_duration
+from ..util import config_safe, human_duration
 from .base import Attack, AttackContext, AttackOutcome
 
 # --------------------------------------------------------------------------- #
@@ -1108,8 +1108,10 @@ class Mschapv2CrackAttack(_EnterpriseBase):
                             f"mschapv2-{ap.bssid.replace(':', '')}.txt")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as handle:
-            handle.write(f"# MS-CHAPv2 recovery from {ap.essid or ap.bssid}\n"
-                         f"username={username}\npassword={recovered}\n"
+            # key=value file: keep captured strings on their own line
+            handle.write(f"# MS-CHAPv2 recovery from {config_safe(ap.essid) or ap.bssid}\n"
+                         f"username={config_safe(username)}\n"
+                         f"password={config_safe(recovered)}\n"
                          f"challenge={challenge.hex()}\n"
                          f"peer_challenge={peer.hex()}\n"
                          f"response={response.hex()}\n"

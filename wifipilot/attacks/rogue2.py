@@ -42,7 +42,7 @@ from ..netproto import (DHCP_CLIENT_PORT, DHCP_SERVER_PORT, dhcp_offer,
                         parse_ipv4)
 from ..rawtx import (RawInjector, build_arp_reply, build_beacon_frame, build_data,
                      injection_available, spoofed_mac)
-from ..util import human_duration
+from ..util import config_safe, human_duration
 from .base import Attack, AttackContext, AttackOutcome
 from .twin import JOINED_RE, STA_MAC_RE
 
@@ -756,7 +756,9 @@ class Wpa3DowngradeTwinAttack(_RogueService):
                 "# stopped when the attack returns\n"
                 f"interface={interface}\n"
                 "driver=nl80211\n"
-                f"ssid={(ap.essid or 'wifi')[:32]}\n"
+                # config_safe: an ESSID with a newline would otherwise
+                # inject whole directives into this hostapd config
+                f"ssid={config_safe(ap.essid, maxlen=32, fallback='wifi')}\n"
                 f"channel={channel}\n"
                 f"hw_mode={'a' if channel > 14 else 'g'}\n"
                 "auth_algs=1\n"
