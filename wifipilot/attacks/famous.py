@@ -28,7 +28,9 @@ fame:
 from __future__ import annotations
 
 import contextlib
+import html
 import os
+import shlex
 import shutil
 import struct
 import subprocess
@@ -38,6 +40,7 @@ from typing import Any, Dict, List, Sequence, Tuple
 from .. import netproto as np
 from .. import netstack as ns
 from ..models import AccessPoint, Attempt
+from ..util import config_safe
 from ..rawtx import RADIOTAP, describe
 from .base import AttackContext, AttackOutcome
 from .flood2 import _FrameFlood
@@ -461,7 +464,12 @@ class AirgeddonPortalAttack(CaptivePortalAttack):
         os.makedirs(root, exist_ok=True)
         portal = os.path.join(root, "portal")
         os.makedirs(portal, exist_ok=True)
-        ssid = ap.essid or "FreeWiFi"
+        # The SSID is attacker-controlled bytes: a newline in it would turn
+        # into extra hostapd directives below, and markup in it would be
+        # served unescaped by the portal page.  One sanitised twin name for
+        # every file in the workspace (hostapd could not serve the control
+        # characters faithfully anyway).
+        ssid = config_safe(ap.essid, maxlen=32, fallback="FreeWiFi")
         hostapd = os.path.join(root, "hostapd.conf")
         with open(hostapd, "w", encoding="utf-8") as handle:
             handle.write(
@@ -480,7 +488,8 @@ class AirgeddonPortalAttack(CaptivePortalAttack):
                 f"address=/#/{gateway}\n")
         with open(os.path.join(portal, "index.html"), "w", encoding="utf-8") as handle:
             handle.write(
-                f"<!doctype html><title>{ssid}</title>\n<h1>Sign in to {ssid}</h1>\n"
+                f"<!doctype html><title>{html.escape(ssid)}</title>\n"
+                f"<h1>Sign in to {html.escape(ssid)}</h1>\n"
                 "<form method=post action=/submit>"
                 "<input name=password type=password placeholder='Wi-Fi password'>"
                 "<button>Connect</button></form>\n")
@@ -507,11 +516,18 @@ class AirgeddonPortalAttack(CaptivePortalAttack):
         script = self.airgeddon()
         session = f"wifipilot-portal-{ap.bssid.replace(':', '')[:6]}"
         plugin = os.path.join(os.path.dirname(script), "airgeddon_cli.sh")
-        command = f"bash {script}"
+        # tmux runs this string through a shell, and the ESSID in it is
+        # attacker-controlled: repr() quoting would let a hostile SSID such
+        # as  x";$(reboot);"  break out into arbitrary commands.  Every
+        # interpolated value goes through shlex.quote, no exceptions.
+        command = f"bash {shlex.quote(script)}"
         if os.path.exists(plugin):
-            command = (f"bash {script} --plugin {plugin} --interface {ctx.monitor or 'wlan0'} "
-                       f"--essid {workspace['ssid']!r} --bssid {ap.bssid} "
-                       f"--channel {ap.channel or 1}")
+            command = (
+                f"bash {shlex.quote(script)} --plugin {shlex.quote(plugin)} "
+                f"--interface {shlex.quote(ctx.monitor or 'wlan0')} "
+                f"--essid {shlex.quote(workspace['ssid'])} "
+                f"--bssid {shlex.quote(ap.bssid)} "
+                f"--channel {int(ap.channel or 1)}")
         runner = self.tmux()
         if not runner:
             return {"launched": False,
