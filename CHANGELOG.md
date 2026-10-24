@@ -4,6 +4,42 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## The wall-clock round — killing campaign dead air (and three real bugs)
+
+Microseconds were never the campaign's problem; *waiting* was.
+Profiling a demo `blitz` run showed ~63 of 74 seconds spent not
+attacking.  This round removes that dead air (catalogue entries
+401–411 in `docs/OPTIMIZATIONS.md`, marked ⏱; reproduce with
+`scripts/bench_campaign.py` — seeded: **blitz 79.8s → 39.4s,
+success 107.9s → 42.2s, with more passwords recovered: 8 → 12/13**):
+
+* **No more echo rounds**: every productive plan round used to be
+  followed by a wasted one re-offering the just-executed plan; an
+  exhausted plan now bridges straight to a fresh heuristic plan.
+* **No more 36-second dead tail**: finished campaigns slept a whole
+  scan window (10–30s) per empty round before concluding there was
+  nothing left; they now break as soon as everything in scope is
+  handled.  Round-end pacing drops 2.0s → 0.25s, and discovery exits
+  early once the neighbourhood settles (12s → ~5s on blitz).
+* **Bug fix — `target=all` now means all**: the target list was frozen
+  at the end of discovery, so APs appearing later were silently never
+  attacked (and the planner nominating them anyway caused the dead
+  tail above).  The planner is now scope-aware everywhere.
+* **Bug fix — failed cracks are remembered**: a failed crack left no
+  trace, so the planner re-nominated `crack` forever and one
+  uncrackable capture could re-run the same wordlists until the
+  campaign deadline.  Captures now carry the budget already spent;
+  a larger budget or fresh loot may still retry.
+* **Bug fix — no duplicate concurrent attacks**: the same
+  (target, attack) could run twice via overlapping lanes/sweeps;
+  an in-flight guard at the `run_attack` funnel now refuses that.
+* **Cracks overlap the radio**: plan-nominated full cracks moved to
+  the crack lane (they used to stall all radio work for up to
+  `crack_timeout` each), with in-flight markers, lane-aware campaign
+  completion and a stop-responsive shutdown reap.  The planner's
+  attackable cache is now keyed on attempt *outcomes* and crack
+  state, not just list lengths.
+
 ## The 400-optimizations sweep — the snapshot path, the rule engine, negative caching
 
 The second sweep (catalogue entries 201–400 in `docs/OPTIMIZATIONS.md`,

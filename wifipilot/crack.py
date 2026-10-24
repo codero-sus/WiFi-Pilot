@@ -585,6 +585,17 @@ class Cracker:
                 ))
             elif not result.cracked:
                 self.session.stats.crack_attempts += result.attempts
+            # Remember that this capture already had a crack run at this
+            # budget.  Without this, a *failed* crack left no trace the
+            # planner could see, so `crack` was re-nominated every round
+            # and one uncrackable capture re-ran the same wordlists until
+            # the campaign deadline.  The stamp is the budget spent: a
+            # later, larger budget (or a fresh capture) may retry, the
+            # same one may not.  Direct/operator crack calls are never
+            # gated by it — only the planner's automatic nominations are.
+            ran_budget = float(timeout) if timeout else 1e9
+            previous = capture.extra.get("crack_tried_timeout") or 0
+            capture.extra["crack_tried_timeout"] = max(float(previous), ran_budget)
             self.bus.publish(EK.CRACK_END, {"bssid": ap.bssid, **result.to_dict()})
             self.session.clear_progress()
             self._call_masks = []

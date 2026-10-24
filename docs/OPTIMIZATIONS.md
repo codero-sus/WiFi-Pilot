@@ -1,16 +1,19 @@
-# Optimizations — the full catalogue (400 entries)
+# Optimizations — the full catalogue (411 entries)
 
 wifipilot's speed is not one trick; it is hundreds of small ones, applied
 everywhere a loop, a lookup or a subprocess repeats. This page catalogues
 them so none of them is accidentally "cleaned up" away. Entries marked **★**
 landed in the first 200-optimizations sweep, **⚡** in the second sweep that
-took the catalogue to 400; the rest are the accumulated speed work (the 7–12
-minute overhaul, default multiprocessing) and the efficiency design of the
-remaining subsystems, catalogued in the second sweep.
+took the catalogue to 400; entries 401+ (**⏱**) are the wall-clock round —
+campaign-level dead air measured in seconds, not microseconds. The rest are
+the accumulated speed work (the 7–12 minute overhaul, default
+multiprocessing) and the efficiency design of the remaining subsystems,
+catalogued in the second sweep.
 
 **Verify with:** `python3 scripts/bench.py` (microbenchmarks),
-`tests/test_optimizations.py` (behaviour-equivalence guards for the caches
-and fast paths of both sweeps).
+`python3 scripts/bench_campaign.py` (seeded end-to-end campaign wall
+clock), `tests/test_optimizations.py` (behaviour-equivalence guards for
+the caches and fast paths of all sweeps).
 
 ## Measured, before → after (same sandbox, median of 3)
 
@@ -41,6 +44,17 @@ and fast paths of both sweeps).
 | `bt.random_address_hash()` | ~46 µs | ~9.5 µs | **~4.8×** |
 | `pcap` analyse 600 beacons ×10 | 6.71 ms | 5.59 ms | **1.2×** |
 | socket connects per 50 snapshots | 50 | 2 | **25× fewer** |
+
+### Wall-clock round (⏱, seeded demo campaigns — `scripts/bench_campaign.py`, seed 42)
+
+| Campaign (demo, all 14 APs) | Before | After | Result |
+|---|---|---|---|
+| `blitz` wall clock | 79.8 s | **39.4 s** | 2.0× faster, passwords 8 → **12** |
+| `success` wall clock | 107.9 s | **42.2 s** | 2.6× faster, passwords 8 → **13** |
+| discovery phase (blitz, 12 s window) | 12.0 s | **5.1 s** | settled-neighbourhood early exit |
+| dead tail after last useful action | ~36 s | **~0 s** | no scan-window sleeps |
+| wasted (echo) plan rounds | 1 per productive round | **0** | exhausted plans bridge instantly |
+| re-cracks of an uncrackable capture | until deadline | **1 per budget** | failed cracks are remembered |
 
 ---
 
@@ -528,6 +542,21 @@ and fast paths of both sweeps).
 398. Acceleration summaries (`accel_summary`) are derived from that cached detection — no repeated `/proc` reads per snapshot.
 399. Edition/device catalogues (`itdev.edition_catalog`) are assembled from static tables and memoised by the web layer (§K).
 400. This catalogue is the regression net: `scripts/bench.py` + `tests/test_optimizations.py` pin the numbers above so the next 400 entries start from a measured baseline.
+
+
+## AB. Campaign wall-clock — the seconds round (⏱ = new)
+
+401. ⏱ Discovery ends early once the neighbourhood settles: `scan_for` exits at 40% of the window with a quiet last 40% (or 70% with a quiet quarter). Another silent channel-hop cycle finds nothing — it only delays the first attack (blitz discovery 12.0 s → 5.1 s; the full window still runs while APs keep appearing).
+402. ⏱ Echo rounds eliminated: a fully executed plan is never handed back for a second round of stale skips (`planner.plan_completed` + a heuristic bridge in `_maybe_replan`). Previously *every* productive round was followed by one wasted round.
+403. ⏱ Empty-plan rounds break immediately when everything in scope is handled, and poll at 2 s instead of sleeping a whole scan window (10–30 s) per round once targets exist — the old code added a ~36 s dead tail to finished campaigns.
+404. ⏱ The round-end breather is 0.25 s, not a flat 2.0 s nap added after attacks that already took seconds (multiplied by every round of a large preset, this alone was minutes).
+405. ⏱ The planner is scope-aware: `rank_targets`/`heuristic_plan` take the campaign's wanted set, and `think()` drops out-of-scope actions (LLM overreach lands in `plan.dropped`). No more nominations the loop can only reject.
+406. ⏱ `target=all` is no longer snapshotted at selection time: access points discovered mid-campaign are attacked too. The old snapshot silently exempted late arrivals *and* fuelled the planner/loop disagreement behind #403.
+407. ⏱ Failed cracks are remembered per capture with the budget spent (`crack_tried_timeout`): the planner, the loop and the pending-crack pass consult `crack_worth_trying`, so one uncrackable capture can no longer re-run the same wordlists until the campaign deadline. Quick-then-full escalation still works (a 180 s stamp does not block a 600 s budget), a fresh capture reopens cracking, and operator-forced cracks are never gated.
+408. ⏱ Plan-nominated and pending cracks run on the crack lane when `parallel_crack` is on — the radio lane no longer stalls for up to `crack_timeout` (600 s) per capture. An in-flight marker (`crack_queued`) prevents double-cracks, campaign completion now counts lane cracks, and the shutdown reap covers a full crack while staying stop-responsive (sliced waits).
+409. ⏱ One (target, attack) at a time: an engine in-flight guard at the `run_attack` funnel refuses concurrent duplicates from any lane, the planner prunes attacks with a running attempt, and the per-round answer cache is refreshed before the side sweep (it used to re-submit instant audits the plan had just run).
+410. ⏱ The engine's `attackable` fingerprint is outcome- and crack-state-aware (success/failed/running counters, crack stamps, `crack_timeout`, `skip_crack`) — a status flip changes no list length, so the old count-only key served stale ladders.
+411. ⏱ The measurement harness for all of the above: `scripts/bench_campaign.py` runs seeded demo campaigns (`blitz` 79.8 s → 39.4 s, `success` 107.9 s → 42.2 s, with *more* passwords — the saved time is spent attacking, and previously skipped targets are no longer skipped). Guards: the wall-clock section of `tests/test_optimizations.py`.
 
 ---
 
