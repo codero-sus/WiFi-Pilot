@@ -509,7 +509,7 @@ footer { padding: .9rem 1.25rem 2rem; font-size: .73rem; color: var(--faint); bo
 .md code { background: rgba(62, 180, 245, .09); border: 1px solid var(--line-soft); border-radius: 4px; padding: .06rem .32rem; color: #a8dcff; }
 .md pre { background: #070a0e; border: 1px solid var(--line); border-radius: var(--radius-s); padding: .75rem .85rem; overflow: auto; }
 .md pre code { background: transparent; border: none; padding: 0; color: #c9d9ea; }
-.md table { margin: .65rem 0; font-size: .8rem; }
+.md table { margin: .65rem 0; font-size: .8rem; display: block; overflow-x: auto; }
 .md blockquote { border-left: 3px solid var(--accent); margin: .6rem 0; padding: .35rem .75rem; background: var(--inset); color: var(--dim); border-radius: 0 var(--radius-s) var(--radius-s) 0; }
 .md hr { border: none; border-top: 1px solid var(--line); margin: 1.1rem 0; }
 .md a { text-decoration: none; border-bottom: 1px dotted rgba(62, 180, 245, .55); }
