@@ -840,6 +840,17 @@ def apply_cli_config(args: argparse.Namespace) -> Config:
 # live dashboard
 # --------------------------------------------------------------------------- #
 
+#: Terminal palette — the same design tokens as the web UI
+#: (``wifipilot/web/static/style.css``), so the two surfaces read as one
+#: tool.  rich degrades hex colours to the nearest 256/16-colour match on
+#: lesser terminals and drops them entirely when output is not a TTY.
+_TUI = {
+    "accent": "#3eb4f5", "accent2": "#27d3ee", "ok": "#3ecf83",
+    "warn": "#e8b13c", "bad": "#f06c6c", "crit": "#ef6fb4",
+    "violet": "#b79cff", "llm": "#e3a7f7", "dim": "#8fa1b8",
+    "faint": "#5d6f86", "line": "#1e2a3b",
+}
+
 
 class Dashboard:
     """rich-powered live view of the running campaign."""
@@ -866,53 +877,54 @@ class Dashboard:
 
         header = Text()
         mode = "SIMULATION" if session.demo else ("LIVE · authorised" if session.authorized else "LIVE · not authorised")
-        header.append(f" {mode} ", style="bold black on yellow" if session.demo else "bold white on red")
-        header.append("  phase: ", style="dim")
-        header.append(status.phase or "idle", style="bold cyan")
+        header.append(f" ● {mode} ", style=f"bold {_TUI['warn']} on #2e2510" if session.demo else f"bold {_TUI['bad']} on #331515")
+        header.append("  phase: ", style=_TUI["faint"])
+        header.append(status.phase or "idle", style=f"bold {_TUI['accent2']}")
         iface = session.interface_summary.get("monitor") or session.interface_summary.get("interface") or "—"
-        header.append(f"  iface: {iface}", style="dim")
-        header.append(f"  uptime: {human_duration(session.stats.uptime)}", style="dim")
-        header.append(f"  loot: {session.stats.loot}", style="bold green")
-        header.append(f"  PSKs: {session.stats.passwords}", style="bold magenta")
+        header.append(f"  iface: {iface}", style=_TUI["dim"])
+        header.append(f"  uptime: {human_duration(session.stats.uptime)}", style=_TUI["dim"])
+        header.append(f"  loot: {session.stats.loot}", style=f"bold {_TUI['ok']}")
+        header.append(f"  PSKs: {session.stats.passwords}", style=f"bold {_TUI['crit']}")
         cfg = self.engine.config
-        header.append("  AI: ", style="dim")
+        header.append("  AI: ", style=_TUI["faint"])
         if cfg.ai_off():
             # the honest label: there is no model in the loop, by choice
-            header.append("off", style="dim")
-            header.append(" · deterministic", style="dim italic")
+            header.append("off", style=_TUI["dim"])
+            header.append(" · deterministic", style=f"italic {_TUI['faint']}")
         elif advisor.available:
-            header.append(f"{advisor.model or 'ready'}", style="bold magenta")
+            header.append(f"{advisor.model or 'ready'}", style=f"bold {_TUI['violet']}")
             if stats.llm_calls:
-                header.append(f" ·{stats.llm_calls} calls", style="dim magenta")
+                header.append(f" ·{stats.llm_calls} calls", style=_TUI["violet"])
         elif cfg.ollama.enabled or cfg.openrouter.enabled:
-            header.append("offline → heuristics", style="yellow")
+            header.append("offline → heuristics", style=_TUI["warn"])
         else:
-            header.append("off", style="dim")
+            header.append("off", style=_TUI["dim"])
 
         vitals = Text()
 
         def vital(label: str, value: Any, style: str = "white") -> None:
-            vitals.append(f" {label} ", style="dim")
+            vitals.append(f" {label} ", style=_TUI["faint"])
             vitals.append(str(value), style=f"bold {style}")
 
         clients = sum(len(ap.clients) for ap in session.aps.values())
         captures = len(session.all_captures()) if hasattr(session, "all_captures") else 0
-        vital("APs", len(session.aps), "cyan")
-        vital("clients", clients, "cyan")
+        vital("APs", len(session.aps), _TUI["accent2"])
+        vital("clients", clients, _TUI["accent2"])
         vital("attacks", f"{stats.attacks_run} run / {stats.attacks_failed} failed",
-              "green" if not stats.attacks_failed else "yellow")
-        vital("captures", captures, "bold green" if captures else "white")
-        vital("handshakes", stats.handshakes, "green")
-        vital("PMKIDs", stats.pmkids, "green")
-        vital("keys", stats.passwords, "magenta")
+              _TUI["ok"] if not stats.attacks_failed else _TUI["warn"])
+        vital("captures", captures, _TUI["ok"] if captures else "white")
+        vital("handshakes", stats.handshakes, _TUI["ok"])
+        vital("PMKIDs", stats.pmkids, _TUI["ok"])
+        vital("keys", stats.passwords, _TUI["crit"])
         vital("audits", stats.ie_audits + stats.pnl_harvests, "white")
         if cfg.ai_off():
-            vital("decisions", "deterministic", "dim")
+            vital("decisions", "deterministic", _TUI["dim"])
         else:
-            vital("decisions", "model + planner", "magenta")
-            vital("model calls", f"{stats.llm_calls} · {stats.llm_tokens} tok", "magenta")
+            vital("decisions", "model + planner", _TUI["violet"])
+            vital("model calls", f"{stats.llm_calls} · {stats.llm_tokens} tok", _TUI["violet"])
 
-        table = Table(box=None, pad_edge=False, expand=True, show_edge=False)
+        table = Table(box=None, pad_edge=False, expand=True, show_edge=False,
+                      header_style=f"bold {_TUI['faint']}")
         for column, justify in (("SSID", "left"), ("BSSID", "left"), ("CH", "right"),
                                 ("SIG", "right"), ("SEC", "left"), ("WPS", "left"),
                                 ("CLI", "right"), ("LOOT", "left"), ("BY", "left"),
@@ -926,34 +938,41 @@ class Dashboard:
                 loot.append("PMKID")
             if ap.password:
                 loot.append(f"PSK={ap.password}")
-            signal_style = "green" if ap.signal >= -60 else ("yellow" if ap.signal >= -75 else "red")
+            signal_style = _TUI["ok"] if ap.signal >= -60 else (_TUI["warn"] if ap.signal >= -75 else _TUI["bad"])
+            enc = (ap.encryption or "").upper()
+            sec_style = (_TUI["ok"] if "WPA3" in enc else
+                         _TUI["accent"] if "WPA" in enc else
+                         _TUI["bad"] if "WEP" in enc else _TUI["faint"])
             wps = "—"
             if ap.wps:
                 wps = "lock" if ap.wps_locked == "locked" else (ap.wps_locked or "yes")
             next_attacks = "/".join(self.engine.attackable(ap)[:2]) or "—"
             table.add_row(
-                Text(ap.display_name[:22], style="bold white" if not ap.hidden else "dim"),
-                Text(ap.bssid, style="dim"),
-                Text(str(ap.channel or "?"), style="cyan"),
+                Text(ap.display_name[:22], style="bold white" if not ap.hidden else _TUI["faint"]),
+                Text(ap.bssid, style=_TUI["dim"]),
+                Text(str(ap.channel or "?"), style=_TUI["accent2"]),
                 Text(f"{ap.signal}", style=signal_style),
-                Text(ap.security, style="magenta" if ap.encryption not in ("OPEN",) else "dim"),
-                Text(wps, style="yellow" if ap.wps else "dim"),
+                Text(ap.security, style=sec_style),
+                Text(wps, style=_TUI["warn"] if ap.wps else _TUI["faint"]),
                 Text(str(len(ap.clients))),
-                Text(" ".join(loot) or "—", style="green" if loot else "dim"),
-                Text(ap.picked_by or "—", style="magenta" if ap.picked_by == "llm" else "dim"),
-                Text(next_attacks, style="cyan" if next_attacks != "—" else "dim"),
+                Text(" ".join(loot) or "—", style=_TUI["ok"] if loot else _TUI["faint"]),
+                Text(ap.picked_by or "—", style=_TUI["violet"] if ap.picked_by == "llm" else _TUI["faint"]),
+                Text(next_attacks, style=_TUI["accent2"] if next_attacks != "—" else _TUI["faint"]),
             )
         if not self.engine.session.aps:
             table.add_row("—", "waiting for beacons", "", "", "", "", "", "", "", "")
 
         progress = self.engine.session.progress
         bar = ProgressBar(total=100, completed=max(0.0, min(100.0, progress.percent)),
-                          width=40) if HAVE_RICH else Text("")
+                          width=40, style=_TUI["line"],
+                          complete_style=_TUI["accent"],
+                          finished_style=_TUI["accent2"],
+                          pulse_style=_TUI["accent2"]) if HAVE_RICH else Text("")
         progress_line = Text()
         if progress.label:
-            progress_line.append(f" {progress.label} ", style="bold cyan")
-            progress_line.append(f"{progress.percent:4.0f}%  {progress.speed}  ", style="dim")
-            progress_line.append(progress.detail or "", style="dim")
+            progress_line.append(f" {progress.label} ", style=f"bold {_TUI['accent2']}")
+            progress_line.append(f"{progress.percent:4.0f}%  {progress.speed}  ", style=_TUI["dim"])
+            progress_line.append(progress.detail or "", style=_TUI["dim"])
 
         logs = Text()
         for line in self.logs[-self.max_logs:]:
@@ -966,20 +985,24 @@ class Dashboard:
         if plan is not None:
             who = "AI" if plan.source == "llm" else ("planner" if cfg.ai_off() else "heuristic")
             advisor_note = f"{who} plan: {plan.summary()}"
-        footer.append(" " + (advisor_note or status.detail or "")[:160], style="dim")
+        footer.append(" " + (advisor_note or status.detail or "")[:160], style=_TUI["faint"])
         block = rich_box.MINIMAL if HAVE_RICH else None
-        return Group(Panel(header, box=block, padding=(0, 0)),
-                     Panel(vitals, box=block, padding=(0, 0)), table,
-                     Panel(Group(bar, progress_line), box=block, padding=(0, 0)) if HAVE_RICH else Text(""),
-                     Panel(logs, title="[dim]events[/dim]", box=block, padding=(0, 0)),
+        return Group(Panel(header, box=block, padding=(0, 0), border_style=_TUI["line"]),
+                     Panel(vitals, box=block, padding=(0, 0), border_style=_TUI["line"]), table,
+                     Panel(Group(bar, progress_line), box=block, padding=(0, 0),
+                           border_style=_TUI["line"]) if HAVE_RICH else Text(""),
+                     Panel(logs, title=f"[{_TUI['faint']}]events[/]", box=block, padding=(0, 0),
+                           border_style=_TUI["line"]),
                      footer)
 
     def log(self, event: Event) -> None:
         style = {
-            EK.AP_NEW: "cyan", EK.ATTACK_START: "magenta", EK.ATTACK_END: "dim",
-            EK.CAPTURE_NEW: "green", EK.CRACK_FOUND: "bold green", EK.WARNING: "yellow",
-            EK.ERROR: "red", EK.ADVISOR_PLAN: "magenta", EK.ADVISOR_CHAT: "magenta",
-            EK.DEJAUTH if hasattr(EK, "DEJAUTH") else "deauth": "yellow",
+            EK.AP_NEW: _TUI["accent2"], EK.ATTACK_START: _TUI["violet"],
+            EK.ATTACK_END: _TUI["faint"], EK.CAPTURE_NEW: _TUI["ok"],
+            EK.CRACK_FOUND: f"bold {_TUI['crit']}", EK.WARNING: _TUI["warn"],
+            EK.ERROR: _TUI["bad"], EK.ADVISOR_PLAN: _TUI["llm"],
+            EK.ADVISOR_CHAT: _TUI["llm"],
+            EK.DEJAUTH if hasattr(EK, "DEJAUTH") else "deauth": _TUI["warn"],
         }.get(event.kind, "white")
         data = event.data
         message = (data.get("message") or data.get("reasoning")
@@ -987,9 +1010,9 @@ class Dashboard:
                    or data.get("kind", event.kind))
         prefix = event.kind.split(".")[0]
         line = Text()
-        line.append(f" {event.ts and time.strftime('%H:%M:%S', time.localtime(event.ts))} ", style="dim")
+        line.append(f" {event.ts and time.strftime('%H:%M:%S', time.localtime(event.ts))} ", style=_TUI["faint"])
         line.append(f"{prefix:<8}", style=style)
-        line.append(str(message)[:150], style="white" if style in ("white", "dim") else style)
+        line.append(str(message)[:150], style="white" if style in ("white", _TUI["faint"]) else style)
         self.logs.append(line)
         del self.logs[:-400]
 
