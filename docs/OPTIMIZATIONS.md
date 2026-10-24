@@ -1,4 +1,4 @@
-# Optimizations — the full catalogue (414 entries)
+# Optimizations — the full catalogue (419 entries)
 
 wifipilot's speed is not one trick; it is hundreds of small ones, applied
 everywhere a loop, a lookup or a subprocess repeats. This page catalogues
@@ -569,6 +569,14 @@ dead wait between "the packet exists" and "wifipilot knows about it".
 413. ⏱ Handshake hunting re-analyzes the capture every 0.25 s but only when its size actually changed (bounded at 60 000 packets so a late-campaign capture cannot stall the poll), and the fixed 1.5 s "let airodump flush" nap is now a settle-wait: it proceeds as soon as the file size is stable across two 0.15 s checks (1.5 s cap). A good handshake is typically confirmed ~1.3 s earlier per successful capture, and cracking starts that much sooner.
 414. ⏱ The PMKID hunt checks the hcxdumptool output *before* its first sleep and then every 0.25 s with the same size gate (progress reported at 1/s so the event bus stays quiet). PMKIDs arrive in the first seconds of a burst; the old 1 s loop paid up to a second of pure latency on every one of them.
 
+## AD. Startup & simulation wall-clock (⏱ = newest)
+
+415. ⏱ The attack registry is imported lazily. `import wifipilot` used to load all 46 attack modules (848 registered attacks) through `api.py` before returning anything — 655 ms before `wp.config()` could even be called; light CLI commands paid ~710 ms of import to print JSON. The registry, `Engine`, `ALL_ATTACKS` and `MODES` now materialise on first touch (PEP 562), so `import wifipilot` is ~78 ms, `import wifipilot.cli` ~95 ms, and `wifipilot --json config` finishes in ~0.13 s end to end. A real campaign still loads the registry once, when the engine is built.
+416. ⏱ `models.ATTACK_NAMES` is statically complete: all 848 names are written in the file (the list used to hold 107 hand-curated names and silently grow to 848 as a side effect of importing `wifipilot.attacks`). Every cheap consumer — CLI `--attacks` validation and help text, the planner whitelist, preset resolution — is now correct *before* the registry loads, which is what makes 415 safe. An AST-level test compares the written list against the live registry so the two can never drift apart.
+417. ⏱ The public package surface is shadow-proof. Six API functions share a name with a submodule (`wp.crack` vs `wifipilot/crack.py`, likewise config/demo/engine/presets/session); Python rebinds the package attribute to the submodule when it first loads, so a deferred import flipped `wp.demo` into a module object. The package module now resolves those six names to the functions deterministically (submodules stay reachable via `sys.modules`/`importlib`), with a regression test that imports every collider late on purpose.
+418. ⏱ Demo simulations report simulated seconds without sleeping them. The flood/tracker demo loops ticked real `time.sleep` calls for the whole simulated window — a real 8–12 s per demo flood. They now run a shared short cadence (`base.DEMO_TICKS` × `DEMO_TICK_SECONDS` ≈ 0.25 s wall) while reporting the simulated duration, so demo campaigns and the progress stream stay honest but stop wasting wall-clock; the single slowest test in the suite fell from 170 s to 5 s.
+419. ⏱ The WPS PIN attempt order got arithmetic check digits, and its callers stopped materialising 10⁷ PINs. Walking the full checksum-valid space through `complete_pin()` cost ~30 s of CPU; splitting the weighted digit sum into per-prefix/per-middle parts yields the identical sequence in ~6 s. Bigger still: the CLI/API/web `pins` endpoints built the whole 10,000,000-entry list to return the first page — they now `itertools.islice` the generator, taking `wifipilot --json pins …` from 30.3 s to 0.18 s.
+
 ---
 
-*Credits: [codero-sus](https://github.com/codero-sus) · [the-codero.web.app](https://the-codero.web.app)*
+*Credits: [codero-sus](https://github.com/codero-sus) · [the-codero.web.app](https://the-codero.web.app)

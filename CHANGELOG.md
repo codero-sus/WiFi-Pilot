@@ -4,6 +4,30 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## Startup & simulation wall-clock: lazy registry, honest demo clocks (catalogue 415–419)
+
+* **Instant startup** — `import wifipilot` no longer loads the 848-attack
+  registry before returning: 655 ms → ~78 ms (`wifipilot --json config`
+  ≈ 0.13 s end to end). The registry, `Engine`, `ALL_ATTACKS` and `MODES`
+  materialise on first use; `models.ATTACK_NAMES` is now written out in
+  full (848 names, AST drift-guarded) so CLI validation, help text and
+  the planner whitelist are correct before anything heavy loads. A
+  module-class guard keeps the six function/submodule name twins
+  (`wp.crack`, `wp.demo`, …) resolving to the API functions no matter
+  what gets imported in what order.
+* **Demo time is simulated, not slept** — demo floods and the tracker
+  walk burned real wall-clock for their whole simulated window (8–12 s
+  per flood). They now tick on a shared ~0.25 s cadence and report the
+  simulated duration. Demo campaigns feel snappier; the test suite's
+  slowest single test fell 170 s → 5 s.
+* **`pins` is instant** — the CLI/API/web WPS-PIN endpoints built all
+  10,000,000 ordered PINs to display the first page (30.3 s); they now
+  slice the generator (0.18 s), and the sweep itself computes check
+  digits arithmetically (full space 30 s → ~6 s, identical order).
+* **`wifipilot demo` takes `-t/--time` and `-d/--duration`** — it used
+  to discard user timing and always run a 20 s discovery plus the full
+  plan (~35 s).
+
 ## Hardening round: CI de-flake, hostile-SSID fixes, TUI on the design tokens
 
 * **CI de-flake** — the lone Python 3.13 failure was the full-suite step:
