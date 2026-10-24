@@ -4,6 +4,29 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## Hardening round: CI de-flake, hostile-SSID fixes, TUI on the design tokens
+
+* **CI de-flake** — the lone Python 3.13 failure was the full-suite step:
+  `test_scan_for_exits_early_when_neighbourhood_settles` raced a
+  wall-clock bound against a *random* demo neighbourhood. The test now
+  seeds its world (`seed=42`, like `scripts/bench_campaign.py`), and
+  `scan_for`'s settle clock only resets on a genuinely new AP — an
+  expiring one no longer stalls discovery.
+* **Attack-script hardening** — an ESSID is attacker-controlled bytes,
+  and three sinks trusted it: the airgeddon portal's tmux launch built
+  a shell string with `repr()` quoting (a hostile SSID could break out
+  into arbitrary commands; everything is `shlex.quote`d now), the twin
+  SSID was written raw into `hostapd.conf` in two attacks (a newline
+  injected whole directives; new `util.config_safe()` for line-based
+  configs), and the portal page served the SSID as raw HTML (escaped).
+  Regression tests drive all three sinks with hostile SSIDs. The wider
+  audit came back clean: one `Popen` chokepoint, zero `shell=True`.
+* **TUI modernisation** — the live dashboard now draws from the same
+  design tokens as the web console (sky accent, soft status colours,
+  hairline panel rules, dot mode-badge, security column coloured by
+  scheme). rich degrades hex colours gracefully, so plain-text output
+  and every pinned dashboard string are unchanged.
+
 ## Sidebar navigation + modern console redesign (and live detection latency)
 
 The web UI graduates from a top tab bar to a proper console:
