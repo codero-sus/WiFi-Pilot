@@ -305,14 +305,14 @@ def test_docs_index_lists_the_bundled_documents(client):
     names = [doc["name"] for doc in payload["docs"]]
     assert "OPTIMIZATIONS.md" in names
     entry = next(doc for doc in payload["docs"] if doc["name"] == "OPTIMIZATIONS.md")
-    assert "414" in entry["title"] and entry["bytes"] > 1000
+    assert "419" in entry["title"] and entry["bytes"] > 1000
 
 
 def test_doc_fetch_serves_markdown(client):
     doc = client.get("/api/docs/OPTIMIZATIONS.md").json()
     assert doc["name"] == "OPTIMIZATIONS.md"
     assert doc["markdown"].startswith("# ")
-    assert "414" in doc["markdown"]
+    assert "419" in doc["markdown"]
 
 
 def test_docs_reject_bad_names_and_traversal(client):
