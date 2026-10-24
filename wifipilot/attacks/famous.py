@@ -42,7 +42,7 @@ from .. import netstack as ns
 from ..models import AccessPoint, Attempt
 from ..util import config_safe
 from ..rawtx import RADIOTAP, describe
-from .base import AttackContext, AttackOutcome
+from .base import DEMO_TICK_SECONDS, DEMO_TICKS, AttackContext, AttackOutcome
 from .flood2 import _FrameFlood
 from .rogue2 import CaptivePortalAttack
 
@@ -229,17 +229,21 @@ class KrackReplayAttack(_FrameFlood):
 
     def _demo(self, ctx: AttackContext, ap: AccessPoint, attempt: Attempt,
               seconds: float) -> AttackOutcome:
+        # Simulated duration is reported, not slept (see base.DEMO_TICKS).
         sent = failed = 0
-        started = time.time()
-        step = 0
-        while time.time() - started < min(seconds, 8.0) and not ctx.want_stop():
-            step += 1
-            sent += self.demo_rate // 8 + step * 3
+        window = min(seconds, 8.0)
+        steps = 0
+        for step in range(1, DEMO_TICKS + 1):
+            if ctx.want_stop():
+                break
+            steps = step
+            sent += (self.demo_rate // 8) * 3 + step * 9
             ctx.progress(f"{self.label} on {ap.display_name}", kind="attack", bssid=ap.bssid,
-                         percent=min(95, step * 20),
+                         percent=min(95, round(step / DEMO_TICKS * 100)),
                          detail=f"{sent:,} replayed message(s) (simulated)")
-            time.sleep(0.25)
-        return self._finish(ctx, ap, attempt, sent, failed, time.time() - started, True)
+            time.sleep(DEMO_TICK_SECONDS)
+        return self._finish(ctx, ap, attempt, sent, failed,
+                            window * steps / DEMO_TICKS, True)
 
 
 class FragAttacksInjectAttack(_FrameFlood):
@@ -372,18 +376,20 @@ class FragAttacksInjectAttack(_FrameFlood):
         frames = list(self.frames(ctx, ap, 0))
         shapes = describe(frames)
         sent = failure = 0
-        started = time.time()
-        step = 0
-        while time.time() - started < min(seconds, 6.0) and not ctx.want_stop():
-            step += 1
-            sent += len(frames)
+        window = min(seconds, 6.0)      # simulated duration (reported, not slept)
+        steps = 0
+        for step in range(1, DEMO_TICKS + 1):
+            if ctx.want_stop():
+                break
+            steps = step
+            sent += len(frames) * 2
             ctx.progress(f"{self.label} on {ap.display_name}", kind="attack", bssid=ap.bssid,
-                         percent=min(95, step * 20),
+                         percent=min(95, round(step / DEMO_TICKS * 100)),
                          detail=f"{sent} injection frame(s) (simulated)")
-            time.sleep(0.25)
+            time.sleep(DEMO_TICK_SECONDS)
         note = "shapes: " + ", ".join(name for name, _size in shapes[:4])
-        outcome = self._finish(ctx, ap, attempt, sent, failure, time.time() - started, True,
-                               note=note)
+        outcome = self._finish(ctx, ap, attempt, sent, failure,
+                               window * steps / DEMO_TICKS, True, note=note)
         extra = outcome.extra or {}
         extra.update({"shapes": [{"frame": name, "bytes": size} for name, size in shapes],
                       "client": (sorted(ap.clients) or ["ff:ff:ff:ff:ff:ff"])[0],

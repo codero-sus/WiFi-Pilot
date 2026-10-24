@@ -673,7 +673,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_config.add_argument("--write", default="", help="write the effective config to this file")
     p_config.add_argument("--init", action="store_true", help="write ./wifipilot.json")
 
-    sub.add_parser("demo", parents=[common], help="run the whole pipeline in simulation mode (no radio)")
+    p_demo = sub.add_parser("demo", parents=[common], help="run the whole pipeline in simulation mode (no radio)")
+    p_demo.add_argument("-t", "--time", default="20", help="discovery phase length (default 20s)")
+    p_demo.add_argument("-d", "--duration", default="", help="total campaign budget incl. discovery, e.g. 30s (default: until the plan is done)")
     return parser
 
 
@@ -1650,9 +1652,14 @@ def command_pins(args, config: Config, console) -> int:
         return 2
     vendor = args.vendor or oui_vendor(bssid) if bssid else args.vendor
     candidates = wps.candidate_pins(bssid=bssid, essid=args.essid, vendor=vendor)
-    order = list(wps.pin_attempt_order([pin.pin for pin in candidates if pin.pin],
-                                       first_half=args.first_half))
-    shown = order[:max(1, int(args.limit))]
+    import itertools
+
+    # islice: materialising the full 10^7 order to show the first few PINs
+    # took ~30 s (see wps.pin_attempt_order).
+    shown = list(itertools.islice(
+        wps.pin_attempt_order([pin.pin for pin in candidates if pin.pin],
+                              first_half=args.first_half),
+        max(1, int(args.limit))))
     plan = wps.attempt_plan(bssid=bssid, essid=args.essid, vendor=vendor)
     if args.json:
         print(json.dumps({"bssid": bssid, "essid": args.essid, "vendor": vendor,
@@ -1668,7 +1675,7 @@ def command_pins(args, config: Config, console) -> int:
         table.add_row(pin.pin, pin.source, pin.confidence, pin.note or "-")
     console.print(table)
     console.print(f"  attempt order starts: {', '.join(shown[:8])}"
-                  + (" …" if len(order) > 8 else ""))
+                  + (" …" if len(shown) > 8 else ""))
     spaces = plan["spaces"]
     console.print(f"  every 8-digit value: {spaces['every 8-digit value']:,}  ·  "
                   f"checksum-valid: {spaces['checksum-valid PINs']:,}  ·  "
@@ -3200,8 +3207,10 @@ def command_demo(args, config: Config, console) -> int:
     config.ollama.think_interval = min(config.ollama.think_interval, 30.0)
     args_command = argparse.Namespace(**vars(args))
     args_command.skip_crack = False
-    args_command.time = "20"
-    args_command.duration = ""
+    # explicit -t/--duration win; the demo used to discard both and always
+    # run a 20 s discovery plus the full plan (~35 s end to end)
+    args_command.time = getattr(args, "time", "") or "20"
+    args_command.duration = getattr(args, "duration", "") or ""
     args_command.bssid = []
     args_command.no_scan = False
     console.print("[yellow]Simulation mode: wifipilot will not touch any radio. "

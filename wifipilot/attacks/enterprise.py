@@ -114,7 +114,7 @@ class EnterpriseSurveyAttack(Attack):
             ctx.progress(f"capturing the 802.1X exchange on {ap.display_name}",
                          kind="capture", bssid=ap.bssid, percent=step * 33,
                          detail="EAP-Request/Identity → EAP-Response → TLS hello")
-            time.sleep(0.5)
+            time.sleep(0.15)         # demo cadence only; was 0.5 s of dead wall time
             if ctx.want_stop():
                 break
         facts = x509_name(self_signed_certificate())

@@ -96,10 +96,13 @@ def test_scan_runs_in_demo_mode(capsys, tmp_path):
 
 
 def test_demo_command_completes(capsys, tmp_path):
+    # -t/--duration bound the run: the full demo plan takes ~35 s, and
+    # this test only needs the pipeline to run and report (the duration
+    # budget includes discovery, hence 14 s against a 6 s scan)
     code, out, _ = run(capsys, "--demo", "--no-ai", "--json",
                        "-o", str(tmp_path / "loot"),
                        "--session-dir", str(tmp_path / "sessions"),
-                       "--timeout", "8s", "demo")
+                       "--timeout", "8s", "demo", "-t", "6", "--duration", "14s")
     payload = json.loads(out)
     assert "stats" in payload
     assert payload["stats"]["attacks_run"] >= 1

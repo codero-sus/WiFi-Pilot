@@ -122,10 +122,22 @@ def test_passwords_endpoint_reports_weakness(client):
         assert row["seconds"]
 
 
-def test_benchmark_endpoint_stays_short(client):
+def test_benchmark_endpoint_stays_short(client, monkeypatch):
     result = client.post("/api/benchmark", json={"seconds": 1}).json()
     assert result["ok"] is True
     assert result["benchmark"]["rate"] > 0
-    # the endpoint clamps the duration so a browser cannot start a long job
+    # the endpoint clamps the duration so a browser cannot start a long job;
+    # capture the argument instead of really benchmarking for 30 s to prove it
+    import importlib
+
+    engine_module = importlib.import_module("wifipilot.engine")
+    seen = {}
+
+    def stub(self, seconds=5.0, candidates=0):
+        seen["seconds"] = seconds
+        return {"seconds": seconds, "rate": 1.0}
+
+    monkeypatch.setattr(engine_module.Engine, "benchmark", stub)
     clamped = client.post("/api/benchmark", json={"seconds": 9999}).json()
+    assert seen["seconds"] == 30.0
     assert clamped["benchmark"]["seconds"] <= 31.0

@@ -458,9 +458,10 @@ def test_cracker_stamps_budget_on_failure(tmp_path, session):
     ap.captures.append(capture)
 
     cracker = Cracker(session, session.config, session.bus, demo=False)
-    result = cracker.crack_capture(ap, capture, wordlists=[str(junk)], timeout=25)
+    # a 3 s budget exercises the same stamp path as 25 s did, in 3 s
+    result = cracker.crack_capture(ap, capture, wordlists=[str(junk)], timeout=3)
     assert not result.cracked
-    assert capture.extra.get("crack_tried_timeout") == 25.0     # failure is remembered
+    assert capture.extra.get("crack_tried_timeout") == 3.0      # failure is remembered
 
     nofile = Capture(kind="handshake", bssid=AP_MAC, essid=SSID)
     result = cracker.crack_capture(ap, nofile, wordlists=[str(junk)], timeout=25)

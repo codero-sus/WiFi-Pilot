@@ -29,7 +29,7 @@ from ..deps import registry
 from ..models import STATUS_SKIPPED, STATUS_SUCCESS, AccessPoint, Attempt
 from ..sniff import probe_requests
 from ..util import Process, human_duration, mac_norm
-from .base import Attack, AttackContext, AttackOutcome
+from .base import DEMO_TICK_SECONDS, Attack, AttackContext, AttackOutcome
 
 
 class TrackerAttack(Attack):
@@ -188,10 +188,14 @@ class TrackerAttack(Attack):
         seed = int(station.replace(":", ""), 16)
         shape = ("closer", "further away", "stable")[seed % 3]
         rate = 2 + (seed >> 8) % 3
-        started = time.time()
-        step = 0
-        while time.time() - started < timeout and not ctx.want_stop():
-            step += 1
+        # Simulated 0.4 s sampling cadence, compressed wall-clock (see
+        # base.DEMO_TICKS): the trace keeps its 0.4 s timestamps, the demo
+        # no longer spends a real 3.2 s producing eight samples.
+        steps = 0
+        for step in range(1, 9):
+            if ctx.want_stop() or (step - 1) * 0.4 >= timeout:
+                break
+            steps = step
             if shape == "closer":
                 drift = min(step, 6)
             elif shape == "further away":
@@ -199,16 +203,14 @@ class TrackerAttack(Attack):
             else:
                 drift = 1 if step % 2 else -1
             signal = max(-95, min(-20, start + drift * rate))
-            samples.append({"ts": round(time.time() - started, 1), "signal": signal,
+            samples.append({"ts": round((step - 1) * 0.4, 1), "signal": signal,
                             "bssid": ap.bssid})
             ctx.progress(f"following {station}", kind="capture", bssid=ap.bssid,
                          percent=min(95, step * 18),
                          detail=f"{signal} dBm · {len(reported)} probed network(s)")
-            time.sleep(0.4)
-            if step >= 8:
-                break
+            time.sleep(DEMO_TICK_SECONDS)
         return self._report(ctx, ap, attempt, station, why, samples, reported,
-                            [ap.bssid], time.time() - started)
+                            [ap.bssid], steps * 0.4)
 
     # ---------------------------------------------------------------- #
     def _live(self, ctx: AttackContext, ap: AccessPoint, attempt: Attempt,
