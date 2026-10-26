@@ -1,0 +1,18 @@
+wifipilot
+Copyright (c) 2026 codero-sus
+
+This product is dual-licensed under the Apache License, Version 2.0 and the
+BSD 3-Clause License; see LICENSE, LICENSES/Apache-2.0.txt and
+LICENSES/BSD-3-Clause.txt.
+
+It invokes third-party security tools as separate programs and imports
+third-party Python packages; none of that code is included in this
+repository.  The tools, the Python dependencies, their licences and the
+consequences for anyone redistributing a bundle (an AppImage, a .deb, a snap,
+a container image) are listed in THIRD-PARTY.md.  If you redistribute this
+work under Apache-2.0, carry this notice with it; if you redistribute it under
+BSD-3-Clause, keeping the copyright notice and disclaimer is sufficient.
+
+"wifipilot", "Wi-Fi Pilot" and the project's other names are the marks of the
+copyright holder; neither licence grants permission to use them to endorse a
+derivative.
