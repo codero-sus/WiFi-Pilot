@@ -41,10 +41,16 @@ jobs:
           /tmp/wheel-smoke/bin/wifipilot --no-ai --json ai status > /dev/null
           /tmp/wheel-smoke/bin/wifipilot attacks --json > /dev/null
 
+      - name: Stage release files
+        run: |
+          mkdir -p upload
+          cp dist/wifipilot-*.whl upload/
+          ls -la upload/
+
       - uses: actions/upload-artifact@v4
         with:
           name: python-dist
-          path: dist/
+          path: upload/
 
   build-executable:
     name: Build standalone executable (linux/amd64)
@@ -65,40 +71,32 @@ jobs:
           pip install '.[web,dev]' pyinstaller
 
       - name: Build one-file executable
-        run: pyinstaller --clean --noconfirm wifipilot.spec 2>&1 | tee /tmp/pyi.log
-        env:
-          PYTHONNOUSERSITE: "1"
-
-      - name: Build log (on failure)
-        if: failure()
+        working-directory: ${{ github.workspace }}
         run: |
-          echo "=== PyInstaller log tail ==="
-          tail -120 /tmp/pyi.log || true
-          echo "=== warn-*.txt (if any) ==="
-          for f in build/wifipilot/warn-*.txt; do [ -f "$f" ] && { echo "--- $f"; tail -80 "$f"; }; done
+          pwd
+          ls -la
+          pyinstaller --clean --noconfirm --distpath "$PWD/dist" --workpath "$PWD/build" wifipilot.spec
+          echo "--- after build ---"
+          ls -la dist/ || echo "no dist/"
+          ls -la build/ 2>/dev/null | head -5 || true
 
-      - name: Verify the executable
+      - name: Verify + package (single step so failures are visible)
+        working-directory: ${{ github.workspace }}
         run: |
-          set +e
-          ls -la dist/wifipilot
+          set -x
+          if [ ! -x dist/wifipilot ]; then
+            echo "ERROR: dist/wifipilot missing!"
+            find . -name wifipilot -type f -ls 2>/dev/null
+            exit 1
+          fi
           file dist/wifipilot
-          echo "--- --version ---"
+          ls -la dist/wifipilot
+          # Smokes.
           ./dist/wifipilot --version
-          echo "exit=$?"
-          echo "--- --json config ---"
-          ./dist/wifipilot --json config > /tmp/cfg.json 2> /tmp/cfg.err
-          echo "exit=$?"
-          head -c 200 /tmp/cfg.json; echo
-          echo "stderr:"; head -40 /tmp/cfg.err
-          echo "--- --no-ai ai status ---"
-          ./dist/wifipilot --no-ai --json ai status
-          echo "exit=$?"
-          echo "--- attacks --json ---"
-          ./dist/wifipilot attacks --json > /tmp/atk.json 2> /tmp/atk.err
-          echo "exit=$?"
-          head -c 200 /tmp/atk.json; echo
-          echo "stderr:"; head -40 /tmp/atk.err
-          echo "--- web smoke ---"
+          ./dist/wifipilot --json config > /dev/null
+          ./dist/wifipilot --no-ai --json ai status > /dev/null
+          ./dist/wifipilot attacks --json > /dev/null
+          # Web boot smoke.
           timeout 6 ./dist/wifipilot web --demo --host 127.0.0.1 --port 8799 \
             > /tmp/web.log 2>&1 &
           PID=$!
@@ -106,31 +104,25 @@ jobs:
             if curl -fsS http://127.0.0.1:8799/ > /dev/null 2>&1; then break; fi
             sleep 0.3
           done
-          curl -sS -o /tmp/web_root.html -w "web status: %{http_code}\n" http://127.0.0.1:8799/ || true
+          curl -sS -o /dev/null -w "web status: %{http_code}\n" http://127.0.0.1:8799/ || true
           kill $PID 2>/dev/null || true
           wait $PID 2>/dev/null || true
-          echo "--- web log ---"
-          tail -40 /tmp/web.log || true
-
-      - name: Package executable with sha256
-        shell: bash
-        run: |
-          set -ex
-          ls -la
-          ls -la dist/
-          chmod +x dist/wifipilot
-          file dist/wifipilot
-          du -h dist/wifipilot
-          # Checksums file is written next to the binary, with a path that
-          # sha256sum -c will resolve from the same directory.
+          # SHA256 for upload.
           (cd dist && sha256sum wifipilot > SHA256SUMS.txt)
           cat dist/SHA256SUMS.txt
           ls -la dist/
 
+      - name: Stage release files
+        run: |
+          mkdir -p upload
+          cp dist/wifipilot upload/wifipilot
+          cp dist/SHA256SUMS.txt upload/SHA256SUMS.txt
+          ls -la upload/
+
       - uses: actions/upload-artifact@v4
         with:
           name: linux-executable
-          path: dist/
+          path: upload/
 
   publish:
     name: Publish GitHub Release
