@@ -113,10 +113,17 @@ jobs:
           tail -40 /tmp/web.log || true
 
       - name: Package executable with sha256
+        shell: bash {0}
         run: |
+          set -x
+          pwd
+          ls -la
+          ls -la dist/ || true
           chmod +x dist/wifipilot
+          file dist/wifipilot
+          # Tarball of the single binary, plus sha256sums.
+          tar -C dist -czf dist/wifipilot-linux-amd64.tar.gz wifipilot
           cd dist
-          tar -czf wifipilot-linux-amd64.tar.gz wifipilot
           sha256sum wifipilot wifipilot-linux-amd64.tar.gz > SHA256SUMS.txt
           cat SHA256SUMS.txt
           ls -la
