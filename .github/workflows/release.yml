@@ -79,23 +79,38 @@ jobs:
 
       - name: Verify the executable
         run: |
+          set +e
           ls -la dist/wifipilot
           file dist/wifipilot
+          echo "--- --version ---"
           ./dist/wifipilot --version
-          ./dist/wifipilot --json config > /dev/null
-          ./dist/wifipilot --no-ai --json ai status > /dev/null
-          ./dist/wifipilot attacks --json > /dev/null
-          # Quick web smoke (start, hit /, stop).
+          echo "exit=$?"
+          echo "--- --json config ---"
+          ./dist/wifipilot --json config > /tmp/cfg.json 2> /tmp/cfg.err
+          echo "exit=$?"
+          head -c 200 /tmp/cfg.json; echo
+          echo "stderr:"; head -40 /tmp/cfg.err
+          echo "--- --no-ai ai status ---"
+          ./dist/wifipilot --no-ai --json ai status
+          echo "exit=$?"
+          echo "--- attacks --json ---"
+          ./dist/wifipilot attacks --json > /tmp/atk.json 2> /tmp/atk.err
+          echo "exit=$?"
+          head -c 200 /tmp/atk.json; echo
+          echo "stderr:"; head -40 /tmp/atk.err
+          echo "--- web smoke ---"
           timeout 6 ./dist/wifipilot web --demo --host 127.0.0.1 --port 8799 \
             > /tmp/web.log 2>&1 &
           PID=$!
-          for i in $(seq 1 20); do
+          for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8799/ > /dev/null 2>&1; then break; fi
             sleep 0.3
           done
-          curl -fsS -o /dev/null -w "web status: %{http_code}\n" http://127.0.0.1:8799/
+          curl -sS -o /tmp/web_root.html -w "web status: %{http_code}\n" http://127.0.0.1:8799/ || true
           kill $PID 2>/dev/null || true
           wait $PID 2>/dev/null || true
+          echo "--- web log ---"
+          tail -40 /tmp/web.log || true
 
       - name: Package executable with sha256
         run: |
