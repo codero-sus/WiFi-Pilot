@@ -42,7 +42,7 @@ fails — with a clear message — when you actually run something.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 #: wifipilot is written and maintained by codero-sus.
 __author__ = "codero-sus"

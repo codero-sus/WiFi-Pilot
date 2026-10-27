@@ -866,3 +866,44 @@ def safe_float(value, default: float = 0.0) -> float:
 
 def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+# --------------------------------------------------------------------------- #
+# bundle/packaging helpers
+# --------------------------------------------------------------------------- #
+
+
+def bundle_resource(rel_path: str) -> Path:
+    """Resolve a package-relative resource path, PyInstaller-safe.
+
+    ``rel_path`` is written relative to the ``wifipilot`` package root
+    (e.g. ``"data/oui-wifi.json"``, ``"web/static"``). When running from
+    source or an installed wheel this resolves next to ``__file__``; when
+    running from a PyInstaller one-file bundle it resolves inside the
+    ``_MEIPASS`` extraction dir.
+    """
+    import sys as _sys
+    if getattr(_sys, "frozen", False):                                              # pragma: no cover
+        base = Path(getattr(_sys, "_MEIPASS", Path(_sys.executable).parent))
+        return base / "wifipilot" / rel_path
+    return Path(__file__).resolve().parent / rel_path
+
+
+def bundle_root() -> Path:
+    """The repository / install root (parent of the ``wifipilot`` package).
+
+    In a PyInstaller one-file bundle ``_MEIPASS`` holds the extracted tree
+    (package data, docs, etc.); use :func:`bundle_root` for read-only data
+    that ships alongside the package. The directory containing the running
+    executable is :func:`executable_dir`.
+    """
+    import sys as _sys
+    if getattr(_sys, "frozen", False):                                              # pragma: no cover
+        return Path(getattr(_sys, "_MEIPASS", Path(_sys.executable).parent))
+    return Path(__file__).resolve().parent.parent
+
+
+def executable_dir() -> Path:
+    """Directory containing the running process (the .exe in frozen builds)."""
+    import sys as _sys
+    return Path(_sys.executable).resolve().parent

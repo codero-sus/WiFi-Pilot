@@ -4,6 +4,35 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## v0.2.0 — pip wheel + standalone executable, GitHub Releases
+
+* **Version bumped to 0.2.0.**
+* **`pip install` wheel support** — `pyproject.toml` already produced wheels; a
+  new `release.yml` GitHub Actions workflow builds both the wheel (py3-none-any,
+  Linux-only enforced at runtime) and the sdist on every tag push, smoke-tests
+  the freshly-built wheel in a clean venv (`--version`, `--json config`,
+  `attacks --json`, AI off-switch), and uploads them to a GitHub Release.
+  `make dist` / `make wheel` / `make sdist` build locally via `python -m build`.
+* **Standalone Linux executable** — `wifipilot.spec` drives PyInstaller to build
+  a single-file `dist/wifipilot` that bundles the web UI (`web/static/*`), the
+  OUI/pattern/wordlist data (`data/*`), and the docs/ tree. A new
+  `util.bundle_resource()` / `bundle_root()` helper replaces the various
+  `Path(__file__).parent/...` sites so data lookups resolve correctly whether
+  running from source, an installed wheel, or the frozen executable;
+  `updater.update_self` now refuses to self-mutate the executable (the
+  instructions tell the user to download a new release from GitHub instead).
+  The workflow verifies the binary end-to-end: `--version`, `--json config`,
+  `attacks --json`, and boots `wifipilot web --demo` to hit `/` before packaging.
+  `make binary` builds it locally.
+* **Release artefacts published automatically** — pushing a `v*` tag triggers
+  the workflow; after both build jobs succeed, the publish job creates a GitHub
+  Release and attaches the wheel, sdist, the raw `wifipilot` executable, a
+  `wifipilot-linux-amd64.tar.gz` with LICENSE/NOTICE/THIRD-PARTY, and a
+  `SHA256SUMS.txt`. The workflow can also be run manually via `workflow_dispatch`.
+* **Web API reports its real version** — `GET /healthz` and the FastAPI app
+  metadata now read from `wifipilot.__version__` instead of a hardcoded
+  `"0.1.0"`, so pip wheels and frozen binaries advertise themselves correctly.
+
 ## Follow-through: CI in parallel, and two measured rejections (catalogue 420)
 
 * **CI runs the full suite in parallel** — `pytest-xdist` joins the dev

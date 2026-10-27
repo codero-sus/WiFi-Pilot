@@ -41,8 +41,18 @@ def _endpoint() -> str:
 
 
 def install_root() -> Path:
-    """The directory that contains the ``wifipilot`` package on disk."""
-    return Path(__file__).resolve().parent.parent
+    """The directory that contains the ``wifipilot`` package on disk.
+
+    In source/wheel installs this is the repo/site-packages root (parent
+    of the ``wifipilot`` package). In a PyInstaller one-file bundle it is
+    the directory holding the executable; note however that
+    :func:`update_self` refuses to run when frozen.
+    """
+    from .util import bundle_root, executable_dir
+    import sys as _sys
+    if getattr(_sys, "frozen", False):                                              # pragma: no cover
+        return executable_dir()
+    return bundle_root()
 
 
 def current_version() -> str:
@@ -89,12 +99,18 @@ def update_self(dry_run: bool = False, yes: bool = False,
     beside the new one so a bad update is one ``mv`` away from undone.
     ``fetcher`` is injectable for tests.
     """
+    import sys as _sys
     root = Path(target_dir).resolve() if target_dir else install_root()
     result: Dict[str, Any] = {
         "ok": True, "dry_run": dry_run, "needs_confirmation": False,
         "root": str(root), "from_version": current_version(),
         "to_version": "", "backup": "", "changed": False, "error": "",
     }
+    if getattr(_sys, "frozen", False):
+        result["ok"] = False
+        result["error"] = ("self-update is disabled in the compiled executable; "
+                           "download a new release from GitHub instead")
+        return result
     if dry_run:
         result["plan"] = ("download the update snapshot (zip), verify it, "
                           f"back up {root / 'wifipilot'} and swap the new tree in")

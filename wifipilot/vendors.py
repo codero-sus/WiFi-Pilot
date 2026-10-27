@@ -28,12 +28,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .util import mac_norm
+from .util import bundle_resource, mac_norm
 
 __all__ = ["OUI", "oui_lookup", "oui_vendor", "import_oui_file", "vendor_dossier",
            "VENDOR_DOSSIERS", "oui_stats"]
 
-_DATA = Path(__file__).with_name("data") / "oui-wifi.json"
+_DATA = bundle_resource("data/oui-wifi.json")
 
 #: heuristic notes per vendor key.  ``source`` is deliberately "heuristic".
 VENDOR_DOSSIERS: Dict[str, Dict[str, Any]] = {
