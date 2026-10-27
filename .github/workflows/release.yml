@@ -114,14 +114,20 @@ jobs:
 
       - name: Package executable with sha256
         run: |
+          set -ex
           chmod +x dist/wifipilot
-          cp LICENSE dist/LICENSE.txt
-          cp NOTICE dist/NOTICE.txt
-          cp THIRD-PARTY.md dist/THIRD-PARTY.md
-          cd dist
-          tar -czf wifipilot-linux-amd64.tar.gz wifipilot LICENSE.txt NOTICE.txt THIRD-PARTY.md
+          mkdir -p dist/bundle
+          cp dist/wifipilot dist/bundle/
+          cp LICENSE     dist/bundle/LICENSE
+          cp NOTICE      dist/bundle/NOTICE
+          cp THIRD-PARTY.md dist/bundle/THIRD-PARTY.md
+          cp README.md   dist/bundle/README.md || true
+          cd dist/bundle
+          tar -czf ../wifipilot-linux-amd64.tar.gz wifipilot LICENSE NOTICE THIRD-PARTY.md
+          cd ..
           sha256sum wifipilot wifipilot-linux-amd64.tar.gz > SHA256SUMS.txt
           cat SHA256SUMS.txt
+          ls -la
 
       - uses: actions/upload-artifact@v4
         with:
