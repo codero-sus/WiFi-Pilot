@@ -54,6 +54,7 @@ jobs:
 
   build-executable:
     name: Build standalone executable (linux/amd64)
+    needs: build-wheel
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -63,22 +64,55 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install build dependencies
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: wheel/
+
+      - name: Install build dependencies (package + pyinstaller from wheel)
         run: |
           sudo apt-get update -q
           sudo apt-get install -y --no-install-recommends libpython3.12
           python -m pip install --upgrade pip
-          pip install '.[web,dev]' pyinstaller
+          # Install from the just-built wheel so PyInstaller sees a real
+          # site-packages install (no editable finder hooks, no source
+          # tree on sys.path). pyinstaller and dev extras added on top.
+          pip install wheel/wifipilot-*.whl
+          pip install pyinstaller pytest pytest-xdist httpx ruff pyyaml
 
       - name: Build one-file executable
         working-directory: ${{ github.workspace }}
         run: |
           pwd
           ls -la
-          pyinstaller --clean --noconfirm --distpath "$PWD/dist" --workpath "$PWD/build" wifipilot.spec
+          # Build from the installed package's __main__ so PyInstaller
+          # walks site-packages rather than the source tree. Package data
+          # (static/, data/) is added explicitly from the checkout via
+          # --add-data; the spec is not used here (its analysis uses the
+          # repo's script path which pulls the source tree in).
+          pyinstaller \
+            --clean --noconfirm --onefile \
+            --name wifipilot \
+            --paths "$(python -c 'import site,sys; print(site.getsitepackages()[0])')" \
+            --add-data "wifipilot/web/static:wifipilot/web/static" \
+            --add-data "wifipilot/data:wifipilot/data" \
+            --add-data "docs:docs" \
+            --add-data "LICENSE:." \
+            --add-data "NOTICE:." \
+            --add-data "THIRD-PARTY.md:." \
+            --hidden-import uvicorn.logging \
+            --hidden-import uvicorn.loops.auto \
+            --hidden-import uvicorn.protocols.http.auto \
+            --hidden-import uvicorn.protocols.websockets.auto \
+            --hidden-import uvicorn.lifespan.on \
+            --collect-submodules wifipilot.attacks \
+            --collect-submodules wifipilot.web \
+            --exclude-module tkinter --exclude-module pytest \
+            --distpath "$PWD/dist" \
+            --workpath "$PWD/build" \
+            wifipilot/__main__.py
           echo "--- after build ---"
           ls -la dist/ || echo "no dist/"
-          ls -la build/ 2>/dev/null | head -5 || true
 
       - name: Verify + package (single step so failures are visible)
         working-directory: ${{ github.workspace }}
