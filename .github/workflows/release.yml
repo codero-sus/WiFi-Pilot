@@ -93,7 +93,7 @@ jobs:
           pyinstaller \
             --clean --noconfirm --onefile \
             --name wifipilot \
-            --paths "$(python -c 'import site,sys; print(site.getsitepackages()[0])')" \
+            --paths "$(python -c 'import site; print(site.getsitepackages()[0])')" \
             --add-data "wifipilot/web/static:wifipilot/web/static" \
             --add-data "wifipilot/data:wifipilot/data" \
             --add-data "docs:docs" \
@@ -105,9 +105,11 @@ jobs:
             --hidden-import uvicorn.protocols.http.auto \
             --hidden-import uvicorn.protocols.websockets.auto \
             --hidden-import uvicorn.lifespan.on \
-            --collect-submodules wifipilot.attacks \
-            --collect-submodules wifipilot.web \
-            --exclude-module tkinter --exclude-module pytest \
+            --hidden-import uvicorn.loops.asyncio \
+            --hidden-import uvicorn.protocols.http.h11_impl \
+            --hidden-import uvicorn.protocols.websockets.websockets_impl \
+            --collect-all wifipilot \
+            --exclude-module tkinter --exclude-module pytest --exclude-module _pytest \
             --distpath "$PWD/dist" \
             --workpath "$PWD/build" \
             wifipilot/__main__.py
@@ -125,22 +127,27 @@ jobs:
           fi
           file dist/wifipilot
           ls -la dist/wifipilot
-          # Smokes.
-          ./dist/wifipilot --version
-          ./dist/wifipilot --json config > /dev/null
-          ./dist/wifipilot --no-ai --json ai status > /dev/null
-          ./dist/wifipilot attacks --json > /dev/null
+          dump_err() { echo "--- stderr ($1) ---"; cat /tmp/e_$1.err 2>/dev/null | tail -40; echo "--- stdout head ($1) ---"; head -c 400 /tmp/o_$1.out 2>/dev/null; echo; }
+          ./dist/wifipilot --version > /tmp/o_version.out 2>/tmp/e_version.err || { dump_err version; exit 1; }
+          cat /tmp/o_version.out
+          ./dist/wifipilot --json config > /tmp/o_config.out 2>/tmp/e_config.err || { dump_err config; exit 1; }
+          head -c 200 /tmp/o_config.out; echo
+          ./dist/wifipilot --no-ai --json ai status > /tmp/o_ai.out 2>/tmp/e_ai.err || { dump_err ai; exit 1; }
+          head -c 200 /tmp/o_ai.out; echo
+          ./dist/wifipilot attacks --json > /tmp/o_atk.out 2>/tmp/e_atk.err || { dump_err atk; exit 1; }
+          head -c 200 /tmp/o_atk.out; echo
           # Web boot smoke.
-          timeout 6 ./dist/wifipilot web --demo --host 127.0.0.1 --port 8799 \
+          timeout 8 ./dist/wifipilot web --demo --host 127.0.0.1 --port 8799 \
             > /tmp/web.log 2>&1 &
           PID=$!
-          for i in $(seq 1 30); do
+          for i in $(seq 1 40); do
             if curl -fsS http://127.0.0.1:8799/ > /dev/null 2>&1; then break; fi
             sleep 0.3
           done
-          curl -sS -o /dev/null -w "web status: %{http_code}\n" http://127.0.0.1:8799/ || true
+          curl -sS -o /dev/null -w "web status: %{http_code}\n" http://127.0.0.1:8799/
           kill $PID 2>/dev/null || true
           wait $PID 2>/dev/null || true
+          echo "--- web log ---"; tail -20 /tmp/web.log
           # SHA256 for upload.
           (cd dist && sha256sum wifipilot > SHA256SUMS.txt)
           cat dist/SHA256SUMS.txt
