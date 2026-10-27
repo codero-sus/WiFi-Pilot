@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   build-wheel:
-    name: Build wheel + sdist
+    name: Build wheel
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -29,8 +29,8 @@ jobs:
       - name: Install build tooling
         run: python -m pip install --upgrade pip build
 
-      - name: Build sdist and wheel
-        run: python -m build --outdir dist/
+      - name: Build wheel
+        run: python -m build --wheel --outdir dist/
 
       - name: Smoke-test the wheel in a clean venv
         run: |
@@ -114,17 +114,9 @@ jobs:
 
       - name: Package executable with sha256
         run: |
-          set -ex
           chmod +x dist/wifipilot
-          mkdir -p dist/bundle
-          cp dist/wifipilot dist/bundle/
-          cp LICENSE     dist/bundle/LICENSE
-          cp NOTICE      dist/bundle/NOTICE
-          cp THIRD-PARTY.md dist/bundle/THIRD-PARTY.md
-          cp README.md   dist/bundle/README.md || true
-          cd dist/bundle
-          tar -czf ../wifipilot-linux-amd64.tar.gz wifipilot LICENSE NOTICE THIRD-PARTY.md
-          cd ..
+          cd dist
+          tar -czf wifipilot-linux-amd64.tar.gz wifipilot
           sha256sum wifipilot wifipilot-linux-amd64.tar.gz > SHA256SUMS.txt
           cat SHA256SUMS.txt
           ls -la
@@ -155,11 +147,10 @@ jobs:
             echo
             echo "### Assets"
             echo
-            echo "- \`wifipilot-${VERSION}-py3-none-any.whl\` — install with pip (Python ≥ 3.9, Linux)"
-            echo "- \`wifipilot-${VERSION}.tar.gz\` — source distribution"
-            echo "- \`wifipilot\` — standalone Linux x86_64 executable (PyInstaller, no Python install needed)"
-            echo "- \`wifipilot-linux-amd64.tar.gz\` — executable bundled with LICENSE/NOTICE"
-            echo "- \`SHA256SUMS.txt\` — checksums for binaries"
+            echo "- \`wifipilot-${VERSION}-py3-none-any.whl\` — install with \`pip install\` (Python ≥ 3.9, Linux)"
+            echo "- \`wifipilot\` — standalone Linux x86_64 executable (PyInstaller one-file, no Python install needed)"
+            echo "- \`wifipilot-linux-amd64.tar.gz\` — same executable, gzipped"
+            echo "- \`SHA256SUMS.txt\` — SHA-256 checksums for the binaries"
             echo
             echo "### Verify"
             echo '```'
@@ -177,7 +168,7 @@ jobs:
           body_path: /tmp/release-notes.md
           files: |
             release-artifacts/*.whl
-            release-artifacts/*.tar.gz
+            release-artifacts/wifipilot-linux-amd64.tar.gz
             release-artifacts/wifipilot
             release-artifacts/SHA256SUMS.txt
           draft: false
