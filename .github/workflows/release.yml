@@ -60,12 +60,22 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends libpython3.12 upx-ucl
+          sudo apt-get install -y --no-install-recommends libpython3.12
           python -m pip install --upgrade pip
           pip install '.[web,dev]' pyinstaller
 
       - name: Build one-file executable
-        run: pyinstaller --clean wifipilot.spec
+        run: pyinstaller --clean --noconfirm wifipilot.spec 2>&1 | tee /tmp/pyi.log
+        env:
+          PYTHONNOUSERSITE: "1"
+
+      - name: Build log (on failure)
+        if: failure()
+        run: |
+          echo "=== PyInstaller log tail ==="
+          tail -120 /tmp/pyi.log || true
+          echo "=== warn-*.txt (if any) ==="
+          for f in build/wifipilot/warn-*.txt; do [ -f "$f" ] && { echo "--- $f"; tail -80 "$f"; }; done
 
       - name: Verify the executable
         run: |
