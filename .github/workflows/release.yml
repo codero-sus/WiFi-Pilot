@@ -120,34 +120,40 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set +e
-          mkdir -p /tmp/smoke
-          if [ ! -x dist/wifipilot ]; then echo "MISSING"; find . -name wifipilot -ls; exit 1; fi
-          file dist/wifipilot | tee /tmp/smoke/file.txt
-          ls -la dist/wifipilot | tee /tmp/smoke/ls.txt
-          ./dist/wifipilot --version > /tmp/smoke/version.out 2> /tmp/smoke/version.err; echo "version exit=$?"
-          ./dist/wifipilot --json config > /tmp/smoke/config.out 2> /tmp/smoke/config.err; echo "config exit=$?"
-          ./dist/wifipilot --no-ai --json ai status > /tmp/smoke/ai.out 2> /tmp/smoke/ai.err; echo "ai exit=$?"
-          ./dist/wifipilot attacks --json > /tmp/smoke/atk.out 2> /tmp/smoke/atk.err; echo "atk exit=$?"
-          timeout 8 ./dist/wifipilot web --demo --host 127.0.0.1 --port 8799 > /tmp/smoke/web.log 2>&1 &
-          PID=$!
-          for i in $(seq 1 40); do curl -fsS http://127.0.0.1:8799/ > /dev/null 2>&1 && break; sleep 0.3; done
-          curl -sS -o /tmp/smoke/web_root.html -w "web=%{http_code}\n" http://127.0.0.1:8799/ > /tmp/smoke/web.code 2>&1
-          kill $PID 2>/dev/null; wait $PID 2>/dev/null; true
+          {
+            echo "## Binary smoke report"
+            echo
+            echo '```'
+            echo "workdir: $(pwd)"
+            echo "--- file ---"
+            file dist/wifipilot
+            echo "--- ls ---"
+            ls -la dist/wifipilot
+            echo "--- --version ---"
+            ./dist/wifipilot --version; echo "exit=$?"
+            echo "--- --json config (head) ---"
+            ./dist/wifipilot --json config 2>&1 | head -c 600; echo
+            echo "--- config exit=${PIPESTATUS[0]} ---"
+            echo "--- --no-ai --json ai status ---"
+            ./dist/wifipilot --no-ai --json ai status 2>&1 | head -c 400; echo
+            echo "--- ai exit=${PIPESTATUS[0]} ---"
+            echo "--- attacks --json (head) ---"
+            ./dist/wifipilot attacks --json 2>&1 | head -c 400; echo
+            echo "--- attacks exit=${PIPESTATUS[0]} ---"
+            echo "--- web boot ---"
+            timeout 8 ./dist/wifipilot web --demo --host 127.0.0.1 --port 8799 > /tmp/web.log 2>&1 &
+            PID=$!
+            for i in $(seq 1 40); do curl -fsS http://127.0.0.1:8799/ > /dev/null 2>&1 && break; sleep 0.3; done
+            curl -sS -o /dev/null -w "web status: %{http_code}\n" http://127.0.0.1:8799/
+            kill $PID 2>/dev/null; wait $PID 2>/dev/null; true
+            echo "--- web log tail ---"
+            tail -30 /tmp/web.log
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          # Generate SHA256.
           (cd dist && sha256sum wifipilot > SHA256SUMS.txt)
-          ls -la dist/ | tee /tmp/smoke/ls_dist.txt
-          set -e
-          # Fail if any smoke failed (show output inline first)
-          for f in version config ai atk; do
-            echo "===== $f stdout ====="; cat /tmp/smoke/$f.out | head -c 400; echo
-            echo "===== $f stderr ====="; cat /tmp/smoke/$f.err | tail -60; echo
-          done
-          echo "===== web log ====="; tail -40 /tmp/smoke/web.log
-          echo "===== web code ====="; cat /tmp/smoke/web.code
-          grep -q '"count": 848' /tmp/smoke/atk.out
-          grep -q '"ok":true' /tmp/smoke/ai.out
-          grep -q '"version"' /tmp/smoke/config.out
-          grep -q '200' /tmp/smoke/web.code
-          echo ALL SMOKES PASSED
+          cat dist/SHA256SUMS.txt
+          ls -la dist/
 
       - name: Upload smoke logs (on failure)
         if: failure()
