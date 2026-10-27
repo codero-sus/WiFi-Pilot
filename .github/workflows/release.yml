@@ -113,22 +113,19 @@ jobs:
           tail -40 /tmp/web.log || true
 
       - name: Package executable with sha256
-        shell: bash {0}
+        shell: bash
         run: |
           set -ex
-          pwd
           ls -la
-          ls -la dist/ || true
+          ls -la dist/
           chmod +x dist/wifipilot
           file dist/wifipilot
           du -h dist/wifipilot
-          # Checksums for the single binary (no extra tarball — GitHub already
-          # gzips downloads; adding our own tar caused name collisions in CI
-          # and masked the binary upload).
-          cd dist
-          sha256sum wifipilot > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-          ls -la
+          # Checksums file is written next to the binary, with a path that
+          # sha256sum -c will resolve from the same directory.
+          (cd dist && sha256sum wifipilot > SHA256SUMS.txt)
+          cat dist/SHA256SUMS.txt
+          ls -la dist/
 
       - uses: actions/upload-artifact@v4
         with:
