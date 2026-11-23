@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "wifipilot"
 
 
-version = "0.3.0"
+version = "0.3.1"
 description = "Linux wifite alternative: AI-piloted WiFi auditing with a web UI and an optional local (Ollama) or cloud (OpenRouter) advisor"
 readme = "README.md"
 requires-python = ">=3.9"

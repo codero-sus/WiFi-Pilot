@@ -363,20 +363,49 @@ def iter_wordlist(path: str) -> Iterator[str]:
 # ~256 PBKDF2 derivations of work), which keeps the pool itself stateless —
 # one persistent pool per Cracker serves every capture, no respawn per pass.
 def _verify_chunk(payload: Tuple[List[Any], str, List[str]]) -> Tuple[str, int]:
-    """Verify one chunk in a worker process: ``(hit or "", candidates tested)``."""
+    """Verify one chunk in a worker process: ``(hit or "", candidates tested)``.
+
+    Each worker process keeps a bounded PMK cache (function attribute) to
+    deduplicate PBKDF2 recomputation when the same candidate appears across
+    chunks (e.g. shared passwords across wordlists, or rule expansion that
+    produces duplicates when combined with masks).
+    """
     verifiers, essid, candidates = payload
     tested = 0
+    # Per-worker PMK cache (bounded LRU-style, evict oldest when full).
+    try:
+        cache = _verify_chunk._pmk_cache  # type: ignore[attr-defined]
+    except AttributeError:
+        cache = {}
+        _verify_chunk._pmk_cache = cache  # type: ignore[attr-defined]
+    _CACHE_MAX = 65536
     single = verifiers[0] if len(verifiers) == 1 else None
     for candidate in candidates:
         tested += 1
+        # Length/UTF-8 reject: WPA-PSK passphrases are 8..63 ASCII/UTF-8 chars.
+        if not (8 <= len(candidate) <= 63):
+            continue
         if single is not None:
-            if single.check(candidate):
-                return candidate, tested
+            try:
+                if single.check(candidate):
+                    return candidate, tested
+            except (ValueError, UnicodeEncodeError):
+                continue
             continue
-        try:
-            key = pmk(candidate, essid)
-        except (ValueError, UnicodeEncodeError):
-            continue
+        ckey = candidate
+        if ckey in cache:
+            key = cache[ckey]
+        else:
+            try:
+                key = pmk(candidate, essid)
+            except (ValueError, UnicodeEncodeError):
+                continue
+            if len(cache) >= _CACHE_MAX:
+                # Evict a chunk (simple FIFO truncation)
+                to_drop = list(cache.keys())[:_CACHE_MAX // 8]
+                for k in to_drop:
+                    del cache[k]
+            cache[ckey] = key
         for verifier in verifiers:
             if verifier.check_pmk(key):
                 return candidate, tested
@@ -1142,13 +1171,16 @@ class Cracker:
         source = iter(self._deduped(candidates))
         inflight: set = set()
         exhausted = False
+        # Larger chunks amortise ProcessPool IPC; multi-verifier (mixed captures)
+        # keeps smaller chunks to keep latency low when one of many verifiers wins.
+        chunk_size = 4096 if len(verifiers) == 1 else 512
         try:
             while True:
                 while not exhausted and len(inflight) < count * 2:
                     if time.time() > deadline:
                         exhausted = True
                         break
-                    chunk = list(itertools.islice(source, 256))
+                    chunk = list(itertools.islice(source, chunk_size))
                     if not chunk:
                         exhausted = True
                         break

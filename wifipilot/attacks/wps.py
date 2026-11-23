@@ -127,8 +127,8 @@ class WpsAttack(Attack):
         return bool(ap.wps and ap.encryption in self.applies_to)
 
     def unavailable_reason(self, ctx: AttackContext) -> str:
-        if not registry.has("reaver") and not registry.has("bully"):
-            return "install reaver (or bully) to use WPS attacks"
+        if not registry.has("reaver") and not registry.has("bully") and not ctx.demo and not ctx.monitor:
+            return "install reaver (or bully) to use WPS attacks, or run with a monitor interface for the native engine"
         return super().unavailable_reason(ctx)
 
     # -- tool selection ----------------------------------------------------
@@ -138,6 +138,8 @@ class WpsAttack(Attack):
             order.append("reaver")
         if registry.has("bully"):
             order.append("bully")
+        # native fallback — pure-Python WPS M1-M8 engine
+        order.append("native")
         return order
 
     def _parse_progress(self, line: str) -> Dict[str, str]:

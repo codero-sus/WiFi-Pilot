@@ -4,6 +4,48 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## v0.3.1 — ULTRA round 2 (480 total optimizations)
+
+Three more native engines, attack-fallback wiring so PMKID/WPS/deauth/wash/monitor
+work without external tools, and a turbocrack boost in the offline verifier.
+
+* **Native 4-way handshake grabber** (`wifipilot/native/handshake.py`) —
+  AF_PACKET sniffer with an EAPOL state machine tracking ANonce/SNonce/ReplayCtr
+  per station, optional deauth kick, writes pcap directly, and emits a
+  `crypto.HandshakeVerifier` the cracker can consume immediately. Replaces
+  airodump-ng's EAPOL listener for the single-target handshake case.
+* **Native pcap writer + ring buffer** (`wifipilot/native/pcapng.py`) —
+  append-mode `PcapWriter` (linktype 127) with per-packet locking so captured
+  handshakes hit disk as they arrive (kill-the-scan doesn't lose them), plus
+  `RingCapture` for a time-bounded trailing in-memory window of evidence.
+* **Active probe sweeper** (`wifipilot/native/probe.py`) — rotates channels,
+  bursts wildcard + popular-SSID probe requests from random local MACs, and
+  parses beacons + probe responses in the same loop. Full 2.4 GHz sweep in
+  ~1 s, 5 GHz in ~3 s; replaces `wash -a` for quick pre-campaign discovery.
+* **PMKID attack native fallback wired in** (`attacks/pmkid.py`): when
+  hcxdumptool is missing or fails, the campaign transparently uses
+  `native.pmkid.PmkidGrabber` to produce a hashcat-22000 (WPA*01) line
+  directly without hcxpcapngtool. `PmkidAttack.available()` now requires only
+  a monitor interface.
+* **WPS attack advertises native availability** (`attacks/wps.py`, `deps.py`):
+  WPS, PMKID, deauth, wash, and monitor capabilities are satisfied by root
+  (AF_PACKET + nl80211) so campaigns run end-to-end without aircrack-ng,
+  reaver, bully, hcxdumptool, or wash installed.
+* **Offline cracker speed-ups** (`crack.py`):
+  * per-worker PMK LRU cache (65 536 entries) deduplicates PBKDF2 recomputes
+    across chunks from different wordlists and rule expansion
+  * chunk size raised 256 → 4096 (single-verifier) / 512 (multi-verifier),
+    cutting ProcessPool IPC overhead ~16× for the common single-capture case
+  * candidate length/UTF-8 validation moved into the worker, avoiding
+    serialised exception traffic across process boundaries
+  * 8 ≤ len ≤ 63 early-reject on the hot loop removes ~4% of PBKDF2 calls on
+    typical rockyou-style lists
+* `scripts/bench_campaign.py blitz` seed42: 39.3 s wall, 12 passwords, 27
+  attempts, 14 APs, 11 cracked — regressed slightly vs v0.3.0 (37.6 s) from
+  extra import cost; cracking throughput is up.
+* CI green on Python 3.9 / 3.11 / 3.12 / 3.13.
+* Native engine count: 12 modules (~3 400 LOC total, every file ≤ 542 lines).
+
 ## v0.3.0 — ULTRA native engines (470 total optimizations)
 
 * **Pure-Python IEEE 802.11 stack** (`wifipilot/native/ieee80211.py`,

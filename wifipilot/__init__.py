@@ -44,7 +44,7 @@ from __future__ import annotations
 
 
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 #: wifipilot is written and maintained by codero-sus.
 __author__ = "codero-sus"

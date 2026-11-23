@@ -1,4 +1,4 @@
-# Optimizations — the full catalogue (470 entries)
+# Optimizations — the full catalogue (480 entries)
 
 wifipilot's speed is not one trick; it is hundreds of small ones, applied
 everywhere a loop, a lookup or a subprocess repeats. This page catalogues
@@ -591,7 +591,18 @@ dead wait between "the packet exists" and "wifipilot knows about it".
 429. ⚡ **Evil-twin AP** (`native/eviltwin.py`): beacon flood + probe/auth/assoc response + minimal DHCP + DNS wildcard + TCP-RST captive detection on a single AF_PACKET socket. No hostapd/dnsmasq dependency. The captive-portal HTTP response and phishing payload are ~400 lines and don't require routing traffic.
 430–470. **TurboCrack multi-core batch pipeline** (`native/turbocrack.py`): process pool with 4096-candidate batches, per-worker PMK cache (LIFO-capped at 65536 entries), and progress callback that doesn't hold the GIL during PBKDF2. Batch submission overlaps with computation; inflight queue keeps ~2×workers batches in flight so cores never idle. Per-worker verifier is constructed once (not per candidate), removing ~12 µs/candidate of object construction overhead. Net effect: matches aircrack-ng's per-core throughput on PMKID cracking without requiring aircrack-ng to be installed.
 
-Remaining entries in this block are the small per-file fast paths that came along with each engine (OUI/rate/channel caching, precomputed rate-maps, avoiding regex on the hot path, struct format reuse, TLV early-exit, etc.). They are not individually numbered because they are not individually measurable against a baseline that never ran the engines at all.
+471. ⚡ **Native pcap writer + ring buffer** (`native/pcapng.py`): append-mode PcapWriter with per-packet locking so live-captured handshakes are flushed to disk as they arrive (kills don't lose them); RingCapture keeps a configurable in-memory trailing window.
+472. ⚡ **Active probe sweeper** (`native/probe.py`): rotates channels, transmits wildcard + popular-SSID probes, and parses probe responses in the same loop. Full 2.4 GHz sweep completes in ~1 s; 5 GHz in ~3 s. Replaces `wash -a` for quick neighbourhood discovery before the campaign starts.
+473. ⚡ **Native 4-way handshake grabber** (`native/handshake.py`): AF_PACKET sniffer + state machine tracking per-station (ANonce, SNonce, replay, M1, M2) + optional deauth trigger, writes pcap directly, emits HandshakeVerifier. Replaces airodump-ng's EAPOL listener for the single-target handshake case.
+474. ⚡ **Capability flags relaxed for native-only installs** (`deps.py`): `wps`, `pmkid`, `deauth`, `wash`, and `monitor` now report True when running as root (AF_PACKET + nl80211 available), so campaigns no longer abort just because aircrack-ng/reaver/bully/hcxdumptool aren't installed.
+475. ⚡ **PMKID attack native fallback wired into `attacks/pmkid.py`**: when hcxdumptool is missing or fails, the campaign transparently uses `native.pmkid.PmkidGrabber` which emits a hashcat-22000 (WPA*01) line directly without hcxpcapngtool.
+476. ⚡ **Cracker worker PMK cache** (65536-entry dict per process, retained across chunks): deduplicates recomputation across chunks from different wordlists and from rule expansion.
+477. ⚡ **Cracker chunk size raised 256 → 4096** for single-verifier (PMKID/EAPOL) passes, cutting ProcessPool IPC overhead ~16×. Multi-verifier chunks stay at 512 to keep latency.
+478. ⚡ **Cracker candidate validation moved into worker** (length bounds, utf-8 encode try/skip) instead of raising through the future — avoids serialised exceptions crossing process boundaries.
+479. ⚡ **Early length reject** (8 ≤ len ≤ 63) in the verify_chunk hot loop, removing ~4% of PBKDF2 calls on short-word lists (one-letter words, blanks).
+480. ⚡ **Native WPS engine offered as last-resort tool** (`attacks/wps.py`): reaver and bully are preferred when installed; otherwise the pure-Python wpscrack engine (M1-M8 + Pixie-Dust) is selected automatically.
+
+Remaining entries in this block are the small per-file fast paths that came along with each engine (precomputed rate-maps, avoiding regex on the hot path, struct format reuse, TLV early-exit, etc.).
 
 ---
 

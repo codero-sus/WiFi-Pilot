@@ -19,8 +19,15 @@ Modules:
 * :mod:`turbocrack` — multi-core batched PBKDF2 cracker that beats aircrack-ng.
 * :mod:`deauth` — high-rate deauth/disassoc broadcaster (replaces aireplay-ng -0
   and mdk4 for the common targeted-broadcast case).
+* :mod:`handshake` — AF_PACKET 4-way handshake grabber with deauth kick and
+  pcap writer; replaces airodump-ng's EAPOL listener for targeted captures.
+* :mod:`pcapng` — pcap writer (linktype 127, append, thread-safe) plus an
+  in-memory ring capture for time-bounded evidence buffering.
+* :mod:`probe` — active probe-request sweeper: wildcard + popular-SSID probes
+  from rotating MACs across channels; ~1 s 2.4 GHz sweep, replaces wash/airodump
+  for quick neighbourhood discovery.
 """
 
 # Nothing imported eagerly — submodules are light enough to load on demand.
 __all__ = ["ieee80211", "radiotap", "scanner", "sniff", "pmkid", "wpscrack",
-           "eviltwin", "turbocrack", "deauth"]
+           "eviltwin", "turbocrack", "deauth", "handshake", "pcapng", "probe"]

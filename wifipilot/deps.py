@@ -246,14 +246,20 @@ class ToolRegistry:
         with self._lock:
             if self._caps is not None:
                 return dict(self._caps)
+        _root = is_root()
         caps = {
             "aircrack": self.has("aircrack-ng"),
             "airodump": self.has("airodump-ng"),
-            "deauth": self.has("aireplay-ng"),
-            "monitor": self.has("airmon-ng") or self.has("iw"),
-            "wps": self.has("reaver") or self.has("bully"),
-            "wash": self.has("wash") or self.has("reaver"),
-            "pmkid": self.has("hcxdumptool") or self.has("airodump-ng"),
+            # native deauth engine uses AF_PACKET raw sockets; aireplay-ng is optional
+            "deauth": self.has("aireplay-ng") or _root,
+            # netlink set_channel + AF_PACKET scan removes the hard dep on iw/airmon
+            "monitor": self.has("airmon-ng") or self.has("iw") or _root,
+            # native WPS engine (wpscrack) works over raw sockets; reaver/bully optional
+            "wps": self.has("reaver") or self.has("bully") or _root,
+            # native ProbeSweep replaces wash for discovery
+            "wash": self.has("wash") or self.has("reaver") or _root,
+            # native PmkidGrabber works with just a monitor interface
+            "pmkid": self.has("hcxdumptool") or self.has("airodump-ng") or _root,
             "hcxtools": self.has("hcxpcapngtool"),
             "hashcat": self.has("hashcat"),
             "john": self.has("john"),
