@@ -53,6 +53,7 @@ from ..engine import Engine
 from ..events import EK, EventBus
 from ..llm import build_client, provider_status
 from ..models import ATTACK_NAMES
+from .. import __version__
 from ..util import mac_norm, now_iso, platform_info, require_linux
 
 try:  # pragma: no cover - import guard
@@ -67,7 +68,9 @@ except ImportError as exc:  # pragma: no cover
         "(or: pip install fastapi 'uvicorn[standard]')"
     ) from exc
 
-STATIC_DIR = Path(__file__).parent / "static"
+from ..util import bundle_resource
+
+STATIC_DIR = bundle_resource("web/static")
 
 
 def _json_default(obj: Any) -> Any:
@@ -158,7 +161,8 @@ def _docs_dir() -> Optional[Path]:
     env = os.environ.get("WIFIPILOT_DOCS_DIR")
     if env:
         candidates.append(Path(env))
-    candidates.append(Path(__file__).resolve().parents[2] / "docs")
+    from ..util import bundle_root
+    candidates.append(bundle_root() / "docs")
     candidates.append(Path.cwd() / "docs")
     for candidate in candidates:
         if candidate.is_dir():
@@ -194,7 +198,7 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
                 with contextlib.suppress(Exception):
                     state.engine.shutdown(timeout=6)
 
-    app = FastAPI(title="wifipilot", version="0.1.0",
+    app = FastAPI(title="wifipilot", version=__version__,
                   description="AI-piloted WiFi auditing · wifite alternative · authorised use only",
                   lifespan=lifespan)
     app.state.ctx = state
@@ -661,7 +665,7 @@ def create_app(config: Optional[Config] = None, demo: bool = False,
         advisor = getattr(engine, "advisor", None)
         return {
             "ok": True, "demo": state.demo, "phase": engine.status.phase if engine else "idle",
-            "time": now_iso(), "version": "0.1.0",
+            "time": now_iso(), "version": __version__,
             "platform": platform_info()["os"],
             "provider": getattr(advisor, "provider", ""),
             "model": getattr(advisor, "model", ""),

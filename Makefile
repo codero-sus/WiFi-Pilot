@@ -1,6 +1,5 @@
 # wifipilot — developer entry points
-.PHONY: help install install-web dev test test-fast demo web tools lint clean report \
-	ai-status ai-local ai-cloud api-demo bench bench-pcap
+.PHONY: help install install-web dev test test-fast demo web tools lint clean report ai-status ai-local ai-cloud api-demo bench bench-pcap dist wheel sdist binary
 
 PY ?= python3
 PIP ?= $(PY) -m pip
@@ -67,3 +66,18 @@ report:  ## print how to find the reports of previous sessions
 clean:  ## remove caches and build artifacts (never touches loot/ or sessions/)
 	rm -rf build dist *.egg-info .pytest_cache .mypy_cache .ruff_cache
 	find . -name '__pycache__' -type d -prune -exec rm -rf {} +
+
+dist:  ## build wheel + sdist into dist/
+	$(PY) -m build --outdir dist/
+
+wheel:  ## build only the wheel
+	$(PY) -m build --wheel --outdir dist/
+
+sdist:  ## build only the source distribution
+	$(PY) -m build --sdist --outdir dist/
+
+binary:  ## build the standalone Linux executable (PyInstaller one-file)
+	@command -v pyinstaller >/dev/null 2>&1 || { echo "pyinstaller not installed — pip install pyinstaller"; exit 1; }
+	pyinstaller --clean wifipilot.spec
+	@echo "executable at dist/wifipilot"
+	@dist/wifipilot --version

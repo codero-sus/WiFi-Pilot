@@ -216,7 +216,8 @@ def password_report(password: str) -> PasswordReport:
 # --------------------------------------------------------------------------- #
 
 def _data_path() -> Path:
-    return Path(__file__).with_name("data") / "default-patterns.json"
+    from .util import bundle_resource
+    return bundle_resource("data/default-patterns.json")
 
 
 def _load_defaults() -> Dict[str, object]:

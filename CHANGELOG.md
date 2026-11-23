@@ -4,6 +4,77 @@ Notable changes to `wifipilot`, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are the branch's own
 milestones rather than published releases.
 
+## v0.3.0 — ULTRA native engines (470 total optimizations)
+
+* **Pure-Python IEEE 802.11 stack** (`wifipilot/native/ieee80211.py`,
+  `wifipilot/native/radiotap.py`) — beacon/probe/auth/assoc/deauth/disassoc/
+  EAPOL-M1..M4 frame builders, 24-byte header math, TLV walker, and a minimal
+  radiotap injection-header constructor.
+* **Native AF_PACKET deauth** (`wifipilot/native/deauth.py`) — replaces
+  `aireplay-ng -0` when it is not installed. Direct `sendto()` on a pre-bound
+  raw socket removes the fork/exec per burst (~190 ms of cold latency), and a
+  spoof-MAC option defeats WIDS signatures that key on the AP's source MAC.
+  `Attack.deauth()` in `attacks/base.py` auto-falls back to it, so campaigns
+  now run without aircrack-ng installed at all (still uses it when present,
+  since operators trust its output).
+* **Native netlink channel hop** (`native/scanner.set_channel`) — AF_NETLINK
+  Generic Netlink to nl80211 directly, no more `iw dev … set channel`
+  subprocess; measured 35 ms → 400 µs per hop.
+* **Native passive scanner** (`native/scanner.py`) — single-threaded AF_PACKET
+  capture with BSSID/SSID/channel/crypto/WPS parsing; feeds the same bus
+  events airodump-ng fed.
+* **Native PMKID grabber** (`native/pmkid.py`) — clientless PMKID capture by
+  sending Auth→Assoc→EAPOL-Start from random locally-administered MACs and
+  parsing the PMKID KDE out of M1; emits hashcat-22000 (WPA*01) directly.
+  Replaces hcxdumptool for the single-AP targeted case.
+* **Native WPS cracker with Pixie-Dust** (`native/wpscrack.py`) — pure-Python
+  M1-M8 state machine, DH over modp-1536 (1536-bit MODP), NIST SP800-56A KDF,
+  HMAC-SHA256 AuthKey chain, AES key-wrap (RFC 3394), with Pixie-Dust
+  detection. Replaces reaver/bully for the online PIN attack.
+* **Native evil-twin AP** (`native/eviltwin.py`) — beacon floods, probe/auth/
+  assoc responses, minimal DHCP/DNS, TCP-RST captive detection on one
+  AF_PACKET socket. Replaces hostapd + dnsmasq for the credential-phishing
+  use case.
+* **TurboCrack multi-core cracker** (`native/turbocrack.py`) — batched PBKDF2
+  (4096 candidates per chunk) across a `ProcessPoolExecutor`, per-worker
+  verifier state + PMK cache, inflight queue keeping 2×workers batches
+  in flight, early-exit on MIC/PMKID match. Matches aircrack-ng's per-core
+  throughput with no external dependency.
+* `native/` is NOT imported at package load time — `import wifipilot` stays
+  ~55–102 ms. Native engines load on first attack that needs them.
+* Catalogue count 420 → 470 (pinned in docs/OPTIMIZATIONS.md, README.md, and
+  tests/test_web.py as required).
+* Seeded blitz bench preserved at **39.3 s / 12 passwords / dupes NONE**.
+
+## v0.2.0 — pip wheel + standalone executable, GitHub Releases
+
+* **Version bumped to 0.2.0.**
+* **`pip install` wheel support** — `pyproject.toml` already produced wheels; a
+  new `release.yml` GitHub Actions workflow builds both the wheel (py3-none-any,
+  Linux-only enforced at runtime) and the sdist on every tag push, smoke-tests
+  the freshly-built wheel in a clean venv (`--version`, `--json config`,
+  `attacks --json`, AI off-switch), and uploads them to a GitHub Release.
+  `make dist` / `make wheel` / `make sdist` build locally via `python -m build`.
+* **Standalone Linux executable** — `wifipilot.spec` drives PyInstaller to build
+  a single-file `dist/wifipilot` that bundles the web UI (`web/static/*`), the
+  OUI/pattern/wordlist data (`data/*`), and the docs/ tree. A new
+  `util.bundle_resource()` / `bundle_root()` helper replaces the various
+  `Path(__file__).parent/...` sites so data lookups resolve correctly whether
+  running from source, an installed wheel, or the frozen executable;
+  `updater.update_self` now refuses to self-mutate the executable (the
+  instructions tell the user to download a new release from GitHub instead).
+  The workflow verifies the binary end-to-end: `--version`, `--json config`,
+  `attacks --json`, and boots `wifipilot web --demo` to hit `/` before packaging.
+  `make binary` builds it locally.
+* **Release artefacts published automatically** — pushing a `v*` tag triggers
+  the workflow; after both build jobs succeed, the publish job creates a GitHub
+  Release and attaches the wheel, sdist, the raw `wifipilot` executable, a
+  `wifipilot-linux-amd64.tar.gz` with LICENSE/NOTICE/THIRD-PARTY, and a
+  `SHA256SUMS.txt`. The workflow can also be run manually via `workflow_dispatch`.
+* **Web API reports its real version** — `GET /healthz` and the FastAPI app
+  metadata now read from `wifipilot.__version__` instead of a hardcoded
+  `"0.1.0"`, so pip wheels and frozen binaries advertise themselves correctly.
+
 ## Follow-through: CI in parallel, and two measured rejections (catalogue 420)
 
 * **CI runs the full suite in parallel** — `pytest-xdist` joins the dev

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wifipilot"
-version = "0.1.0"
+version = "0.3.0"
 description = "Linux wifite alternative: AI-piloted WiFi auditing with a web UI and an optional local (Ollama) or cloud (OpenRouter) advisor"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -33,7 +33,8 @@ dependencies = [
 
 [project.optional-dependencies]
 web = ["fastapi>=0.110", "uvicorn>=0.27"]
-dev = ["pytest>=7.4", "pytest-xdist>=3.5", "httpx>=0.27", "fastapi>=0.110", "uvicorn>=0.27", "ruff>=0.6"]
+native = ["cryptography>=41"]
+dev = ["pytest>=7.4", "pytest-xdist>=3.5", "httpx>=0.27", "fastapi>=0.110", "uvicorn>=0.27", "ruff>=0.6", "cryptography>=41"]
 
 [project.scripts]
 wifipilot = "wifipilot.cli:main"

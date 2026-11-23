@@ -815,7 +815,8 @@ def find_wordlists(config: Optional[Config] = None) -> List[Dict[str, Any]]:
     """All wordlists we could crack with, best first."""
     found: List[Dict[str, Any]] = []
     seen = set()
-    builtin_dir = Path(__file__).parent / "data"
+    from .util import bundle_resource
+    builtin_dir = bundle_resource("data")
     candidates: List[str] = []
     if config and config.wordlists:
         candidates.extend(config.wordlists)
